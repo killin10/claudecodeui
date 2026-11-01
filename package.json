@@ -28,6 +28,8 @@
   },
   "scripts": {
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",
+    "deploy:local": "node scripts/deploy/deploy.mjs",
+    "test:deploy": "node --test scripts/deploy/tests/*.test.mjs",
     "preserver": "node scripts/promote-dist-server.mjs recover",
     "server": "node dist-server/server/index.js",
     "server:dev": "tsx --tsconfig server/tsconfig.json server/index.ts",
