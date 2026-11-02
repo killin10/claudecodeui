@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { OpenCodeSkillsProvider } from '@/modules/providers/list/opencode/opencode-skills.provider.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 
 const patchHomeDir = (nextHomeDir: string) => {
@@ -450,7 +451,19 @@ test('providerSkillsService lists opencode project and user compatibility skills
       'OpenCode Agents user skill',
     );
 
-    const skills = await providerSkillsService.listProviderSkills('opencode', { workspacePath });
+    const native = [
+      ['opencode-cwd', path.join(workspacePath, '.opencode/skills/opencode-cwd-dir/SKILL.md')],
+      ['opencode-claude-parent', path.join(repoRoot, 'packages/.claude/skills/opencode-claude-parent-dir/SKILL.md')],
+      ['opencode-agents-root', path.join(repoRoot, '.agents/skills/opencode-agents-root-dir/SKILL.md')],
+      ['opencode-user', path.join(tempRoot, '.config/opencode/skills/opencode-user-dir/SKILL.md')],
+      ['opencode-claude-user', path.join(tempRoot, '.claude/skills/opencode-claude-user-dir/SKILL.md')],
+      ['opencode-agents-user', path.join(tempRoot, '.agents/skills/opencode-agents-user-dir/SKILL.md')],
+      ['plugin:extra', path.join(tempRoot, 'plugin/custom/SKILL.md')],
+    ];
+    const provider = new OpenCodeSkillsProvider(async () => ({
+      skills: native.map(([name, source]) => ({ id: name, name, path: source, content: 'instructions' })), commands: [],
+    }));
+    const skills = await provider.listSkills({ workspacePath });
     const byName = new Map(skills.map((skill) => [skill.name, skill]));
 
     assert.equal(byName.get('opencode-cwd')?.scope, 'project');
@@ -459,7 +472,10 @@ test('providerSkillsService lists opencode project and user compatibility skills
     assert.equal(byName.get('opencode-user')?.scope, 'user');
     assert.equal(byName.get('opencode-claude-user')?.scope, 'user');
     assert.equal(byName.get('opencode-agents-user')?.scope, 'user');
-    assert.equal(byName.get('opencode-cwd')?.command, '/opencode-cwd');
+    assert.equal(byName.get('opencode-cwd')?.command, '/skill:opencode-cwd');
+    assert.equal(byName.get('opencode-user')?.managedDirectory, 'opencode-user-dir');
+    assert.equal(byName.get('opencode-claude-user')?.managedDirectory, undefined);
+    assert.equal(byName.get('plugin:extra')?.command, '/skill:plugin:extra');
   } finally {
     restoreHomeDir();
     await fs.rm(tempRoot, { recursive: true, force: true });
@@ -682,27 +698,28 @@ test('providerSkillsService adds global skills for claude, codex, and cursor', {
   }
 });
 
-/**
- * OpenCode reuses other providers' skill folders, so it should not accept
- * direct skill writes through the managed provider endpoint.
- */
-test('providerSkillsService rejects managed skill creation for opencode', { concurrency: false }, async () => {
-  await assert.rejects(
-    providerSkillsService.addProviderSkills('opencode', {
-      entries: [
-        {
-          directoryName: 'opencode-global-dir',
-          content: '---\nname: opencode-global\ndescription: Unsupported skill\n---\n\nOpenCode body.\n',
-        },
-      ],
-    }),
-    /does not support managed global skills/i,
-  );
-
-  await assert.rejects(
-    providerSkillsService.removeProviderSkill('opencode', {
-      directoryName: 'opencode-global-dir',
-    }),
-    /does not support managed global skills/i,
-  );
+test('OpenCode uploads and removes only its own managed user skills', { concurrency: false }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-managed-skills-'));
+  const previous = process.env.OPENCODE_CONFIG_DIR;
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, 'override');
+  const provider = new OpenCodeSkillsProvider();
+  try {
+    const created = await provider.addSkills({ entries: [{ directoryName: 'review', content: '---\nname: review\ndescription: review changes\n---\nInstructions' }] });
+    const source = path.join(root, 'override/skills/review/SKILL.md');
+    assert.equal(created[0].sourcePath, source);
+    assert.match(await fs.readFile(source, 'utf8'), /Instructions/);
+    await provider.removeSkill({ directoryName: 'review' });
+    await assert.rejects(fs.stat(source), { code: 'ENOENT' });
+    await fs.rm(path.dirname(path.dirname(source)), { recursive: true });
+    const shared = path.join(root, 'shared');
+    await fs.mkdir(shared);
+    await fs.symlink(shared, path.join(root, 'override/skills'));
+    await assert.rejects(provider.addSkills({ entries: [{ content: '---\nname: unsafe\n---\nBody' }] }), /real skills directory/);
+    await assert.rejects(provider.removeSkill({ directoryName: 'review' }), /real skills directory/);
+    assert.deepEqual(await fs.readdir(shared), []);
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = previous;
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

@@ -128,6 +128,7 @@ const normalizeSkill = (
     command: String(skill.command ?? ''),
     scope,
     sourcePath: String(skill.sourcePath ?? ''),
+    managedDirectory: typeof skill.managedDirectory === 'string' ? skill.managedDirectory : undefined,
     pluginName: typeof skill.pluginName === 'string' ? skill.pluginName : undefined,
     pluginId: typeof skill.pluginId === 'string' ? skill.pluginId : undefined,
     projectDisplayName: shouldAttachProject
@@ -224,6 +225,7 @@ type UseProviderSkillsArgs = {
   currentProjects: SkillsProject[];
 };
 
+/** ProviderSkills uses this hook to load scoped catalogs and refresh after managed uploads/removals. */
 export function useProviderSkills({ selectedProvider, currentProjects }: UseProviderSkillsArgs) {
   const [skills, setSkills] = useState<ProviderSkill[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -332,6 +334,14 @@ export function useProviderSkills({ selectedProvider, currentProjects }: UseProv
     }
   }, [refreshSkills, selectedProvider]);
 
+  const removeSkill = useCallback(async (directoryName: string) => {
+    const response = await api.providers.removeSkill(selectedProvider, directoryName);
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(getApiErrorMessage(data, 'Failed to remove skill'));
+    clearProviderSkillCache(selectedProvider);
+    await refreshSkills({ force: true });
+  }, [refreshSkills, selectedProvider]);
+
   useEffect(() => {
     void refreshSkills();
 
@@ -360,6 +370,7 @@ export function useProviderSkills({ selectedProvider, currentProjects }: UseProv
     loadError,
     saveStatus,
     addSkills,
+    removeSkill,
     refreshSkills,
   };
 }

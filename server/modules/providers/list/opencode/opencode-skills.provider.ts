@@ -1,84 +1,64 @@
+import { lstat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { SkillsProvider } from '@/modules/providers/shared/skills/skills.provider.js';
-import type { ProviderSkillListOptions, ProviderSkillSource } from '@/shared/types.js';
-import {
-  addUniqueProviderSkillSource,
-  findTopmostGitRoot,
-} from '@/shared/utils.js';
+import { listOpenCodeInvocations, loadOpenCodeCatalog } from '@/modules/providers/list/opencode/opencode-inputs.provider.js';
+import type { ProviderSkill, ProviderSkillListOptions, ProviderSkillSource } from '@/shared/types.js';
+import { AppError, findTopmostGitRoot, getOpenCodeConfigDirectory } from '@/shared/utils.js';
 
-import { listOpenCodeInvocations } from './opencode-inputs.provider.js';
+function under(filename: string, directory: string): boolean {
+  const relative = path.relative(directory, filename);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
 
-const OPENCODE_PROJECT_SKILL_DIRS = [
-  ['.opencode', 'skills'],
-  ['.claude', 'skills'],
-  ['.agents', 'skills'],
-];
+async function writableRoot(): Promise<string> {
+  const root = path.join(getOpenCodeConfigDirectory(), 'skills');
+  const info = await lstat(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (info && (!info.isDirectory() || info.isSymbolicLink())) {
+    throw new AppError('Managed OpenCode skills require a real skills directory.', { code: 'OPENCODE_SKILLS_READ_ONLY', statusCode: 400 });
+  }
+  return root;
+}
 
-const OPENCODE_USER_SKILL_DIRS = [
-  ['.config', 'opencode', 'skills'],
-  ['.claude', 'skills'],
-  ['.agents', 'skills'],
-];
-
+/** OpenCode settings uses the native catalog; writes are confined to its own user skills folder. */
 export class OpenCodeSkillsProvider extends SkillsProvider {
-  constructor() {
+  constructor(private readonly catalog = loadOpenCodeCatalog) {
     super('opencode');
   }
 
   async listInvocations(options?: ProviderSkillListOptions) {
-    return listOpenCodeInvocations(path.resolve(options?.workspacePath ?? process.cwd()));
+    return listOpenCodeInvocations(path.resolve(options?.workspacePath ?? os.homedir()));
   }
 
-  protected async getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]> {
-    const sources: ProviderSkillSource[] = [];
-    const seenRootDirs = new Set<string>();
-    const repoRoot = await findTopmostGitRoot(workspacePath);
-
-    for (const projectRoot of this.getProjectSearchRoots(workspacePath, repoRoot)) {
-      for (const skillDir of OPENCODE_PROJECT_SKILL_DIRS) {
-        // OpenCode intentionally reads Claude and Agents skill folders so users
-        // can reuse the same skill libraries across compatible coding agents.
-        addUniqueProviderSkillSource(sources, seenRootDirs, {
-          scope: 'project',
-          rootDir: path.join(projectRoot, ...skillDir),
-          commandPrefix: '/',
-        });
-      }
-    }
-
-    for (const skillDir of OPENCODE_USER_SKILL_DIRS) {
-      addUniqueProviderSkillSource(sources, seenRootDirs, {
-        scope: 'user',
-        rootDir: path.join(os.homedir(), ...skillDir),
-        commandPrefix: '/',
-      });
-    }
-
-    return sources;
+  async listSkills(options?: ProviderSkillListOptions): Promise<ProviderSkill[]> {
+    const directory = path.resolve(options?.workspacePath ?? os.homedir());
+    const { skills } = await this.catalog(directory);
+    const projectRoot = await findTopmostGitRoot(directory) ?? directory;
+    const root = path.resolve(getOpenCodeConfigDirectory(), 'skills');
+    return Promise.all(skills.map(async (skill): Promise<ProviderSkill> => {
+      const parent = path.dirname(skill.path);
+      const managed = path.dirname(parent) === root && path.basename(skill.path) === 'SKILL.md';
+      const info = managed ? await lstat(parent) : null;
+      const rootInfo = managed ? await lstat(root) : null;
+      const managedDirectory = info?.isDirectory() && rootInfo?.isDirectory() ? path.basename(parent) : undefined;
+      const userRoots = [getOpenCodeConfigDirectory(), path.join(os.homedir(), '.claude'), path.join(os.homedir(), '.agents')];
+      const scope = userRoots.some((userRoot) => under(skill.path, userRoot)) ? 'user'
+        : projectRoot !== os.homedir() && under(skill.path, projectRoot) ? 'project' : 'plugin';
+      return {
+        provider: 'opencode', name: skill.name, description: skill.description ?? '',
+        command: `/skill:${skill.id}`, sourcePath: skill.path, scope, managedDirectory,
+      };
+    }));
   }
 
-  private getProjectSearchRoots(workspacePath: string, repoRoot: string | null): string[] {
-    const roots: string[] = [];
-    const normalizedWorkspacePath = path.resolve(workspacePath);
-    const normalizedRepoRoot = repoRoot ? path.resolve(repoRoot) : null;
-    let currentPath = normalizedWorkspacePath;
+  // Native discovery above owns all read sources, including plugin/custom directories.
+  protected async getSkillSources(): Promise<ProviderSkillSource[]> { return []; }
 
-    while (true) {
-      roots.push(currentPath);
-      if (!normalizedRepoRoot || currentPath === normalizedRepoRoot) {
-        break;
-      }
-
-      const parentPath = path.dirname(currentPath);
-      if (parentPath === currentPath) {
-        break;
-      }
-
-      currentPath = parentPath;
-    }
-
-    return roots;
+  protected async getGlobalSkillSource(): Promise<ProviderSkillSource> {
+    return { scope: 'user', rootDir: await writableRoot(), commandForSkill: (name) => `/skill:${name}` };
   }
 }

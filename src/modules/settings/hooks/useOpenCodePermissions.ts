@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { OpenCodePermissionRule, OpenCodePermissionSettings } from '@/shared/types';
+import type { OpenCodePermissionRule, OpenCodePermissionSettings, OpenCodeSavedPermission } from '@/shared/types';
 
 /** Used by OpenCodePermissionsContent to load native sources and save user rules with conflict detection. */
 export function useOpenCodePermissions(workspacePath: string) {
@@ -50,5 +50,23 @@ export function useOpenCodePermissions(workspacePath: string) {
       setStatus('ready');
     }
   };
-  return { settings, rules, setRules, status, error, reload, save };
+  const changeSaved = async (approval: OpenCodeSavedPermission, rule: Pick<OpenCodeSavedPermission, 'action' | 'resource'> | null) => {
+    if (!settings || status !== 'ready') return;
+    setStatus('saving');
+    setError(null);
+    try {
+      await readApiJson(await api.providers.changeOpenCodeSavedPermission({
+        id: approval.id, expected: { action: approval.action, resource: approval.resource },
+        operation: rule ? 'update' : 'remove', rule, workspacePath: workspacePath || undefined,
+      }));
+      // Updating saved approvals must not discard unsaved user-rule edits.
+      setSettings((previous) => previous && ({ ...previous, saved: previous.saved.flatMap((entry) =>
+        entry.id !== approval.id ? [entry] : rule ? [{ ...entry, ...rule }] : []) }));
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setStatus('ready');
+    }
+  };
+  return { settings, rules, setRules, status, error, reload, save, changeSaved };
 }

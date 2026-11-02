@@ -1,11 +1,11 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import { McpProvider } from '@/modules/providers/shared/mcp/mcp.provider.js';
 import type { McpScope, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
 import {
   AppError,
+  getOpenCodeConfigDirectory,
   readObjectRecord,
   readOptionalString,
   readStringArray,
@@ -60,7 +60,7 @@ function normalizeStoredServer(raw: unknown): unknown {
   };
 }
 
-const globalConfigDirectory = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
+const globalConfigDirectory = getOpenCodeConfigDirectory;
 
 async function configSources(scope: McpScope, workspacePath: string): Promise<string[]> {
   const names = ['opencode.json', 'opencode.jsonc'];

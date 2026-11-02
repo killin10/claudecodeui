@@ -785,6 +785,8 @@ export type ProviderSkillRemoveInput = {
  * callers can distinguish duplicate skill names across scopes.
  */
 export type ProviderSkill = {
+  /** Direct child of the provider's managed root; absent for read-only/shared sources. */
+  managedDirectory?: string;
   provider: LLMProvider;
   name: string;
   description: string;

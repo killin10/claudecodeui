@@ -1,5 +1,7 @@
 {
   "opencodePermissions": {
+    "updateSaved": "Update approval",
+    "revoke": "Revoke approval",
     "title": "OpenCode permissions",
     "description": "Edit user rules shared by OpenCode sessions. Later matching rules take precedence; agent and session rules may also apply. Changes apply to new turns.",
     "directory": "Inspect rules for",
@@ -723,6 +725,8 @@
     "runningStatus": "running"
   },
   "skillsPage": {
+    "remove": "Remove Skill",
+    "confirmRemove": "Remove {{name}} and all its files from the OpenCode user Skill directory?",
     "description": "Manage {{provider}} skills from local files, complete folders, and project-aware locations.",
     "searchPlaceholder": "Search skills...",
     "searchAriaLabel": "Search skills",

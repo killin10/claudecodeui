@@ -1,36 +1,51 @@
-import type { OpenCodeClient, SessionPromptInput } from '@opencode/client';
+import type { OpenCodeClient, SessionPromptInput, SkillInfo, CommandInfo } from '@opencode/client';
 
 import type { ProviderInvocation } from '@/shared/types.js';
 
 import { startOpenCodeServer } from './opencode-server.provider.js';
 
-/** Used by the skills facet to expose the native command/skill catalog to the composer. */
-export async function listOpenCodeInvocations(directory: string): Promise<ProviderInvocation[]> {
-  const controller = new AbortController();
-  const { client, server } = await startOpenCodeServer(controller.signal);
+// Concurrent settings/composer reads of one directory share one owned host.
+const catalogs = new Map<string, Promise<{ skills: SkillInfo[]; commands: CommandInfo[] }>>();
+
+/** Skills management and composer invocations use the same activated native catalog. */
+export function loadOpenCodeCatalog(directory: string) {
+  const existing = catalogs.get(directory);
+  if (existing) return existing;
+  const pending = readCatalog(directory).finally(() => catalogs.delete(directory));
+  catalogs.set(directory, pending);
+  return pending;
+}
+
+async function readCatalog(directory: string) {
+  const signal = AbortSignal.timeout(60_000);
+  const { client, server } = await startOpenCodeServer(signal);
   try {
-    const options = { signal: AbortSignal.timeout(60_000) };
-    // V2 skill/command lists do not await plugin activation; model.list does.
-    await client.model.list({ location: { directory } }, options);
+    const options = { signal };
+    const location = { directory };
+    // Plugin activation owns Skills and commands; these lists alone do not await it.
+    await client.model.list({ location }, options);
     const [skills, commands] = await Promise.all([
-      client.skill.list({ location: { directory } }, options),
-      client.command.list({ location: { directory } }, options),
+      client.skill.list({ location }, options),
+      client.command.list({ location }, options),
     ]);
-    return [
-      { name: '/compact', description: 'Compact the OpenCode context', kind: 'command' },
-      ...commands.data.filter((command) => command.name !== 'compact').map((command) => ({
-        name: `/${command.name}`, description: command.description ?? '', kind: 'command' as const,
-      })),
-      // Native /review is also a built-in command. Explicit skill names prevent
-      // a menu selection from silently invoking a different operation.
-      ...skills.data.map((skill) => ({
-        name: `/skill:${skill.id}`, description: skill.description ?? '', kind: 'skill' as const, path: skill.path,
-      })),
-    ];
+    return { skills: skills.data, commands: commands.data };
   } finally {
-    controller.abort();
     server.close();
   }
+}
+
+/** Used by the skills facet to expose exact native invocation IDs to the composer. */
+export async function listOpenCodeInvocations(directory: string): Promise<ProviderInvocation[]> {
+  const { skills, commands } = await loadOpenCodeCatalog(directory);
+  return [
+    { name: '/compact', description: 'Compact the OpenCode context', kind: 'command' },
+    ...commands.filter((command) => command.name !== 'compact').map((command) => ({
+      name: `/${command.name}`, description: command.description ?? '', kind: 'command' as const,
+    })),
+    ...skills.map((skill) => ({
+      name: `/skill:${skill.id}`, description: skill.description ?? '', kind: 'skill' as const, path: skill.path,
+    })),
+  ];
 }
 
 function explicitSkillMentions(text: string): NonNullable<SessionPromptInput['skills']> {

@@ -40,3 +40,17 @@ test('a delayed snapshot does not resurrect work whose notification was already 
   work.executionEnded('ses_root');
   assert.equal(work.pending, false);
 });
+
+test('a native detached shell retains the host and settles without hiding model tool tasks', () => {
+  const work = new OpenCodeBackgroundWork();
+  const shell = { id: 'shl_direct', command: 'sleep 10', metadata: { background: true }, status: 'running' };
+  work.trackNativeShell({ type: 'session.shell.started', created: 1, data: { shell } } as never, false);
+  work.executionEnded('ses_parent');
+  assert.equal(work.pending, true);
+  assert.equal(work.tasks.get(shell.id)?.toolUseId, shell.id);
+  work.trackNativeShell({ type: 'session.shell.ended', data: { shell } } as never, false);
+  assert.equal(work.pending, false);
+  work.track(message('model_call'), false);
+  work.trackNativeShell({ type: 'session.shell.ended', data: { shell } } as never, false);
+  assert.equal(work.pending, true);
+});

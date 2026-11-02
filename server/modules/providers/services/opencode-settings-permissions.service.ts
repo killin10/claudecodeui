@@ -7,7 +7,8 @@ import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser';
 import type { PermissionRule } from '@opencode/client';
 
 import { startOpenCodeServer } from '@/modules/providers/list/opencode/opencode-server.provider.js';
-import { AppError, readObjectRecord } from '@/shared/utils.js';
+import { clearOpenCodeRememberedApprovals } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
+import { AppError, getOpenCodeConfigDirectory, readObjectRecord } from '@/shared/utils.js';
 
 const invalid = (message: string) => new AppError(message, { code: 'INVALID_OPENCODE_PERMISSIONS', statusCode: 400 });
 
@@ -25,8 +26,7 @@ function readRules(value: unknown): PermissionRule[] {
 }
 
 async function editableFile() {
-  const directory = process.env.OPENCODE_CONFIG_DIR
-    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
+  const directory = getOpenCodeConfigDirectory();
   for (const name of ['opencode.jsonc', 'opencode.json']) {
     const filename = path.join(directory, name);
     try {
@@ -98,6 +98,41 @@ async function saveRules(input: unknown) {
   return { path: file.path, rules, revision: createHash('sha256').update(file.path).update('\0').update(updated).digest('hex') };
 }
 
+function readSavedChange(input: unknown) {
+  const body = readObjectRecord(input);
+  if (!body || typeof body.id !== 'string' || !body.id || body.id.length > 256
+    || (body.operation !== 'update' && body.operation !== 'remove')
+    || (body.workspacePath !== undefined && typeof body.workspacePath !== 'string')) {
+    throw invalid('Expected a saved approval id, operation and optional directory.');
+  }
+  const expected = readRules([{ ...readObjectRecord(body.expected), effect: 'allow' }])[0];
+  const rule = body.operation === 'update' ? readRules([{ ...readObjectRecord(body.rule), effect: 'allow' }])[0] : null;
+  const directory = body.workspacePath ? path.resolve(body.workspacePath) : os.homedir();
+  return { id: body.id, expected, rule, directory };
+}
+
+async function changeSaved(input: unknown, startServer: typeof startOpenCodeServer) {
+  const { id, expected, rule, directory } = readSavedChange(input);
+  const signal = AbortSignal.timeout(60_000);
+  const { client, server } = await startServer(signal);
+  try {
+    const location = await client.location.get({ location: { directory } }, { signal });
+    const projectID = location.project.id;
+    const saved = await client.permission.saved.list({ projectID }, { signal });
+    const current = saved.find((entry) => entry.id === id);
+    if (!current) throw new AppError('Saved approval not found in this project.', { code: 'OPENCODE_APPROVAL_NOT_FOUND', statusCode: 404 });
+    if (current.action !== expected.action || current.resource !== expected.resource) {
+      throw new AppError('Saved approval changed. Reload before editing it.', { code: 'OPENCODE_CONFIG_CONFLICT', statusCode: 409 });
+    }
+    if (rule) await client.permission.saved.update({ id: current.id, action: rule.action, resource: rule.resource }, { signal });
+    else await client.permission.saved.remove({ id: current.id }, { signal });
+    clearOpenCodeRememberedApprovals(projectID);
+    return { id: current.id };
+  } finally {
+    server.close();
+  }
+}
+
 /** Provider routes use the production instance; tests inject the native host to verify source filtering and cleanup. */
 export function createOpenCodeSettingsPermissionsService(startServer = startOpenCodeServer) {
   // Serializes UI saves; revisions also reject external edits since the panel loaded.
@@ -110,6 +145,11 @@ export function createOpenCodeSettingsPermissionsService(startServer = startOpen
     },
     save(input: unknown) {
       const result = saving.then(() => saveRules(input));
+      saving = result.catch(() => undefined);
+      return result;
+    },
+    changeSaved(input: unknown) {
+      const result = saving.then(() => changeSaved(input, startServer));
       saving = result.catch(() => undefined);
       return result;
     },

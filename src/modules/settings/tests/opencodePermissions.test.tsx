@@ -7,11 +7,11 @@ import type { OpenCodePermissionSettings } from '@/shared/types';
 import type * as SharedApi from '@/shared/api';
 import '@/modules/i18n';
 
-const mocks = vi.hoisted(() => ({ load: vi.fn(), save: vi.fn() }));
+const mocks = vi.hoisted(() => ({ load: vi.fn(), save: vi.fn(), change: vi.fn() }));
 vi.mock('@/shared/api', async (original) => {
   const actual = await original<typeof SharedApi>();
   return { ...actual, api: { ...actual.api, providers: { ...actual.api.providers,
-    opencodeSettingsPermissions: mocks.load, saveOpenCodeSettingsPermissions: mocks.save,
+    opencodeSettingsPermissions: mocks.load, saveOpenCodeSettingsPermissions: mocks.save, changeOpenCodeSavedPermission: mocks.change,
   } } };
 });
 
@@ -25,6 +25,7 @@ const success = (data: unknown) => new Response(JSON.stringify({ success: true, 
 
 beforeEach(() => {
   mocks.load.mockReset().mockImplementation(async () => success(settings));
+  mocks.change.mockReset().mockImplementation(async () => success({ id: 'saved_1' }));
   mocks.save.mockReset().mockImplementation(async () => success(settings.editable));
 });
 
@@ -59,4 +60,22 @@ test('source directory selection reloads project rules and load errors stay visi
   expect((await screen.findByRole('alert')).textContent).toContain('OpenCode unavailable');
   expect(mocks.load).toHaveBeenLastCalledWith('/project');
   expect(screen.queryByRole('button', { name: 'Save user rules' })).toBeNull();
+});
+
+
+test('saved approval edits and revocation preserve user-rule drafts, and failed changes keep the approval', async () => {
+  render(<OpenCodePermissionsContent projects={[]} />);
+  await screen.findByText(settings.editable.path);
+  fireEvent.change(screen.getByLabelText('Resource 1'), { target: { value: 'unsaved draft' } });
+  fireEvent.change(screen.getByLabelText('Resource saved_1'), { target: { value: 'git status' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Update approval' }));
+  await screen.findByText('shell · git status → allow');
+  expect(mocks.change).toHaveBeenCalledWith(expect.objectContaining({ operation: 'update', id: 'saved_1', expected: { action: 'shell', resource: 'pwd' }, rule: { action: 'shell', resource: 'git status' } }));
+  mocks.change.mockRejectedValueOnce(new Error('Native host unavailable'));
+  fireEvent.click(screen.getByRole('button', { name: 'Revoke approval' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Native host unavailable');
+  expect(screen.getByText('shell · git status → allow')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Revoke approval' }));
+  await waitFor(() => expect(screen.queryByText('shell · git status → allow')).toBeNull());
+  expect((screen.getByLabelText('Resource 1') as HTMLInputElement).value).toBe('unsaved draft');
 });

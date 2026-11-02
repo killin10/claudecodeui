@@ -383,3 +383,31 @@ test('OpenCode discovers XDG, ancestor and .opencode sources with JSONC preceden
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('OpenCode MCP reads and mutates only OPENCODE_CONFIG_DIR when it overrides XDG', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-mcp-override-'));
+  const before = { OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, 'override');
+  process.env.XDG_CONFIG_HOME = path.join(root, 'xdg');
+  const config = path.join(process.env.OPENCODE_CONFIG_DIR, 'opencode.jsonc');
+  const ignored = path.join(process.env.XDG_CONFIG_HOME, 'opencode/opencode.json');
+  try {
+    await fs.mkdir(path.dirname(config), { recursive: true });
+    await fs.mkdir(path.dirname(ignored), { recursive: true });
+    await fs.writeFile(config, JSON.stringify({ mcp: { servers: { sample: { type: 'remote', url: 'https://native.invalid' } } } }));
+    await fs.writeFile(ignored, '{}');
+    const list = await providerMcpService.listProviderMcpServers('opencode', { workspacePath: root });
+    assert.equal(list.user[0].sourcePath, config);
+    await providerMcpService.upsertProviderMcpServer('opencode', { name: 'sample', scope: 'user', transport: 'http', url: 'https://edited.invalid', workspacePath: root });
+    assert.match(await fs.readFile(config, 'utf8'), /edited.invalid/);
+    await providerMcpService.removeProviderMcpServer('opencode', { name: 'sample', scope: 'user', workspacePath: root });
+    assert.doesNotMatch(await fs.readFile(config, 'utf8'), /sample/);
+    assert.equal(await fs.readFile(ignored, 'utf8'), '{}');
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

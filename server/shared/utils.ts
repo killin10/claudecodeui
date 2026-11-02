@@ -1041,6 +1041,16 @@ export function readJsonRecord(value: unknown): AnyRecord | null {
 // ---------------------------
 //----------------- OPENCODE SESSION STORAGE UTILITIES ------------
 /**
+ * Used by OpenCode MCP, permission and Skill adapters to select the native user
+ * config directory. OPENCODE_CONFIG_DIR overrides the XDG/default directory;
+ * evaluating at call time also supports isolated tests without caching env values.
+ */
+export function getOpenCodeConfigDirectory(): string {
+  return process.env.OPENCODE_CONFIG_DIR
+    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
+}
+
+/**
  * Resolves the OpenCode SQLite session database path.
  *
  * OpenCode stores session, message, part, and project metadata in one shared

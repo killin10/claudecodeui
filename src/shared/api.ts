@@ -426,6 +426,7 @@ export const api = {
     claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
     opencodeSettingsPermissions: (workspacePath?: string) => get(`/api/providers/opencode/settings-permissions${workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : ''}`),
     saveOpenCodeSettingsPermissions: (input: unknown) => put('/api/providers/opencode/settings-permissions', input),
+    changeOpenCodeSavedPermission: (input: unknown) => put('/api/providers/opencode/settings-permissions/saved', input),
 
     models: (provider: string) => get(`/api/providers/${provider}/models`),
     createModel: (provider: string, input: unknown) =>
@@ -480,6 +481,8 @@ export const api = {
       get(`/api/providers/${encodeURIComponent(provider)}/skills${query({ workspacePath })}`),
     saveSkills: (provider: string, payload: unknown) =>
       post(`/api/providers/${provider}/skills`, payload),
+    removeSkill: (provider: string, directoryName: string) =>
+      del(`/api/providers/${encodeURIComponent(provider)}/skills/${encodeURIComponent(directoryName)}`),
   },
 
   // Slash commands

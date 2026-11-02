@@ -193,6 +193,7 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
     loadError,
     saveStatus,
     addSkills,
+    removeSkill,
     refreshSkills,
   } = useProviderSkills({ selectedProvider, currentProjects });
   const [queuedFiles, setQueuedFiles] = useState<QueuedSkillFile[]>([]);
@@ -207,6 +208,19 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
 
   const providerName = PROVIDER_NAMES[selectedProvider];
   const providerPath = selectedProvider === 'opencode' ? null : PROVIDER_SKILL_PATHS[selectedProvider];
+
+  const handleRemove = async (skill: ProviderSkill) => {
+    if (!skill.managedDirectory || !window.confirm(t('skillsPage.confirmRemove', { name: skill.name }))) return;
+    setIsSubmitting(true);
+    setSubmitError(null);
+    try {
+      await removeSkill(skill.managedDirectory);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     setQueuedFiles([]);
@@ -712,6 +726,11 @@ export default function ProviderSkills({ selectedProvider, currentProjects }: Pr
                   </p>
 
                   <div className="mt-4 flex flex-wrap items-center gap-2">
+                    {skill.managedDirectory && (
+                      <Button variant="outline" size="sm" disabled={isSubmitting} onClick={() => void handleRemove(skill)}>
+                        {t('skillsPage.remove')}
+                      </Button>
+                    )}
                     {skill.pluginName && (
                       <Badge variant="outline" className="rounded-full bg-background/70">
                         {t('skillsPage.pluginBadge', { name: skill.pluginName })}

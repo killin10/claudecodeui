@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { OpenCodeSavedApproval } from '@/modules/settings/tabs/agents-settings/sections/content/OpenCodeSavedApproval';
 import { useOpenCodePermissions } from '@/modules/settings/hooks/useOpenCodePermissions';
 import type { AgentSettingsProject, OpenCodePermissionRule, OpenCodePermissionSettings } from '@/shared/types';
 import { Button, Input } from '@/shared/ui';
@@ -82,11 +83,7 @@ function RuleSources({ settings }: { settings: OpenCodePermissionSettings }) {
       </div>)}
       {!settings.sources.length && <p className="text-sm text-muted-foreground">{t('opencodePermissions.empty', 'No configured rules for this directory.')}</p>}
     </section>
-    <section className="space-y-2">
-      <h4 className="text-sm font-medium">{t('opencodePermissions.saved', 'Saved project approvals (Always allow)')}</h4>
-      <RuleList rules={settings.saved.map((rule) => ({ ...rule, effect: 'allow' }))} />
-      {!settings.saved.length && <p className="text-sm text-muted-foreground">{t('opencodePermissions.noSaved', 'No saved approvals for this project.')}</p>}
-    </section>
+
   </>;
 }
 
@@ -95,7 +92,7 @@ export function OpenCodePermissionsContent({ projects }: { projects: AgentSettin
   const { t } = useTranslation('settings');
   // A directory determines which project config and saved approvals OpenCode applies.
   const [workspacePath, setWorkspacePath] = useState('');
-  const { settings, rules, setRules, status, error, reload, save } = useOpenCodePermissions(workspacePath);
+  const { settings, rules, setRules, status, error, reload, save, changeSaved } = useOpenCodePermissions(workspacePath);
   const busy = status !== 'ready';
   return <div className="space-y-5">
     <h3 className="font-medium">{t('opencodePermissions.title', 'OpenCode permissions')}</h3>
@@ -116,6 +113,13 @@ export function OpenCodePermissionsContent({ projects }: { projects: AgentSettin
     {settings && <>
       <RuleEditor filename={settings.editable.path} rules={rules} busy={busy} onChange={setRules} save={save} />
       <RuleSources settings={settings} />
+      <section className="space-y-2">
+        <h4 className="text-sm font-medium">{t('opencodePermissions.saved')}</h4>
+        {settings.saved.map((approval) => <OpenCodeSavedApproval
+          key={`${approval.id}:${approval.action}:${approval.resource}`} approval={approval} busy={busy} onChange={changeSaved}
+        />)}
+        {!settings.saved.length && <p className="text-sm text-muted-foreground">{t('opencodePermissions.noSaved')}</p>}
+      </section>
     </>}
   </div>;
 }

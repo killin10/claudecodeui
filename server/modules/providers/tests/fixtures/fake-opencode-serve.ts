@@ -111,6 +111,16 @@ const emit = (type: string, properties: Record<string, any>, location?: { direct
     type = 'form.created';
     properties = { form };
   }
+  if (type === 'session.shell.started') {
+    messages.set(`msg_${eventCounter + 1}`, {
+      id: `msg_${eventCounter + 1}`, type: 'shell', shellID: properties.shell.id,
+      command: properties.shell.command, status: 'running', time: { created: Date.now() },
+    });
+  }
+  if (type === 'session.shell.ended') {
+    const message = [...messages.values()].find((entry) => entry.shellID === properties.shell.id);
+    if (message) Object.assign(message, { status: properties.shell.status, exit: properties.shell.exit, output: properties.output });
+  }
   const data = JSON.stringify({ id: `evt_${++eventCounter}`, created: Date.now(), type, data: properties, ...(location ? { location } : {}) });
   for (const stream of streams) {
     stream.write(`data: ${data}\n\n`);
@@ -363,7 +373,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/session') {
     const id = scenario.newSessionId ?? 'ses_fake_new';
     sessions.set(id, { permission: (body as { permission?: PermissionRule[] } | undefined)?.permission });
-    sendJson(res, 200, { data: { id, title: 'New session' } });
+    sendJson(res, 200, { data: { id, projectID: 'prj_test', title: 'New session' } });
     return;
   }
 
@@ -381,7 +391,7 @@ const server = http.createServer(async (req, res) => {
       res.end();
       return;
     }
-    sendJson(res, 200, { data: { id: match[1], title: 'Session', ...session } });
+    sendJson(res, 200, { data: { id: match[1], projectID: 'prj_test', title: 'Session', ...session } });
     return;
   }
 

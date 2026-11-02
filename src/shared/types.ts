@@ -1766,12 +1766,15 @@ type SnippetHighlight = {
 /** One ordered native V2 permission rule, shared by the editor and source display. */
 export type OpenCodePermissionRule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' };
 
+/** Native project approval shown and edited by the permissions panel. */
+export type OpenCodeSavedPermission = { id: string; action: string; resource: string };
+
 /** Permission-only response for Settings; never contains other native configuration fields. */
 export type OpenCodePermissionSettings = {
   directory: string;
   editable: { path: string; revision: string; rules: OpenCodePermissionRule[] };
   sources: Array<{ path: string | null; rules: OpenCodePermissionRule[]; agents: Array<{ name: string; rules: OpenCodePermissionRule[] }> }>;
-  saved: Array<{ id: string; action: string; resource: string }>;
+  saved: OpenCodeSavedPermission[];
 };
 
 // ---------------------------
@@ -1794,6 +1797,8 @@ export type SkillsProject = {
 
 /** One skill available to a provider, carrying its slash command, description, originating scope and source path plus the owning plugin or project when it came from one. */
 export type ProviderSkill = {
+  /** Server-approved deletion target under the provider's own user Skill directory. */
+  managedDirectory?: string;
   provider: SkillsProvider;
   name: string;
   description: string;

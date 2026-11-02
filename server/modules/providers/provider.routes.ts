@@ -759,8 +759,10 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const workspacePath = readOptionalQueryString(req.query.workspacePath);
-    const skills = await providerSkillsService.listProviderSkills(provider, { workspacePath });
-    const invocations = await providerSkillsService.listProviderInvocations(provider, { workspacePath });
+    const [skills, invocations] = await Promise.all([
+      providerSkillsService.listProviderSkills(provider, { workspacePath }),
+      providerSkillsService.listProviderInvocations(provider, { workspacePath }),
+    ]);
     res.json(createApiSuccessResponse({ provider, skills, ...(invocations ? { invocations } : {}) }));
   }),
 );
@@ -883,6 +885,10 @@ router.get('/opencode/settings-permissions', asyncHandler(async (req: Request, r
 
 router.put('/opencode/settings-permissions', asyncHandler(async (req: Request, res: Response) => {
   res.json(createApiSuccessResponse(await opencodeSettingsPermissionsService.save(req.body)));
+}));
+
+router.put('/opencode/settings-permissions/saved', asyncHandler(async (req: Request, res: Response) => {
+  res.json(createApiSuccessResponse(await opencodeSettingsPermissionsService.changeSaved(req.body)));
 }));
 
 // ----------------- Session routes -----------------

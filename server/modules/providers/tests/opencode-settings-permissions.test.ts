@@ -60,3 +60,28 @@ test('permission settings filter secrets, preserve JSONC and reject stale/invali
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('saved approvals are scoped to the native project and stale/failed changes do not silently succeed', async () => {
+  let closed = 0;
+  let rule = { id: 'saved_one', action: 'shell', resource: 'pwd' };
+  const changes: unknown[] = [];
+  const service = createOpenCodeSettingsPermissionsService(async () => ({
+    server: { close: () => { closed++; } },
+    client: {
+      location: { get: async () => ({ project: { id: 'project_one' } }) },
+      permission: { saved: {
+        list: async (input: unknown) => { assert.deepEqual(input, { projectID: 'project_one' }); return [rule]; },
+        update: async (input: typeof rule) => { changes.push(input); rule = input; },
+        remove: async (input: { id: string }) => { changes.push(input); throw new Error('native failure'); },
+      } },
+    },
+  } as unknown as Awaited<ReturnType<typeof startOpenCodeServer>>));
+  const input = { id: rule.id, operation: 'update', workspacePath: '/project', expected: { action: 'shell', resource: 'pwd' }, rule: { action: 'shell', resource: 'git status' } };
+  await assert.rejects(service.changeSaved({ ...input, id: 'another_project_grant' }), /not found in this project/);
+  await service.changeSaved(input);
+  assert.deepEqual(rule, { id: 'saved_one', action: 'shell', resource: 'git status' });
+  await assert.rejects(service.changeSaved(input), /changed/);
+  await assert.rejects(service.changeSaved({ ...input, expected: rule, operation: 'remove' }), /native failure/);
+  assert.equal(closed, 4);
+  assert.equal(changes.length, 2);
+});

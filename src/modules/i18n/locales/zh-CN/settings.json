@@ -1,5 +1,7 @@
 {
   "opencodePermissions": {
+    "updateSaved": "修改授权",
+    "revoke": "撤销授权",
     "title": "OpenCode 权限",
     "description": "编辑 OpenCode 会话共用的用户规则。后面的匹配规则优先，Agent 和会话还可能附加规则。修改从新一轮对话开始生效。",
     "directory": "查看目录的规则",
@@ -662,5 +664,9 @@
     "installAriaLabel": "插件 git 仓库 URL",
     "tab": "标签",
     "runningStatus": "运行中"
+  },
+  "skillsPage": {
+    "remove": "删除 Skill",
+    "confirmRemove": "从 OpenCode 用户 Skill 目录删除 {{name}} 及其所有文件？"
   }
 }

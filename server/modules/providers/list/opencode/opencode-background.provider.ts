@@ -1,4 +1,4 @@
-import type { OpenCodeClient, SessionMessageInfo } from '@opencode/client';
+import type { OpenCodeClient, SessionMessageInfo, SessionShellStarted, SessionShellEnded } from '@opencode/client';
 
 import type { AnyRecord, BackgroundTaskSummary } from '@/shared/types.js';
 
@@ -10,6 +10,21 @@ export class OpenCodeBackgroundWork {
   private readonly deliveredCalls = new Set<string>();
   private readonly deliveredBeforeSnapshot = new Set<string>();
   private readonly followups = new Set<string>();
+  private readonly nativeShells = new Set<string>();
+
+  trackNativeShell(event: SessionShellStarted | SessionShellEnded, nested: boolean): void {
+    const shell = event.data.shell;
+    if (event.type === 'session.shell.ended') {
+      if (this.nativeShells.delete(shell.id)) this.tasks.delete(shell.id);
+      return;
+    }
+    if (shell.metadata.background !== true || this.tasks.has(shell.id)) return;
+    this.nativeShells.add(shell.id);
+    this.tasks.set(shell.id, {
+      taskId: shell.id, toolUseId: shell.id, taskType: 'shell', description: shell.command,
+      startedAt: event.created, ...(nested ? { nested: true } : {}),
+    });
+  }
 
   track(message: SessionMessageInfo, nested: boolean): void {
     if (message.type !== 'assistant') return;

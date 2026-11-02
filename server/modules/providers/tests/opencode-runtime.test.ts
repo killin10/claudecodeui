@@ -20,6 +20,7 @@ import type { ProviderPermissionDecision, ProviderRuntimeContext } from '@/share
 process.env.OPENCODE_TOOL_APPROVAL_TIMEOUT_MS = '1500';
 const {
   isCoveredByApprovals,
+  clearOpenCodeRememberedApprovals,
   opencodeRuntime,
   readQuestionAnswers,
   reapOrphanedOpenCodeServers,
@@ -1060,4 +1061,31 @@ test('a native command can carry a skill mention in its arguments', async () => 
     name: 'review', text: 'use /skill:checks',
     skills: [{ id: 'checks', mention: { start: 4, end: 17, text: '/skill:checks' } }],
   });
+});
+
+
+test('native Shell events forward the authoritative result under one history identity', async () => {
+  const shell = { id: 'shl_native', command: 'pwd', cwd: '/repo', shell: 'sh', file: '/tmp/output', status: 'running', metadata: {}, time: { started: 1 } };
+  const turn = await runTurn({ scenario: {
+    newSessionId: 'ses_native_shell', steps: [], events: [
+      { type: 'session.shell.started', data: { sessionID: 'ses_native_shell', shell } },
+      { type: 'session.shell.ended', data: { sessionID: 'ses_native_shell', shell: { ...shell, status: 'exited', exit: 0 }, output: { output: '/repo', size: 5, cursor: 5, truncated: false } } },
+    ],
+  } });
+  assert.equal(turn.error, null);
+  const rows = turn.frames.filter((frame) => frame.toolId === shell.id);
+  assert.ok(rows.length > 0);
+  assert.equal(new Set(rows.map((row) => row.id)).size, 1);
+  assert.equal(rows.at(-1)?.toolResult.content, '/repo');
+});
+
+test('revoking project approvals invalidates remembered chat approvals', async () => {
+  const scenario = { newSessionId: 'ses_revoke', steps: [permissionStep(['pwd'], ['pwd'], 'shell', 'per_revoke')] };
+  await runTurn({ scenario, appSessionId: 'app-revoke', onFrame: (frame) => frame.kind === 'permission_request' ? { allow: true, rememberEntry: 'always' } : undefined });
+  clearOpenCodeRememberedApprovals('another_project');
+  const remembered = await runTurn({ scenario, appSessionId: 'app-revoke' });
+  assert.equal(remembered.frames.some((frame) => frame.kind === 'permission_request'), false);
+  clearOpenCodeRememberedApprovals('prj_test');
+  const revoked = await runTurn({ scenario, appSessionId: 'app-revoke', onFrame: (frame) => frame.kind === 'permission_request' ? { allow: false } : undefined });
+  assert.equal(revoked.frames.some((frame) => frame.kind === 'permission_request'), true);
 });

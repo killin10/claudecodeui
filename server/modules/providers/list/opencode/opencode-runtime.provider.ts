@@ -150,6 +150,28 @@ const pendingPrompts = new Map<string, PendingOpenCodePrompt>();
 // This per-chat cache also covers requests without save resources; those
 // fallback approvals last only until CloudCLI restarts or evicts the chat.
 const rememberedApprovals = new Map<string, RememberedApproval[]>();
+const approvalProjects = new Map<string, string>();
+
+/** Settings clears fallback approvals after changing native saved grants so a cached allow cannot undo revocation. */
+export function clearOpenCodeRememberedApprovals(projectId: string): void {
+  for (const [chat, project] of approvalProjects) {
+    if (project !== projectId) continue;
+    rememberedApprovals.delete(chat);
+    approvalProjects.delete(chat);
+  }
+}
+
+function findShellMessageId(sessionId: string, shellId: string): string {
+  const db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
+  try {
+    const row = db.prepare("SELECT id FROM session_message WHERE session_id = ? AND type = 'shell' AND json_extract(data, '$.shellID') = ?")
+      .get(sessionId, shellId) as { id: string } | undefined;
+    if (!row) throw new Error(`OpenCode shell message not found: ${shellId}`);
+    return row.id;
+  } finally {
+    db.close();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Permission modes and model options
@@ -289,6 +311,7 @@ function rememberApprovals(chatKey: string, permission: string, patterns: string
       break;
     }
     rememberedApprovals.delete(oldestKey);
+    approvalProjects.delete(oldestKey);
   }
 }
 
@@ -592,6 +615,7 @@ async function runOpenCodeTurn(
   // "Always allow" is remembered per chat; direct callers without an app id
   // fall back to the OpenCode session.
   const approvalsKey = () => appSessionId ?? turn.providerSessionId ?? turn.key;
+  let approvalProjectId: string | undefined;
   const send = (message: unknown) => writer.send(message);
   const sentErrors = new Set<string>();
   const sendError = (content: string) => {
@@ -612,6 +636,7 @@ async function runOpenCodeTurn(
 
   const turnPromptIds = new Set<string>();
   const projector = new OpenCodeEventProjector(turnSessionId, send, context.normalizeMessage);
+  const shellMessageIds = new Map<string, string>();
   const forms = new Map<string, FormInfo>();
   const formDirectories = new Map<string, string>();
   const ownedSessions = new Set(resumeSessionId ? [resumeSessionId] : []);
@@ -847,6 +872,7 @@ async function runOpenCodeTurn(
         const reply = toOpenCodePermissionReply(decision);
         if (reply === 'always') {
           rememberApprovals(approvalsKey(), request.action, (request.save ?? request.resources));
+          if (approvalProjectId && rememberedApprovals.has(approvalsKey())) approvalProjects.set(approvalsKey(), approvalProjectId);
         }
         void replyToPermission(request.id, reply);
       },
@@ -952,6 +978,18 @@ async function runOpenCodeTurn(
     });
   };
 
+  const forwardShell = (event: Extract<OpenCodeEvent, { type: 'session.shell.started' | 'session.shell.ended' }>, parentToolUseId?: string) => {
+    const { shell, sessionID } = event.data;
+    const key = `${sessionID}:${shell.id}`;
+    const messageId = event.type === 'session.shell.started'
+      ? event.id.replace(/^evt_/, 'msg_')
+      : shellMessageIds.get(key) ?? findShellMessageId(sessionID, shell.id);
+    shellMessageIds.set(key, messageId);
+    turn.work.trackNativeShell(event, Boolean(parentToolUseId));
+    forwardMessage(messageId, undefined, sessionID, parentToolUseId);
+    if (event.type === 'session.shell.ended') void messageQueue.then(settleBackground);
+  };
+
   const handleChildEvent = async (event: OpenCodeEvent) => {
     const data = event.data as AnyRecord;
     await messageQueue;
@@ -964,6 +1002,10 @@ async function runOpenCodeTurn(
       }
       if (childProjector.handle(event)) return;
       switch (event.type) {
+        case 'session.shell.started':
+        case 'session.shell.ended':
+          forwardShell(event, parentToolUseId);
+          break;
         case 'session.text.ended':
         case 'session.reasoning.ended':
         case 'session.tool.called':
@@ -997,6 +1039,10 @@ async function runOpenCodeTurn(
   const handleRootEvent = async (event: OpenCodeEvent) => {
     const data = event.data as AnyRecord;
     switch (event.type) {
+      case 'session.shell.started':
+      case 'session.shell.ended':
+        forwardShell(event);
+        return;
       case 'permission.replied':
         pendingPrompts.get(event.data.requestID)?.settle();
         return;
@@ -1171,6 +1217,7 @@ async function runOpenCodeTurn(
     const requestOptions = { signal: turn.abortController.signal };
     if (turn.providerSessionId) {
       const existing = await client.session.get({ sessionID: turn.providerSessionId }, requestOptions);
+      approvalProjectId = existing.projectID;
       // Preserve a native custom agent on ordinary resume. Leaving a plan entered
       // through CloudCLI restores its previous agent.
       const previousAgent = existing.metadata?.cloudcliPreviousAgent;
@@ -1196,6 +1243,7 @@ async function runOpenCodeTurn(
         metadata,
       }, requestOptions);
       registerProviderSession(created.id);
+      approvalProjectId = created.projectID;
     }
     if (turn.aborted) throw new Error('aborted');
     await recordOpenCodeContextWindows(client, turn.providerSessionId!, workingDir, turn.abortController.signal)
