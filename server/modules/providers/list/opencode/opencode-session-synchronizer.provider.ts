@@ -138,7 +138,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
   private upsertSession(db: Database.Database, row: OpenCodeSessionRow): string | null {
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
-    if (!sessionId || !projectPath) {
+    if (!sessionId || !projectPath || sessionsDb.isProviderSessionSuperseded(sessionId, this.provider)) {
       return null;
     }
 

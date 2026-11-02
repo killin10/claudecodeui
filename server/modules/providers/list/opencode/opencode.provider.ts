@@ -1,3 +1,4 @@
+import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { OpenCodeProviderAuth } from '@/modules/providers/list/opencode/opencode-auth.provider.js';
 import { OpenCodeProviderModels } from '@/modules/providers/list/opencode/opencode-models.provider.js';
 import { opencodeRuntime } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
@@ -16,6 +17,7 @@ import type {
 } from '@/shared/interfaces.js';
 
 export class OpenCodeProvider extends AbstractProvider {
+  readonly fork = new OpenCodeForkProvider();
   readonly runtime: IProviderRuntime = opencodeRuntime;
   readonly models: IProviderModels = new OpenCodeProviderModels();
   readonly mcp = new OpenCodeMcpProvider();

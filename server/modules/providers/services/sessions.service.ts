@@ -122,9 +122,13 @@ async function deleteSessionArtifacts(session: NonNullable<ReturnType<typeof ses
   if (adapter.deleteSessionData) {
     // A draft has no native session yet. Never substitute its app id or unlink
     // a path for a provider whose sessions live in a shared database.
-    return session.provider_session_id
-      ? adapter.deleteSessionData(session.provider_session_id)
-      : false;
+    const nativeIds = new Set([
+      ...(session.provider_session_id ? [session.provider_session_id] : []),
+      ...sessionsDb.getSupersededProviderSessionIds(session.session_id, session.provider),
+    ]);
+    let removed = false;
+    for (const id of nativeIds) removed = (await adapter.deleteSessionData(id)) || removed;
+    return removed;
   }
 
   // Editing can leave earlier transcripts behind, so remove every recorded
@@ -363,7 +367,7 @@ export const sessionsService = {
 
     // A session that has never run has no transcript to copy, so there is
     // nothing a fork of it could resume from.
-    if (!source.provider_session_id || !source.jsonl_path) {
+    if (!source.provider_session_id || (fork.requiresTranscriptFile !== false && !source.jsonl_path)) {
       throw new AppError('This session has not produced a transcript yet.', {
         code: 'FORK_SOURCE_NOT_READY',
         statusCode: 409,

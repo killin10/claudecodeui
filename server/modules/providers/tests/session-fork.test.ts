@@ -171,3 +171,26 @@ test('forking a session that does not exist is a 404', async () => {
     );
   });
 });
+
+
+test('database-backed forks do not require a transcript file and retain their source link', async () => {
+  await withForkableClaude(async ({ directory }) => {
+    const opencode = providerRegistry.resolveProvider('opencode') as { fork?: IProviderFork };
+    const original = opencode.fork;
+    opencode.fork = {
+      requiresTranscriptFile: false,
+      forkSession: async () => ({ providerSessionId: 'ses_fork', jsonlPath: null }),
+    };
+    try {
+      sessionsDb.createAppSession('app_database_source', 'opencode', directory);
+      sessionsDb.assignProviderSessionId('app_database_source', 'ses_source');
+      const result = await sessionsService.forkSessionById('app_database_source');
+      const fork = sessionsDb.getSessionById(result.sessionId);
+      assert.equal(fork?.jsonl_path, null);
+      assert.equal(fork?.provider_session_id, 'ses_fork');
+      assert.equal(fork?.forked_from_session_id, 'app_database_source');
+    } finally {
+      opencode.fork = original;
+    }
+  });
+});

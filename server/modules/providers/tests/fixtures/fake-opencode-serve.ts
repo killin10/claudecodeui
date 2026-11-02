@@ -20,6 +20,7 @@ type Step =
   | { type: 'question'; id: string; sessionID?: string; questions: unknown[] }
   | { type: 'form'; form: FormInfo; directory: string }
   | { type: 'interrupt' }
+  | { type: 'background'; childID: string }
   /** Several requests asked at once; a reject of one rejects the rest, as OpenCode does. */
   | { type: 'parallel-permissions'; requests: Array<{ id: string; permission: string; patterns: string[]; always: string[] }> }
   | { type: 'error'; name: string; message: string }
@@ -30,10 +31,11 @@ type Scenario = {
   /** Id given to a session created through POST /session. */
   newSessionId?: string;
   /** Sessions GET /session/:id knows; any other id answers 404. */
-  sessions?: Record<string, { permission?: PermissionRule[]; parentID?: string }>;
+  sessions?: Record<string, { permission?: PermissionRule[]; parentID?: string; agent?: string }>;
   events?: Array<{ type: string; data: Record<string, unknown>; location?: { directory: string } }>;
   agents?: Array<{ name: string; permission: PermissionRule[] }>;
   defaultAgent?: string;
+  messages?: Record<string, any>;
   /** Answered with a status instead of 204, as OpenCode does for a bad prompt. */
   promptStatus?: number;
   /** Version /global/health reports; null makes the route missing, as before OpenCode 1.0.224. */
@@ -78,7 +80,7 @@ let turnAborted: (() => void) | null = null;
 
 const forms = new Map<string, any>();
 const formDirectories = new Map<string, string>();
-const messages = new Map<string, any>();
+const messages = new Map<string, any>(Object.entries(scenario.messages ?? {}));
 const emit = (type: string, properties: Record<string, any>, location?: { directory: string }) => {
   if (type === 'message.updated') return;
   if (type === 'session.error') {
@@ -167,6 +169,15 @@ async function runTurn(sessionID: string): Promise<void> {
   emit('message.updated', { sessionID, info: { id: 'msg_assistant', sessionID, role: 'assistant' } });
 
   for (const step of scenario.steps) {
+    if (step.type === 'background') {
+      sessions.set(step.childID, { parentID: sessionID });
+      emit('session.created', { sessionID: step.childID, parentID: sessionID });
+      emit('session.execution.started', { sessionID: step.childID });
+      emit('session.execution.succeeded', { sessionID });
+      await aborted;
+      emit('session.execution.interrupted', { sessionID: step.childID, reason: 'user' });
+      return;
+    }
     if (step.type === 'interrupt') {
       emit('session.execution.interrupted', { sessionID, reason: 'user' });
       return;
@@ -320,7 +331,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if ((match = /^\/session\/([^/]+)$/.exec(path))) {
+  if (path !== '/session/active' && (match = /^\/session\/([^/]+)$/.exec(path))) {
     const session = sessions.get(match[1]);
     if (!session) {
       sendJson(res, 404, { name: 'NotFoundError', data: { message: `Session not found: ${match[1]}` } });
@@ -329,8 +340,17 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PATCH') {
       const added = (body as { permission?: PermissionRule[] } | undefined)?.permission ?? [];
       session.permission = [...(session.permission ?? []), ...added];
+      Object.assign(session, body);
+      res.writeHead(204);
+      res.end();
+      return;
     }
     sendJson(res, 200, { data: { id: match[1], title: 'Session', ...session } });
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/session/active') {
+    sendJson(res, 200, { data: {} });
     return;
   }
 

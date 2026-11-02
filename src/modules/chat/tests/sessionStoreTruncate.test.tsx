@@ -224,3 +224,15 @@ describe('truncateAt', () => {
     );
   });
 });
+
+
+it('replaces V2 snapshots in place, including a row previously loaded from history', async () => {
+  const { result } = await loadedStore();
+  act(() => {
+    result.current.appendRealtime('session-1', { ...row('2', 'Partial'), provider: 'opencode' });
+    result.current.appendRealtime('session-1', { ...row('2', 'Complete reply'), provider: 'opencode' });
+  });
+  const messages = result.current.getMessages('session-1');
+  assert.equal(messages.length, 4);
+  assert.equal(messages[1].content, 'Complete reply');
+});

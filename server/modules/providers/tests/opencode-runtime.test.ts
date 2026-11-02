@@ -343,7 +343,7 @@ test('a new session runs on a private, authenticated server that stops with the 
   assert.ok(await waitForExit(turn.serverPid!), 'the turn\'s server process is gone');
 });
 
-test('an attachment-only message sends the attachment list as the prompt', async () => {
+test('an attachment-only message uses V2 native files', async () => {
   const turn = await runTurn({
     command: '',
     files: [{ path: path.join(projectDir, 'brief.pdf'), name: 'brief.pdf', mimeType: 'application/pdf' }],
@@ -352,8 +352,8 @@ test('an attachment-only message sends the attachment list as the prompt', async
 
   assert.equal(turn.error, null);
   const prompt = findRequest(turn.requests, 'POST', /\/prompt$/);
-  assert.match(prompt?.body.text, /<files_input>/);
-  assert.match(prompt?.body.text, /brief\.pdf/);
+  assert.equal(prompt?.body.text, '');
+  assert.deepEqual(prompt?.body.files, [{ uri: new URL(`file://${projectDir}/brief.pdf`).href, name: 'brief.pdf' }]);
 });
 
 test('a permission request reaches the chat and is answered once', async () => {
@@ -486,9 +486,10 @@ test('acceptEdits approves file edits and still asks for everything else', async
 });
 
 test('plan mode prompts the plan agent', async () => {
-  const turn = await runTurn({ permissionMode: 'plan', scenario: { steps: [{ type: 'text', text: 'a plan' }] } });
+  const turn = await runTurn({ permissionMode: 'plan', scenario: { defaultAgent: 'review', steps: [{ type: 'text', text: 'a plan' }] } });
 
   assert.equal(findRequest(turn.requests, 'POST', /^\/api\/session$/)?.body.agent, 'plan');
+  assert.equal(findRequest(turn.requests, 'POST', /^\/api\/session$/)?.body.metadata.cloudcliPreviousAgent, 'review');
 });
 
 test('normal mode uses the configured V2 default agent', async () => {
@@ -802,4 +803,81 @@ test('question answers are read as one label list per question', () => {
   assert.deepEqual(readQuestionAnswers({ answers: [['Red']] }, questions), [['Red'], []]);
   assert.deepEqual(readQuestionAnswers({ answers: { 'Which color?': 'Blue', 'Which sizes?': '' } }, questions), [['Blue'], []]);
   assert.deepEqual(readQuestionAnswers(undefined, questions), [[], []]);
+});
+
+
+test('ordinary resume preserves a native custom agent', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_custom',
+    scenario: { sessions: { ses_custom: { agent: 'reviewer' } }, steps: [] },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/agent$/), undefined);
+});
+
+test('text deltas and tool start events reach the chat before completion', async () => {
+  const turn = await runTurn({
+    scenario: {
+      messages: { msg_running: { id: 'msg_running', type: 'assistant', time: { created: 1 }, content: [
+        { type: 'tool', id: 'tool_1', name: 'shell', state: { status: 'running', input: { command: 'sleep 5' } } },
+      ] } },
+      events: [
+        { type: 'session.text.delta', data: { sessionID: 'ses_fake_new', assistantMessageID: 'msg_stream', ordinal: 0, delta: 'Hello' } },
+        { type: 'session.text.delta', data: { sessionID: 'ses_fake_new', assistantMessageID: 'msg_stream', ordinal: 0, delta: ' world' } },
+        { type: 'session.tool.called', data: { sessionID: 'ses_fake_new', assistantMessageID: 'msg_running', id: 'tool_1' } },
+        { type: 'session.tool.progress', data: { sessionID: 'ses_fake_new', assistantMessageID: 'msg_running', id: 'tool_1', metadata: { output: 'working' } } },
+      ], steps: [],
+    },
+  });
+  assert.equal(turn.error, null);
+  assert.deepEqual(turn.frames.filter((f) => f.id === 'msg_stream_text_0').map((f) => f.content), ['Hello', 'Hello world']);
+  assert.ok(turn.frames.some((f) => f.kind === 'tool_use' && f.toolId === 'tool_1' && !f.toolResult));
+  assert.ok(turn.frames.some((f) => f.toolProgress === 'working'));
+});
+
+
+test('background children survive the foreground complete and can be stopped individually', async () => {
+  let tasks: unknown[] = [];
+  let stopping: Promise<boolean> | undefined;
+  const turn = await runTurn({
+    appSessionId: 'app-background',
+    scenario: { steps: [{ type: 'background', childID: 'ses_background' }] },
+    onFrame(frame) {
+      if (frame.kind === 'complete') {
+        tasks = opencodeRuntime.listBackgroundWork();
+        stopping = opencodeRuntime.stopBackgroundTask('app-background', 'ses_background');
+      }
+    },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(await stopping, true);
+  assert.equal(tasks.length, 1);
+  assert.equal(turn.frames.filter((f) => f.kind === 'complete').length, 1);
+  assert.ok(findRequest(turn.requests, 'POST', /\/ses_background\/interrupt$/));
+  assert.deepEqual(opencodeRuntime.listBackgroundWork(), []);
+  assert.ok(await waitForExit(turn.serverPid!));
+});
+
+
+test('a native plan session is preserved unless CloudCLI previously switched it into plan', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_plan', permissionMode: 'default',
+    scenario: { sessions: { ses_plan: { agent: 'plan' } }, steps: [] },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/agent$/), undefined);
+});
+
+test('leaving a CloudCLI plan restores the saved agent instead of the current default', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_plan', permissionMode: 'default',
+    scenario: {
+      defaultAgent: 'build',
+      sessions: { ses_plan: { agent: 'plan', metadata: { cloudcliPreviousAgent: 'reviewer' } } },
+      steps: [],
+    },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/agent$/)?.body.agent, 'reviewer');
+  assert.equal(findRequest(turn.requests, 'PATCH', /\/ses_plan$/)?.body.metadata.cloudcliPreviousAgent, null);
 });

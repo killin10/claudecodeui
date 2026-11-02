@@ -349,3 +349,37 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+
+test('OpenCode discovers XDG, ancestor and .opencode sources with JSONC precedence and edits their origin', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-config-discovery-'));
+  const workspacePath = path.join(root, 'project', 'nested');
+  const configRoot = path.join(root, 'xdg');
+  const globalFile = path.join(configRoot, 'opencode', 'opencode.jsonc');
+  const ancestorFile = path.join(root, 'project', 'opencode.json');
+  const localFile = path.join(workspacePath, '.opencode', 'opencode.jsonc');
+  const previousXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = configRoot;
+  const remote = (url: string) => ({ type: 'remote', url });
+  try {
+    await fs.mkdir(path.dirname(globalFile), { recursive: true });
+    await fs.mkdir(path.dirname(localFile), { recursive: true });
+    await fs.writeFile(globalFile, JSON.stringify({ mcp: { servers: { global: remote('https://global.invalid') } } }));
+    await fs.writeFile(ancestorFile, JSON.stringify({ mcp: { servers: { inherited: remote('https://parent.invalid'), duplicate: remote('https://old.invalid') } } }));
+    await fs.writeFile(localFile, JSON.stringify({ default_agent: 'review', mcp: { servers: { duplicate: remote('https://new.invalid') } } }));
+    const grouped = await providerMcpService.listProviderMcpServers('opencode', { workspacePath });
+    assert.equal(grouped.user.find((s) => s.name === 'global')?.sourcePath, globalFile);
+    assert.equal(grouped.project.find((s) => s.name === 'inherited')?.sourcePath, ancestorFile);
+    assert.equal(grouped.project.find((s) => s.name === 'duplicate')?.url, 'https://new.invalid');
+    await providerMcpService.upsertProviderMcpServer('opencode', { name: 'duplicate', scope: 'project', transport: 'http', url: 'https://edited.invalid', workspacePath });
+    assert.equal((await readJson(localFile)).default_agent, 'review');
+    await providerMcpService.removeProviderMcpServer('opencode', { name: 'duplicate', scope: 'project', workspacePath });
+    const after = await providerMcpService.listProviderMcpServers('opencode', { workspacePath });
+    assert.equal(after.project.some((s) => s.name === 'duplicate'), false);
+    assert.ok(after.project.some((s) => s.name === 'inherited'));
+  } finally {
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

@@ -1,8 +1,10 @@
 import fsSync from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
 import { isSessionNotFoundError } from '@opencode/client';
 
+import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { isOpenCodeSessionActive } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
 import { startOpenCodeServer } from '@/modules/providers/list/opencode/opencode-server.provider.js';
 import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
@@ -64,9 +66,12 @@ function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
       : [];
   }
   if (message.type === 'user') {
-    return [{ ...base, part_id: '0', part_time_created: created, part_data: JSON.stringify({ type: 'text', text: message.text }) }];
+    return [{ ...base, part_id: '0', part_time_created: created, part_data: JSON.stringify({ type: 'text', text: message.text, attachments: message.files }) }];
   }
-  if (message.type !== 'assistant') return [];
+  if (message.type !== 'assistant') {
+    return [{ ...base, part_id: '0', part_time_created: created, part_data: JSON.stringify(message) }];
+  }
+  const ordinals = { text: 0, reasoning: 0 };
   const rows = (message.content ?? []).map((part: AnyRecord, index: number) => {
     const state = part.state ?? {};
     const output = state.status !== 'error' && Array.isArray(state.content)
@@ -76,7 +81,8 @@ function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
       ? { ...part, tool: part.name, callID: part.id, state: { ...state, output, error: state.error?.message ?? state.error } }
       : part;
     return {
-      ...base, part_id: String(index), part_time_created: created,
+      ...base, part_id: part.type === 'text' || part.type === 'reasoning'
+        ? `${part.type}_${ordinals[part.type as 'text' | 'reasoning']++}` : String(index), part_time_created: created,
       part_data: JSON.stringify(normalizedPart),
     };
   });
@@ -87,6 +93,59 @@ function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
     rows.push({ ...base, part_id: 'end', part_time_created: created, part_data: JSON.stringify({ type: 'step-finish' }) });
   }
   return rows;
+}
+
+function nativeAttachments(value: unknown): { images: AnyRecord[]; files: AnyRecord[] } {
+  const result: { images: AnyRecord[]; files: AnyRecord[] } = { images: [], files: [] };
+  for (const item of Array.isArray(value) ? value : []) {
+    const attachment = readObjectRecord(item);
+    if (!attachment || typeof attachment.mime !== 'string' || typeof attachment.data !== 'string') continue;
+    const descriptor: AnyRecord = {
+      name: attachment.name,
+      mimeType: attachment.mime,
+      data: `data:${attachment.mime};base64,${attachment.data}`,
+    };
+    const uri = attachment.source?.type === 'uri' ? attachment.source.uri : undefined;
+    if (typeof uri === 'string' && uri.startsWith('file:')) descriptor.path = fileURLToPath(uri);
+    (attachment.mime.startsWith('image/') ? result.images : result.files).push(descriptor);
+  }
+  return result;
+}
+
+function normalizeSpecialMessage(part: AnyRecord, base: Pick<NormalizedMessage, 'id' | 'sessionId' | 'timestamp' | 'provider'>): NormalizedMessage | null {
+  switch (part.type) {
+    case 'compaction': {
+      const phase = part.status === 'running' ? 'running' : part.status === 'failed' ? 'failed' : 'done';
+      const error = readEventError(part.error);
+      return createNormalizedMessage({
+        ...base, kind: 'text', role: 'assistant',
+        content: phase === 'running' ? 'Compacting conversation…'
+          : phase === 'failed' ? `Compaction failed: ${error ?? 'Unknown error'}` : part.summary || 'Conversation compacted',
+        compact: { phase, trigger: part.reason, ...(error ? { error } : {}) },
+      });
+    }
+    case 'shell':
+      return createNormalizedMessage({
+        ...base, kind: 'tool_use', toolName: 'shell', toolId: part.shellID,
+        toolInput: { command: part.command },
+        ...(part.status !== 'running' ? { toolResult: {
+          content: part.output?.output ?? '', isError: part.status !== 'exited' || part.exit !== 0,
+        } } : {}),
+      });
+    case 'skill':
+      return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: `Skill: ${part.name}\n${part.text ?? ''}` });
+    case 'system':
+    case 'synthetic':
+      return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: part.text ?? '' });
+    case 'agent-switched':
+      return createNormalizedMessage({ ...base, kind: 'status', text: `Agent: ${part.agent}` });
+    case 'model-switched':
+      return createNormalizedMessage({ ...base, kind: 'status', text: `Model: ${part.model?.providerID}/${part.model?.id}` });
+    case 'location-switched':
+      return createNormalizedMessage({ ...base, kind: 'status', text: `Directory: ${part.location?.directory ?? ''}` });
+    default:
+      return null;
+  }
 }
 
 function readHistoryRows(db: Database.Database, sessionId: string): OpenCodeHistoryRow[] {
@@ -369,6 +428,15 @@ const attachOpenCodeSubagent = (
   let status: SubagentInfo['status'] = runIsLive ? 'running' : 'stopped';
   if (metadata.interrupted === true) {
     status = 'stopped';
+  } else if (metadata.status === 'running' && childSessionId) {
+    status = isOpenCodeSessionActive(childSessionId) ? 'running' : 'stopped';
+    if (status === 'stopped' && db) {
+      const idle = db.prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'idle' ORDER BY seq DESC LIMIT 1")
+        .get(childSessionId) as { data: string } | undefined;
+      const outcome = readJsonRecord(idle?.data)?.outcome;
+      if (outcome === 'succeeded') status = 'completed';
+      if (outcome === 'failed') status = 'failed';
+    }
   } else if (toolResult) {
     status = toolResult.isError ? 'failed' : 'completed';
   }
@@ -417,6 +485,16 @@ const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
 
 /** Used by the OpenCode provider to render V2 messages consistently in live chat and history. */
 export class OpenCodeSessionsProvider implements IProviderSessions {
+  private readonly branches = new OpenCodeForkProvider();
+
+  resolveEditAnchor(sessionId: string, anchorId: string) {
+    return this.branches.resolveEditAnchor(sessionId, anchorId);
+  }
+
+  rewindSession(sessionId: string, keepThroughId: string | null) {
+    return this.branches.rewindSession(sessionId, keepThroughId);
+  }
+
   /** Used by Providers deletion to remove the native session, including children. */
   async deleteSessionData(providerSessionId: string): Promise<boolean> {
     const signal = AbortSignal.timeout(90_000);
@@ -532,6 +610,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         continue;
       }
 
+      const special = normalizeSpecialMessage(partData, { id: baseId, sessionId, timestamp, provider: PROVIDER });
+      if (special) {
+        normalized.push(special);
+        continue;
+      }
+
       if (partType === 'text') {
         const rawContent = extractText(partData);
         // User prompts sent with attachments carry an <images_input> path
@@ -542,10 +626,13 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         const parsedFiles = messageRole === 'user'
           ? parseFilesInputTag(parsedImages.text)
           : { text: rawContent, attachments: [] };
+        const native = nativeAttachments(partData.attachments);
+        const images = [...parsedImages.attachments, ...native.images];
+        const files = [...parsedFiles.attachments, ...native.files];
         if (
           parsedFiles.text.trim()
-          || parsedImages.attachments.length > 0
-          || parsedFiles.attachments.length > 0
+          || images.length > 0
+          || files.length > 0
         ) {
           normalized.push(createNormalizedMessage({
             id: baseId,
@@ -555,8 +642,9 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
             kind: 'text',
             role: messageRole === 'user' ? 'user' : 'assistant',
             content: parsedFiles.text,
-            images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
-            files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
+            images: images.length > 0 ? images : undefined,
+            files: files.length > 0 ? files : undefined,
+            ...(messageRole === 'user' ? { transcriptAnchorId: row.message_id } : {}),
           }));
         }
         continue;
@@ -589,6 +677,10 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           toolName: readOptionalString(partData.tool) ?? 'Tool',
           toolInput: state.input ?? partData.input ?? {},
           toolId: readOptionalString(partData.callID) ?? row.part_id,
+          status,
+          toolProgress: status === 'running'
+            ? readOptionalString(state.metadata?.output) ?? readOptionalString(state.metadata?.description) ?? readOptionalString(state.metadata?.title)
+            : undefined,
         });
 
         if (status === 'completed' || status === 'error') {

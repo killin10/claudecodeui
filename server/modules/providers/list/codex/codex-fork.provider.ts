@@ -18,7 +18,7 @@ import type { IProviderFork } from '@/shared/interfaces.js';
 export class CodexForkProvider implements IProviderFork {
   async forkSession(input: {
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     projectPath: string;
     upToAnchorId?: string;
     title?: string;

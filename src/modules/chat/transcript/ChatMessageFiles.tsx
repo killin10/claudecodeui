@@ -25,13 +25,22 @@ const getFileIcon = (file: ChatAttachment) => {
 };
 
 function ChatMessageFile({ file }: { file: ChatAttachment }) {
+  // Prevent concurrent downloads while the authenticated asset request is pending.
   const [isDownloading, setIsDownloading] = useState(false);
   const name = file.name || file.path?.split(/[\\/]/).pop() || 'Attached file';
   const FileTypeIcon = getFileIcon(file);
   const size = formatFileSize(file.size);
 
   const download = async () => {
-    if (!file.path || isDownloading) return;
+    if (isDownloading) return;
+    if (file.data?.startsWith('data:')) {
+      const anchor = document.createElement('a');
+      anchor.href = file.data;
+      anchor.download = name;
+      anchor.click();
+      return;
+    }
+    if (!file.path) return;
     const storedName = file.path.split(/[\\/]/).pop();
     if (!storedName) return;
 
@@ -56,7 +65,7 @@ function ChatMessageFile({ file }: { file: ChatAttachment }) {
     <button
       type="button"
       onClick={() => void download()}
-      disabled={!file.path || isDownloading}
+      disabled={(!file.path && !file.data) || isDownloading}
       className="group/file flex w-64 max-w-full items-center gap-3 rounded-xl border border-border/50 bg-card px-3 py-2.5 text-left shadow-sm transition-colors hover:bg-accent/60 disabled:cursor-default disabled:hover:bg-card"
       aria-label={`Download ${name}`}
     >

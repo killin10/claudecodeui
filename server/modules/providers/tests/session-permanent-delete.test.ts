@@ -97,6 +97,28 @@ test('native deletion failure preserves the index and is retryable', async () =>
   });
 });
 
+test('permanent deletion removes superseded native branches without touching another conversation', async () => {
+  await withStore(async ({ root, native, synchronizer }) => {
+    const insert = native.prepare('INSERT INTO session_v2 (id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?)');
+    insert.run('ses_old', root, 'Before edit', 1700000000000, 1700000000000);
+    insert.run('ses_other', root, 'Another conversation', 1700000000000, 1700000000000);
+    sessionsDb.markProviderSessionSuperseded({
+      providerSessionId: 'ses_old', provider: 'opencode', sessionId: 'app-delete', jsonlPath: null,
+    });
+    const deleted: string[] = [];
+    providerRegistry.resolveProvider('opencode').sessions.deleteSessionData = async (id) => {
+      deleted.push(id);
+      return native.prepare('DELETE FROM session_v2 WHERE id = ?').run(id).changes > 0;
+    };
+    await sessionsService.deleteOrArchiveSessionById('app-delete', { force: true, deletedFromDisk: true });
+    assert.deepEqual(deleted.sort(), ['ses_delete', 'ses_old']);
+    assert.deepEqual(native.prepare('SELECT id FROM session_v2').all(), [{ id: 'ses_other' }]);
+    await synchronizer.synchronize();
+    assert.equal(sessionsDb.getSessionByProviderSessionId('ses_old'), null);
+    assert.ok(sessionsDb.getSessionByProviderSessionId('ses_other'));
+  });
+});
+
 test('archive and draft deletion do not delete native data', async () => {
   await withStore(async ({ root, native }) => {
     providerRegistry.resolveProvider('opencode').sessions.deleteSessionData = async () => {

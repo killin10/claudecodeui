@@ -118,8 +118,8 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // Passed on as OpenCode's model `variant`. `thinking` (MiniMax's on/off
     // variant, paired with `none`) is not a strength, so it sorts last.
     effortLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'],
-    supportsMessageEditing: false,
-    supportsSessionForking: false,
+    supportsMessageEditing: true,
+    supportsSessionForking: true,
   },
 };
 

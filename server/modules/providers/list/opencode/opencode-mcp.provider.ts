@@ -23,8 +23,9 @@ const fileExists = async (filePath: string): Promise<boolean> => {
   try {
     await access(filePath);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
   }
 };
 
@@ -59,22 +60,68 @@ function normalizeStoredServer(raw: unknown): unknown {
   };
 }
 
+const globalConfigDirectory = () => path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
+
+async function configSources(scope: McpScope, workspacePath: string): Promise<string[]> {
+  const names = ['opencode.json', 'opencode.jsonc'];
+  if (scope === 'user') return names.map((name) => path.join(globalConfigDirectory(), name));
+  const ancestors: string[] = [];
+  for (let directory = path.resolve(workspacePath); ; directory = path.dirname(directory)) {
+    ancestors.unshift(directory);
+    if (path.dirname(directory) === directory) break;
+  }
+  // V2 loads direct ancestor files first, then .opencode directories, each
+  // from root to leaf. JSONC outranks JSON within a directory.
+  const direct = ancestors.flatMap((directory) => names.map((name) => path.join(directory, name)));
+  const supplementary = ancestors.flatMap((directory) => names.map((name) => path.join(directory, '.opencode', name)));
+  return [...(process.env.OPENCODE_CONFIG ? [path.resolve(process.env.OPENCODE_CONFIG)] : []), ...direct, ...supplementary]
+    .filter((file) => path.dirname(file) !== globalConfigDirectory());
+}
+
+function serversIn(config: Record<string, unknown>): Record<string, unknown> {
+  const mcp = readObjectRecord(config.mcp) ?? {};
+  return 'servers' in mcp || 'timeout' in mcp ? readObjectRecord(mcp.servers) ?? {} : mcp;
+}
+
+async function sourceFilesForChange(
+  name: string,
+  value: unknown,
+  sourcePath: string,
+  scope: McpScope,
+  workspacePath: string,
+): Promise<string[]> {
+  if (value !== undefined) return [sourcePath];
+  // Removing only the winning definition would reveal a lower-priority duplicate.
+  const sources = new Set([sourcePath]);
+  for (const candidate of await configSources(scope, workspacePath)) {
+    if (Object.hasOwn(serversIn(await readOpenCodeConfig(candidate)), name)) sources.add(candidate);
+  }
+  return [...sources];
+}
+
+async function applyServerChanges(filePath: string, entries: Map<string, unknown>): Promise<void> {
+  const config = await readOpenCodeConfig(filePath);
+  const mcp = readObjectRecord(config.mcp) ?? {};
+  const values = serversIn(config);
+  for (const [name, value] of entries) {
+    if (value === undefined) {
+      delete values[name];
+      continue;
+    }
+    const { __cloudcliSource: _source, ...stored } = readObjectRecord(value) ?? {};
+    values[name] = stored;
+  }
+  config.mcp = { ...('servers' in mcp || 'timeout' in mcp ? mcp : {}), servers: values };
+  await writeOpenCodeConfig(filePath, config);
+}
+
 const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string): Promise<OpenCodeConfigPath> => {
-  const root = scope === 'user'
-    ? path.join(os.homedir(), '.config', 'opencode')
-    : workspacePath;
-  const jsonPath = path.join(root, 'opencode.json');
-  const jsoncPath = path.join(root, 'opencode.jsonc');
-
-  if (await fileExists(jsonPath)) {
-    return { filePath: jsonPath, exists: true };
+  const root = scope === 'user' ? globalConfigDirectory() : workspacePath;
+  for (const name of ['opencode.jsonc', 'opencode.json']) {
+    const filePath = path.join(root, name);
+    if (await fileExists(filePath)) return { filePath, exists: true };
   }
-
-  if (await fileExists(jsoncPath)) {
-    return { filePath: jsoncPath, exists: true };
-  }
-
-  return { filePath: jsonPath, exists: false };
+  return { filePath: path.join(root, 'opencode.json'), exists: false };
 };
 
 /** Used by the OpenCode provider to manage V2 MCP settings in user and project scopes. */
@@ -84,24 +131,33 @@ export class OpenCodeMcpProvider extends McpProvider {
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {
-    const { filePath } = await resolveOpenCodeConfigPath(scope, workspacePath);
-    const config = await readOpenCodeConfig(filePath);
-    const mcp = readObjectRecord(config.mcp) ?? {};
-    const grouped = 'servers' in mcp || 'timeout' in mcp;
-    const servers = grouped ? readObjectRecord(mcp.servers) ?? {} : mcp;
-    return Object.fromEntries(Object.entries(servers).map(([name, config]) => [name, normalizeStoredServer(config)]));
+    const servers: Record<string, unknown> = {};
+    for (const sourcePath of await configSources(scope, workspacePath)) {
+      const config = await readOpenCodeConfig(sourcePath);
+      for (const [name, value] of Object.entries(serversIn(config))) {
+        servers[name] = { ...readObjectRecord(normalizeStoredServer(value)), __cloudcliSource: sourcePath };
+      }
+    }
+    return servers;
   }
 
-  protected async writeScopedServers(
-    scope: McpScope,
-    workspacePath: string,
-    servers: Record<string, unknown>,
-  ): Promise<void> {
-    const { filePath } = await resolveOpenCodeConfigPath(scope, workspacePath);
-    const config = await readOpenCodeConfig(filePath);
-    const mcp = readObjectRecord(config.mcp) ?? {};
-    config.mcp = { ...('servers' in mcp || 'timeout' in mcp ? mcp : {}), servers };
-    await writeOpenCodeConfig(filePath, config);
+  protected async writeScopedServers(scope: McpScope, workspacePath: string, servers: Record<string, unknown>): Promise<void> {
+    const current = await this.readScopedServers(scope, workspacePath);
+    const changes = new Map<string, Map<string, unknown>>();
+    const defaultPath = (await resolveOpenCodeConfigPath(scope, workspacePath)).filePath;
+    for (const name of new Set([...Object.keys(current), ...Object.keys(servers)])) {
+      if (JSON.stringify(current[name]) === JSON.stringify(servers[name])) continue;
+      const source = readObjectRecord(current[name])?.__cloudcliSource;
+      const filePath = typeof source === 'string' ? source : defaultPath;
+      for (const sourcePath of await sourceFilesForChange(name, servers[name], filePath, scope, workspacePath)) {
+        const entries = changes.get(sourcePath) ?? new Map<string, unknown>();
+        entries.set(name, servers[name]);
+        changes.set(sourcePath, entries);
+      }
+    }
+    for (const [filePath, entries] of changes) {
+      await applyServerChanges(filePath, entries);
+    }
   }
 
   protected buildServerConfig(input: UpsertProviderMcpServerInput): Record<string, unknown> {
@@ -157,6 +213,7 @@ export class OpenCodeMcpProvider extends McpProvider {
 
       return {
         provider: 'opencode',
+        sourcePath: readOptionalString(config.__cloudcliSource),
         name,
         scope,
         transport: 'stdio',
@@ -174,6 +231,7 @@ export class OpenCodeMcpProvider extends McpProvider {
 
       return {
         provider: 'opencode',
+        sourcePath: readOptionalString(config.__cloudcliSource),
         name,
         scope,
         transport: 'http',

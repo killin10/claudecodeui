@@ -17,11 +17,14 @@ import { AppError } from '@/shared/utils.js';
 export class ClaudeForkProvider implements IProviderFork {
   async forkSession(input: {
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     projectPath: string;
     upToAnchorId?: string;
     title?: string;
   }): Promise<{ providerSessionId: string; jsonlPath: string }> {
+    if (!input.jsonlPath) {
+      throw new AppError('Claude requires a source transcript.', { code: 'FORK_SOURCE_NOT_READY', statusCode: 409 });
+    }
     // `dir` is the session's working directory, which the SDK encodes into the
     // `~/.claude/projects/<encoded>` folder name itself — passing that folder
     // makes it encode an already-encoded path and find nothing.

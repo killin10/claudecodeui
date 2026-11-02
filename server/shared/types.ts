@@ -369,6 +369,8 @@ export type NormalizedMessage = {
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
+  /** Latest transient output while a tool is still running. */
+  toolProgress?: string;
   toolResult?: {
     content?: string;
     isError?: boolean;
@@ -840,6 +842,8 @@ export type McpTransport = 'stdio' | 'http' | 'sse';
  * returning results.
  */
 export type ProviderMcpServer = {
+  /** File that supplies this effective server definition, when the provider exposes it. */
+  sourcePath?: string;
   provider: LLMProvider;
   name: string;
   scope: McpScope;

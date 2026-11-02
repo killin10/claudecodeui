@@ -83,6 +83,8 @@ export interface IProvider {
  * Transcript-branching contract for one provider.
  */
 export interface IProviderFork {
+  /** False for database-backed providers; file-backed providers require a transcript path. */
+  readonly requiresTranscriptFile?: boolean;
   /**
    * Copies a session's transcript, up to and including `upToAnchorId` (the
    * whole conversation when omitted), into a brand-new provider session.
@@ -93,12 +95,13 @@ export interface IProviderFork {
    */
   forkSession(input: {
     providerSessionId: string;
-    jsonlPath: string;
+    /** Null for a provider whose transcript is stored in a shared database. */
+    jsonlPath: string | null;
     /** The session's working directory — how providers scope a session lookup. */
     projectPath: string;
     upToAnchorId?: string;
     title?: string;
-  }): Promise<{ providerSessionId: string; jsonlPath: string }>;
+  }): Promise<{ providerSessionId: string; jsonlPath: string | null }>;
 }
 
 // ---------------------------

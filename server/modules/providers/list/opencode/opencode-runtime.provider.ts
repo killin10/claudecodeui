@@ -1,19 +1,20 @@
 import fsSync from 'node:fs';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import Database from 'better-sqlite3';
 import type {
   OpenCodeClient as OpencodeClient,
   OpenCodeEvent,
+  JsonValue,
+  SessionMessageInfo,
   PermissionRequest as OpenCodePermissionRequest,
   FormInfo,
   FormAnswer,
 } from '@opencode/client';
 
 import {
-  appendFilesInputTag,
-  appendImagesInputTag,
   normalizeAttachmentDescriptors,
 } from '@/shared/image-attachments.js';
 import {
@@ -30,6 +31,7 @@ import {
 } from '@/shared/utils.js';
 import type {
   AnyRecord,
+  BackgroundTaskSummary,
   ProviderModelsDefinition,
   ProviderPermissionDecision,
   ProviderRuntimeContext,
@@ -37,6 +39,7 @@ import type {
 } from '@/shared/types.js';
 
 import { startOpenCodeServer } from './opencode-server.provider.js';
+import { OpenCodeEventProjector } from './opencode-events.provider.js';
 
 // The notifications module is still JavaScript, and its defaults (`dedupeKey = null`,
 // `sessionId = null`) infer as the only accepted types; these state the shapes
@@ -113,6 +116,7 @@ type OpenCodeTurn = {
   abortFinished: Promise<void> | null;
   /** Wakes a turn that is waiting for OpenCode to finish. */
   finish(): void;
+  tasks: Map<string, BackgroundTaskSummary>;
 };
 
 /** A permission or question the turn is waiting on the chat to answer. */
@@ -137,6 +141,8 @@ type RememberedApproval = {
 };
 
 const activeTurns = new Map<string, OpenCodeTurn>();
+// A completed foreground turn can retain its server while child sessions run.
+const liveTurns = new Set<OpenCodeTurn>();
 const pendingPrompts = new Map<string, PendingOpenCodePrompt>();
 // "Always allow" is remembered by OpenCode only in its server's memory, and a
 // turn's server stops with the turn. The approved patterns are kept here per
@@ -416,7 +422,7 @@ function installExitHook(): void {
 
   exitHookInstalled = true;
   process.on('exit', () => {
-    for (const turn of activeTurns.values()) {
+    for (const turn of liveTurns) {
       turn.abortController.abort();
       turn.server?.close();
     }
@@ -608,8 +614,10 @@ async function runOpenCodeTurn(
     aborted: false,
     abortFinished: null,
     finish: () => turnDone(),
+    tasks: new Map(),
   };
   activeTurns.set(turn.key, turn);
+  liveTurns.add(turn);
   installExitHook();
 
   const turnSessionId = () => appSessionId ?? turn.providerSessionId ?? turn.key;
@@ -635,7 +643,7 @@ async function runOpenCodeTurn(
   const notify = (event: AnyRecord) => notifyUserIfEnabled({ userId, event: notificationEvent(event) });
 
   const turnPromptIds = new Set<string>();
-  const emittedParts = new Set<string>();
+  const projector = new OpenCodeEventProjector(turnSessionId, send);
   const forms = new Map<string, FormInfo>();
   const formDirectories = new Map<string, string>();
   const ownedSessions = new Set(resumeSessionId ? [resumeSessionId] : []);
@@ -644,6 +652,44 @@ async function runOpenCodeTurn(
   let sawBusy = false;
   let turnEnded = false;
   let turnError: string | null = null;
+  let rootIdle = false;
+  let completeSent = false;
+  let backgroundQuietTimer: ReturnType<typeof setTimeout> | undefined;
+  let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+  const rootToolMessages = new Set<string>();
+  const settledChildren = new Set<string>();
+  const childToolIds = new Map<string, string>();
+  const childProjectors = new Map<string, OpenCodeEventProjector>();
+  const toolProgress = new Map<string, Record<string, JsonValue>>();
+
+  const finishForeground = () => {
+    rootIdle = true;
+    if (turn.tasks.size === 0) {
+      if (completeSent) settleBackground();
+      else turnDone();
+      return;
+    }
+    if (!completeSent) {
+      send(createCompleteMessage({ provider: PROVIDER, sessionId: turnSessionId(), exitCode: 0 }));
+      completeSent = true;
+    }
+    // Keep the stream and permission gateway alive for detached children.
+    // A finite ceiling prevents an orphaned child retaining a server forever.
+    backgroundTimer ??= setTimeout(() => failTurn('OpenCode background work exceeded the 30 minute limit.'), 30 * 60_000);
+    backgroundTimer.unref();
+  };
+
+  const settleBackground = () => {
+    if (!rootIdle || turn.tasks.size > 0) return;
+    clearTimeout(backgroundQuietTimer);
+    // Native child completion can enqueue a follow-up on its parent. Let that
+    // wakeup publish, then check process-local activity before closing its server.
+    backgroundQuietTimer = setTimeout(() => {
+      void turn.client!.session.active({ signal: turn.abortController.signal }).then((active) => {
+        if (rootIdle && turn.tasks.size === 0 && !active[turn.providerSessionId!]) turnDone();
+      }).catch((error) => { if (!turn.aborted) failTurn(readErrorMessage(error)); });
+    }, 250);
+  };
 
   // A resumed child emits no session.created event. Verify its ancestry before
   // routing requests; never accept an unrelated session just because it shares a server.
@@ -890,21 +936,145 @@ async function runOpenCodeTurn(
     });
   };
 
+  const applyToolProgress = (message: SessionMessageInfo) => {
+    if (message.type !== 'assistant') return;
+    for (const part of message.content) {
+      if (part.type !== 'tool') continue;
+      const key = `${message.id}:${part.id}`;
+      if (part.state.status === 'running') {
+        part.state.metadata = { ...part.state.metadata, ...toolProgress.get(key) };
+      } else {
+        toolProgress.delete(key);
+      }
+    }
+  };
+
+  const trackSpawnedChildren = (message: SessionMessageInfo, messageID: string, nativeSessionId: string) => {
+    if (message.type !== 'assistant' || nativeSessionId !== turn.providerSessionId) return;
+    for (const part of message.content) {
+      if (part.type !== 'tool' || (part.name !== 'subagent' && part.name !== 'task')) continue;
+      rootToolMessages.add(messageID);
+      const metadata = 'metadata' in part.state ? part.state.metadata : undefined;
+      const childID = metadata?.sessionID;
+      if (metadata?.status !== 'running' || typeof childID !== 'string' || settledChildren.has(childID)) continue;
+      ownedSessions.add(childID);
+      childToolIds.set(childID, part.id);
+      turn.tasks.set(childID, {
+        taskId: childID, toolUseId: part.id, taskType: 'subagent',
+        description: String((part.state.input as AnyRecord)?.description ?? 'OpenCode subagent'),
+        startedAt: message.time.created,
+      });
+    }
+  };
+
   // Serialize message reads so text, tools and the final completion stay ordered.
-  const forwardMessage = (messageID: string) => {
+  const forwardMessage = (
+    messageID: string,
+    progress?: { id: string; metadata: Record<string, JsonValue> },
+    nativeSessionId = turn.providerSessionId!,
+    parentToolUseId?: string,
+  ) => {
+    if (progress) {
+      const key = `${messageID}:${progress.id}`;
+      toolProgress.set(key, { ...toolProgress.get(key), ...progress.metadata });
+    }
     messageQueue = messageQueue.then(async () => {
       const message = await turn.client!.session.message.get({
-        sessionID: turn.providerSessionId!, messageID,
+        sessionID: nativeSessionId, messageID,
       }, { signal: turn.abortController.signal });
+      applyToolProgress(message);
+      trackSpawnedChildren(message, messageID, nativeSessionId);
       for (const normalized of context.normalizeMessage({ type: 'session.message', message }, turnSessionId())) {
-        const fingerprint = JSON.stringify(normalized);
-        if (emittedParts.has(fingerprint)) continue;
-        emittedParts.add(fingerprint);
-        send(normalized);
+        projector.publish(parentToolUseId ? { ...normalized, parentToolUseId } : normalized);
       }
     }).catch((error) => {
       if (!turn.aborted) failTurn(`Cannot read OpenCode message: ${readErrorMessage(error)}`);
     });
+  };
+
+  const handleChildEvent = async (event: OpenCodeEvent) => {
+    const data = event.data as AnyRecord;
+    await messageQueue;
+    const parentToolUseId = childToolIds.get(data.sessionID);
+    if (parentToolUseId) {
+      let childProjector = childProjectors.get(data.sessionID);
+      if (!childProjector) {
+        childProjector = new OpenCodeEventProjector(turnSessionId, (message) => send({ ...message, parentToolUseId }));
+        childProjectors.set(data.sessionID, childProjector);
+      }
+      if (childProjector.handle(event)) return;
+      switch (event.type) {
+        case 'session.text.ended':
+        case 'session.reasoning.ended':
+        case 'session.tool.called':
+        case 'session.tool.success':
+        case 'session.tool.failed':
+          forwardMessage(event.data.assistantMessageID, undefined, data.sessionID, parentToolUseId);
+          break;
+        case 'session.tool.progress':
+          forwardMessage(event.data.assistantMessageID, event.data, data.sessionID, parentToolUseId);
+          break;
+      }
+    }
+    if (event.type === 'session.execution.started') {
+      settledChildren.delete(data.sessionID);
+      const child = await turn.client!.session.get({ sessionID: data.sessionID }, { signal: turn.abortController.signal });
+      if (!turn.tasks.has(data.sessionID)) turn.tasks.set(data.sessionID, {
+        taskId: data.sessionID, toolUseId: data.sessionID, taskType: 'subagent',
+        description: child.title || 'OpenCode subagent', startedAt: event.created, nested: true,
+      });
+    }
+    if (event.type === 'session.execution.succeeded' || event.type === 'session.execution.failed' || event.type === 'session.execution.interrupted') {
+      settledChildren.add(data.sessionID);
+      turn.tasks.delete(data.sessionID);
+      settleBackground();
+    }
+    for (const messageID of rootToolMessages) forwardMessage(messageID);
+    return;
+  };
+
+  const handleRootEvent = async (event: OpenCodeEvent) => {
+    const data = event.data as AnyRecord;
+    switch (event.type) {
+      case 'permission.replied':
+        pendingPrompts.get(event.data.requestID)?.settle();
+        return;
+      case 'session.tool.progress':
+        forwardMessage(event.data.assistantMessageID, event.data);
+        return;
+      case 'session.text.ended':
+      case 'session.reasoning.ended':
+      case 'session.tool.called':
+      case 'session.tool.success':
+      case 'session.tool.failed':
+      case 'session.step.ended':
+        if (data.sessionID === turn.providerSessionId) forwardMessage(event.data.assistantMessageID);
+        return;
+      case 'session.execution.failed':
+        if (data.sessionID === turn.providerSessionId) failTurn(event.data.error.message);
+        return;
+      case 'session.execution.started':
+        sawBusy = true;
+        rootIdle = false;
+        return;
+      case 'session.execution.succeeded':
+        await messageQueue;
+        if (data.sessionID === turn.providerSessionId) finishForeground();
+        return;
+      case 'session.execution.interrupted':
+        if (data.sessionID === turn.providerSessionId) failTurn(`OpenCode execution interrupted: ${event.data.reason}`);
+        return;
+      case 'session.idle':
+        if (data.sessionID === turn.providerSessionId && sawBusy) finishForeground();
+        return;
+      case 'session.status':
+        if (data.sessionID !== turn.providerSessionId) return;
+        if (event.data.status.type === 'busy') sawBusy = true;
+        if (event.data.status.type === 'idle' && sawBusy) finishForeground();
+        return;
+      default:
+        return;
+    }
   };
 
   const handleEvent = async (event: OpenCodeEvent) => {
@@ -934,41 +1104,17 @@ async function runOpenCodeTurn(
       handlePermissionAsked(event.data);
       return;
     }
-    if (!ownedSessions.has(data.sessionID) || turnEnded) return;
-    switch (event.type) {
-      case 'permission.replied':
-        pendingPrompts.get(event.data.requestID)?.settle();
-        return;
-      case 'session.text.ended':
-      case 'session.reasoning.ended':
-      case 'session.tool.success':
-      case 'session.tool.failed':
-      case 'session.step.ended':
-        if (data.sessionID === turn.providerSessionId) forwardMessage(event.data.assistantMessageID);
-        return;
-      case 'session.execution.failed':
-        if (data.sessionID === turn.providerSessionId) failTurn(event.data.error.message);
-        return;
-      case 'session.execution.started':
-        if (data.sessionID === turn.providerSessionId) sawBusy = true;
-        return;
-      case 'session.execution.succeeded':
-        if (data.sessionID === turn.providerSessionId) turnDone();
-        return;
-      case 'session.execution.interrupted':
-        if (data.sessionID === turn.providerSessionId) failTurn(`OpenCode execution interrupted: ${event.data.reason}`);
-        return;
-      case 'session.idle':
-        if (data.sessionID === turn.providerSessionId && sawBusy) turnDone();
-        return;
-      case 'session.status':
-        if (data.sessionID !== turn.providerSessionId) return;
-        if (event.data.status.type === 'busy') sawBusy = true;
-        if (event.data.status.type === 'idle' && sawBusy) turnDone();
-        return;
-      default:
-        return;
+    if (!ownedSessions.has(data.sessionID) && typeof data.sessionID === 'string') {
+      if (!await ownsSession(data.sessionID)) return;
     }
+    if (!ownedSessions.has(data.sessionID) || turnEnded) return;
+    if (event.type === 'permission.replied') pendingPrompts.get(event.data.requestID)?.settle();
+    if (data.sessionID !== turn.providerSessionId) {
+      await handleChildEvent(event);
+      return;
+    }
+    if (data.sessionID === turn.providerSessionId && projector.handle(event)) return;
+    await handleRootEvent(event);
   };
 
   let connected!: () => void;
@@ -986,9 +1132,11 @@ async function runOpenCodeTurn(
     if (!promptText && !hasAttachments) {
       throw new Error('OpenCode needs a message to run.');
     }
-    // Attachments ride along as path lists appended to the prompt; the agent
-    // reads them with its own tools and the history reader strips the tags.
-    const promptWithAttachments = appendFilesInputTag(appendImagesInputTag(promptText, images), files);
+    const nativeFiles = [...normalizeAttachmentDescriptors(images), ...normalizeAttachmentDescriptors(files)]
+      .map((file) => ({
+        uri: pathToFileURL(path.resolve(workingDir, file.path)).href,
+        ...(file.name ? { name: file.name } : {}),
+      }));
 
     const resolvedModel = await context.resolveResumeModel(appSessionId ?? undefined, model);
     let effortModels: ProviderModelsDefinition | null = null;
@@ -1056,20 +1204,37 @@ async function runOpenCodeTurn(
     const selectedModel = modelRef ? { ...modelRef, ...(variant ? { variant } : {}) } : undefined;
     const requestOptions = { signal: turn.abortController.signal };
     if (turn.providerSessionId) {
-      await client.session.switchAgent({ sessionID: turn.providerSessionId, agent }, requestOptions);
+      const existing = await client.session.get({ sessionID: turn.providerSessionId }, requestOptions);
+      // Preserve a native custom agent on ordinary resume. Leaving a plan entered
+      // through CloudCLI restores its previous agent.
+      const previousAgent = existing.metadata?.cloudcliPreviousAgent;
+      const nextAgent = permissionMode === 'plan' ? 'plan'
+        : existing.agent === 'plan' && typeof previousAgent === 'string' ? previousAgent : existing.agent ?? agent;
+      if (nextAgent !== existing.agent) {
+        const metadata = { ...existing.metadata, cloudcliPreviousAgent: nextAgent === 'plan' ? existing.agent ?? agent : null };
+        await client.session.update({ sessionID: turn.providerSessionId, metadata }, requestOptions);
+        await client.session.switchAgent({ sessionID: turn.providerSessionId, agent: nextAgent }, requestOptions);
+      }
       if (selectedModel) {
         await client.session.switchModel({ sessionID: turn.providerSessionId, model: selectedModel }, requestOptions);
       }
     } else {
+      const metadata = {
+        ...(appSessionId ? { cloudcliSessionId: appSessionId } : {}),
+        ...(permissionMode === 'plan' ? {
+          cloudcliPreviousAgent: await resolveAgent(client, workingDir, undefined),
+        } : {}),
+      };
       const created = await client.session.create({
         location: { directory: workingDir }, agent, model: selectedModel,
-        ...(appSessionId ? { metadata: { cloudcliSessionId: appSessionId } } : {}),
+        metadata,
       }, requestOptions);
       registerProviderSession(created.id);
     }
     if (turn.aborted) throw new Error('aborted');
     await client.session.prompt({
-      sessionID: turn.providerSessionId!, text: promptWithAttachments,
+      sessionID: turn.providerSessionId!, text: promptText,
+      ...(nativeFiles.length ? { files: nativeFiles } : {}),
     }, requestOptions);
 
     await turnFinished;
@@ -1086,6 +1251,10 @@ async function runOpenCodeTurn(
     }
   } finally {
     turnEnded = true;
+    if (!turn.aborted && turnError && turn.tasks.size > 0) await interruptTurnWork(turn);
+    clearTimeout(backgroundTimer);
+    clearTimeout(backgroundQuietTimer);
+    liveTurns.delete(turn);
     // Whatever is still open was asked of a turn that has ended.
     for (const requestId of Array.from(turnPromptIds)) {
       pendingPrompts.get(requestId)?.settle('cancelled');
@@ -1129,7 +1298,7 @@ async function runOpenCodeTurn(
     }));
   }
 
-  send(createCompleteMessage({ provider: PROVIDER, sessionId: finalSessionId, exitCode: completedNormally ? 0 : 1 }));
+  if (!completeSent) send(createCompleteMessage({ provider: PROVIDER, sessionId: finalSessionId, exitCode: completedNormally ? 0 : 1 }));
 
   if (completedNormally) {
     reportRunStopped({
@@ -1157,6 +1326,18 @@ async function runOpenCodeTurn(
  * OpenCode session so a running tool command ends too, then stops the server.
  * The caller sends the terminal `complete` (aborted: true) once this returns.
  */
+async function interruptTurnWork(turn: OpenCodeTurn): Promise<void> {
+  if (!turn.client) return;
+  const ids = new Set([...(turn.providerSessionId ? [turn.providerSessionId] : []), ...turn.tasks.keys()]);
+  await Promise.all(Array.from(ids, async (sessionID) => {
+    try {
+      await turn.client!.session.interrupt({ sessionID }, { signal: AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS) });
+    } catch (error) {
+      console.warn(`[OpenCode] Failed to interrupt ${sessionID}; stopping its server:`, error);
+    }
+  }));
+}
+
 async function abortOpenCodeSession(sessionId: string): Promise<boolean> {
   const turn = activeTurns.get(sessionId);
   if (!turn) {
@@ -1179,17 +1360,7 @@ async function abortOpenCodeSession(sessionId: string): Promise<boolean> {
       }
     }
 
-    if (turn.client && turn.providerSessionId) {
-      try {
-        await withTimeout(
-          turn.client.session.interrupt({ sessionID: turn.providerSessionId }, { signal: AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS) }),
-          SESSION_ABORT_TIMEOUT_MS,
-          'OpenCode did not confirm the abort in time.',
-        );
-      } catch (error) {
-        console.warn('[OpenCode] Session abort failed, stopping the server:', readErrorMessage(error));
-      }
-    }
+    await interruptTurnWork(turn);
 
     turn.abortController.abort();
     turn.server?.close();
@@ -1230,7 +1401,7 @@ function getPendingOpenCodePrompts(sessionId: string) {
  * provider, which treats subagents of a running turn as still in progress.
  */
 export function isOpenCodeSessionActive(sessionId: string): boolean {
-  return activeTurns.has(sessionId);
+  return Array.from(liveTurns).some((turn) => turn.key === sessionId || turn.tasks.has(sessionId));
 }
 
 /**
@@ -1241,6 +1412,16 @@ export function isOpenCodeSessionActive(sessionId: string): boolean {
 export const opencodeRuntime = {
   run: runOpenCodeTurn,
   abort: abortOpenCodeSession,
+  listBackgroundWork: () => Array.from(liveTurns)
+    .filter((turn) => turn.tasks.size > 0)
+    .map((turn) => ({ sessionId: turn.key, tasks: Array.from(turn.tasks.values()) })),
+  async stopBackgroundTask(sessionId: string, taskId: string): Promise<boolean> {
+    const turn = Array.from(liveTurns).find((candidate) => candidate.key === sessionId && candidate.tasks.has(taskId));
+    if (!turn?.client) return false;
+    await turn.client.session.interrupt({ sessionID: taskId }, { signal: AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS) });
+    // The terminal event removes the task only once native cleanup finishes.
+    return true;
+  },
   permissions: {
     resolve: resolveOpenCodePrompt,
     listPending: getPendingOpenCodePrompts,

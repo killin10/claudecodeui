@@ -79,6 +79,8 @@ const sendFrame = (socket: ReturnType<typeof createFakeSocket>, payload: Frame) 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const permissionScenario = (id: string, extra: Frame = {}) => JSON.stringify({
+  // Each fixture server is a fresh process; native sessions survive real restarts.
+  sessions: { ses_fake_new: { agent: 'build' } },
   ...extra,
   steps: [{ type: 'permission', id, permission: 'bash', patterns: ['sleep 100'], always: ['sleep *'] }],
 });

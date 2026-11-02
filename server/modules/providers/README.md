@@ -146,7 +146,7 @@ Current MCP formats in this repo are:
 | Claude | `.mcp.json` in user / local / project locations | `user`, `local`, `project` | `stdio`, `http`, `sse` |
 | Codex | `.codex/config.toml` | `user`, `project` | `stdio`, `http` |
 | Cursor | `.cursor/mcp.json` | `user`, `project` | `stdio`, `http` |
-| OpenCode | `~/.config/opencode/opencode.json` or `<workspace>/opencode.json` (`.jsonc` is read when present) | `user`, `project` | `stdio`, `http` |
+| OpenCode | XDG user config, explicit config, ancestor `opencode.json[c]` and `.opencode/opencode.json[c]`; JSONC takes precedence | `user`, `project` | `stdio`, `http` |
 
 5. Implement skills.
 
@@ -382,3 +382,51 @@ alongside the implementation.
 - Assuming one provider's MCP config file format works for the others.
 
 
+
+## OpenCode V2 integration
+
+The adapter targets `@opencode/client` and OpenCode CLI 2.1.4 or newer within V2.
+It owns an authenticated loopback server for each run.
+
+Text and reasoning deltas use separate ordinal sequences. Their display IDs
+include the message ID, content type and ordinal, matching history projection.
+The frontend replaces snapshots with the same ID. Tool progress metadata is
+transient in V2, so the runtime retains it until the tool settles instead of
+expecting it in the persisted message. Compaction updates reuse the native
+message ID across running, completed and failed states.
+
+Attachments use `session.prompt.files` with file URIs. History accepts both
+native base64 attachments and the path tags written by earlier CloudCLI
+versions. Normal resume preserves the native agent. When CloudCLI enters plan
+mode, it records the previous agent in session metadata and restores it when
+leaving plan mode.
+
+OpenCode implements the optional `fork` facet with
+`requiresTranscriptFile: false`; its `jsonlPath` remains `null`. The native
+fork boundary is exclusive (`before`). The adapter translates the UI's
+inclusive boundary to the next persisted message. Editing forks immediately
+before the selected user message and repoints the app session. Superseded
+native IDs are excluded from indexing and are included when the app session
+is permanently deleted. The old conversation remains intact until then.
+
+Background child sessions keep their owning server and permission gateway
+alive after the foreground completion. They appear in the existing running
+work list and can be interrupted individually. The runtime waits for parent
+follow-up activity before releasing the server, with a 30-minute ceiling for
+background work. Normal abort interrupts both the foreground and its tracked
+children. This lifecycle applies to work started by CloudCLI, not unrelated
+OpenCode processes.
+
+The MCP editor merges local file definitions in V2 priority order and returns
+`sourcePath` for each winning definition. Edits target that file and preserve
+unrelated configuration. Removal clears the named server from all files in
+the selected scope so a lower-priority duplicate cannot reappear. The editor
+covers XDG global files, `OPENCODE_CONFIG`, ancestor files and `.opencode`
+directories; remote, managed and inline configuration sources are not editable
+through this file-based editor.
+
+Protocol references for upgrades: [event publisher](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/runner/publish-llm-event.ts),
+[native fork](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session.ts),
+and [configuration order](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/config.ts).
+Regression tests live in `tests/opencode-*.test.ts`, `tests/mcp.test.ts` and
+`tests/session-fork.test.ts`.

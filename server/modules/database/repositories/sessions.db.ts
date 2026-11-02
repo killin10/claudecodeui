@@ -208,7 +208,7 @@ export const sessionsDb = {
     projectPath: string;
     customName: string | null;
     providerSessionId: string;
-    jsonlPath: string;
+    jsonlPath: string | null;
     forkedFromSessionId: string;
     model: string | null;
     effort: string | null;
@@ -304,7 +304,7 @@ export const sessionsDb = {
    */
   repointSessionToProviderSession(
     sessionId: string,
-    input: { providerSessionId: string; jsonlPath: string },
+    input: { providerSessionId: string; jsonlPath: string | null },
   ): void {
     const db = getConnection();
 
@@ -394,6 +394,14 @@ export const sessionsDb = {
       .all(sessionId) as Array<{ jsonl_path: string }>;
 
     return rows.map((row) => row.jsonl_path);
+  },
+
+  /** Used by native-store deletion to remove the older branches of an edited conversation. */
+  getSupersededProviderSessionIds(sessionId: string, provider: string): string[] {
+    const rows = getConnection().prepare(
+      'SELECT provider_session_id FROM superseded_provider_sessions WHERE session_id = ? AND provider = ?'
+    ).all(sessionId, provider) as Array<{ provider_session_id: string }>;
+    return rows.map((row) => row.provider_session_id);
   },
 
   /**

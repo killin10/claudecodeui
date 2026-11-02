@@ -345,6 +345,8 @@ function computeMerged(server: NormalizedMessage[], realtime: NormalizedMessage[
     return dedupeAdjacentAssistantEchoes(realtime);
   }
 
+  const liveSnapshots = new Map(realtime.filter((message) => message.provider === 'opencode').map((message) => [message.id, message]));
+  server = server.map((message) => liveSnapshots.get(message.id) ?? message);
   const serverIds = new Set(server.map((message) => message.id));
   const reconciledRealtime = removeOptimisticUserEchoes(server, realtime);
   const extra = reconciledRealtime.filter((message) => {
@@ -754,7 +756,13 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
-    let updated = [...slot.realtimeMessages, normalizedMessage];
+    // OpenCode V2 publishes evolving snapshots with stable message ids.
+    const previous = normalizedMessage.provider === 'opencode'
+      ? slot.realtimeMessages.findIndex((message) => message.id === normalizedMessage.id)
+      : -1;
+    let updated = [...slot.realtimeMessages];
+    if (previous >= 0) updated[previous] = normalizedMessage;
+    else updated.push(normalizedMessage);
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }

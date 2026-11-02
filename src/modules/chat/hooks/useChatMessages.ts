@@ -272,6 +272,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           const tool: SubagentActivity = {
             kind: 'tool',
             toolId: msg.toolId,
+            toolResult: msg.toolResult,
             toolName: msg.toolName || 'Tool',
             toolInput: msg.toolInput,
             timestamp: msg.timestamp,
@@ -483,6 +484,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           toolName: msg.toolName,
           toolInput: typeof msg.toolInput === 'string' ? msg.toolInput : JSON.stringify(msg.toolInput ?? '', null, 2),
           toolId: msg.toolId,
+          toolProgress: msg.toolProgress,
           toolResult,
           toolStatus: typeof msg.status === 'string' ? msg.status : undefined,
           isSubagentContainer,

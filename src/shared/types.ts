@@ -294,6 +294,8 @@ export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermiss
 
 /** A non-image file attached to a chat message, described by its path in the server-managed attachment store plus display metadata so it can be listed and downloaded. */
 export type ChatAttachment = {
+  /** Native provider attachment payload, used when no managed asset is available. */
+  data?: string;
   /** Absolute path inside the server-managed chat attachment store. */
   path?: string;
   name?: string;
@@ -391,6 +393,8 @@ export type ChatMessage = {
   toolInput?: unknown;
   toolResult?: ToolResult | null;
   toolId?: string;
+  /** Latest transient output while a tool is still running. */
+  toolProgress?: string;
   toolCallId?: string;
   commandName?: string;
   commandMessage?: string;
@@ -570,6 +574,8 @@ export type NormalizedMessage = {
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
+  /** Latest transient output while a tool is still running. */
+  toolProgress?: string;
   toolResult?: { content: string; isError: boolean; toolUseResult?: unknown } | null;
   /** A `tool_result` row's structured output — a launch acknowledgement's task id and metadata, a search's file list. */
   toolUseResult?: unknown;
@@ -1175,6 +1181,8 @@ export type McpProject = {
 
 /** One MCP server as it is currently configured for a provider, as returned by the MCP API and rendered in the settings server list. */
 export type ProviderMcpServer = {
+  /** File that supplies this effective server definition, when the provider exposes it. */
+  sourcePath?: string;
   provider: McpProvider;
   name: string;
   scope: McpScope;

@@ -200,6 +200,7 @@ export default function McpServers({ selectedProvider, currentProjects }: McpSer
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     {!managed && getTransportIcon(server.transport)}
                     <span className="font-medium text-foreground">{server.name}</span>
+                    {server.sourcePath && <span className="block truncate text-xs text-muted-foreground" title={server.sourcePath}>{server.sourcePath}</span>}
                     {!managed && (
                       <>
                         <Badge variant="outline" className="text-xs">

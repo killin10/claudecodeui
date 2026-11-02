@@ -296,6 +296,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   </div>
                 )}
 
+                {message.toolProgress && !message.toolResult && (
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground" aria-live="polite">{message.toolProgress}</pre>
+                )}
                 {/* Tool Result Section — Bash renders its output inside the command row above. */}
                 {message.toolResult && message.toolName !== 'Bash' && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
                   message.toolResult.isError ? (

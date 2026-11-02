@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { OpenCodeSessionSynchronizer } from '@/modules/providers/list/opencode/opencode-session-synchronizer.provider.js';
+import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/opencode-sessions.provider.js';
 import { appendImagesInputTag } from '@/shared/image-attachments.js';
 
@@ -240,7 +241,7 @@ test('V2 content keeps separate stable ids for text, reasoning and tool results'
     ],
   });
   assert.deepEqual(messages.map((m) => [m.id, m.kind]),
-    [['msg_1_0', 'text'], ['msg_1_1', 'thinking'], ['msg_1_2', 'text'], ['msg_1_3', 'tool_use']]);
+    [['msg_1_text_0', 'text'], ['msg_1_reasoning_0', 'thinking'], ['msg_1_text_1', 'text'], ['msg_1_3', 'tool_use']]);
   assert.deepEqual(messages[3].toolResult, { content: 'hi', isError: false });
   assert.deepEqual(messages[3].toolInput, { command: 'echo hi' });
   assert.equal(messages[3].toolId, 'call_1');
@@ -485,5 +486,70 @@ test('OpenCode synchronizer keeps the stored title for indexed sessions', { conc
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test('V2 native attachments retain an attachment-only user turn and its edit anchor', () => {
+  const rows = new OpenCodeSessionsProvider().normalizeMessage({ type: 'session.message', message: {
+    id: 'msg_attachments', type: 'user', text: '', time: { created: 1 }, files: [
+      { mime: 'image/png', data: 'AAAA', name: 'image.png', source: { type: 'inline' } },
+      { mime: 'application/pdf', data: 'BBBB', name: 'brief.pdf', source: { type: 'inline' } },
+    ],
+  } }, 'app');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].transcriptAnchorId, 'msg_attachments');
+  assert.equal((rows[0].images as any[])[0].data, 'data:image/png;base64,AAAA');
+  assert.equal((rows[0].files as any[])[0].data, 'data:application/pdf;base64,BBBB');
+});
+
+test('V2 compaction, shell and skill records remain visible in history projection', () => {
+  const provider = new OpenCodeSessionsProvider();
+  const normalize = (message: any) => provider.normalizeMessage({ type: 'session.message', message: {
+    id: 'msg_record', time: { created: 1 }, ...message,
+  } }, 'app')[0];
+  assert.equal(normalize({ type: 'compaction', status: 'completed', reason: 'auto', summary: 'Summary' }).compact?.phase, 'done');
+  assert.equal(normalize({ type: 'compaction', status: 'failed', reason: 'manual', error: { message: 'Failed' } }).compact?.phase, 'failed');
+  const shell = normalize({ type: 'shell', shellID: 'shell_1', command: 'pwd', status: 'exited', exit: 0, output: { output: '/tmp' } });
+  assert.equal(shell.toolResult?.content, '/tmp');
+  assert.equal(shell.toolResult?.isError, false);
+  assert.match(normalize({ type: 'skill', name: 'review', text: 'Review instructions' }).content!, /Review instructions/);
+  assert.equal(normalize({ type: 'model-switched', model: { providerID: 'test', id: 'review-model' } }).text, 'Model: test/review-model');
+});
+
+
+test('V2 edit anchors exclude the selected prompt, preserve the source, and suppress reindexing', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-edit-'));
+  const restoreHome = patchHomeDir(root);
+  try {
+    await createOpenCodeDatabase(root, root);
+    const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+    db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)').run('second-user', 'open-session-1', 'user', 3, JSON.stringify({ text: 'second' }));
+    db.close();
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-edit', 'opencode', root);
+      sessionsDb.assignProviderSessionId('app-edit', 'open-session-1');
+      const branches = new OpenCodeForkProvider();
+      assert.deepEqual(await branches.resolveEditAnchor('app-edit', 'message-user'), { found: true, resumeThroughId: null });
+      assert.deepEqual(await branches.resolveEditAnchor('app-edit', 'second-user'), { found: true, resumeThroughId: 'message-assistant' });
+      assert.equal((await branches.resolveEditAnchor('app-edit', 'missing')).found, false);
+      const native = t.mock.method(branches as any, 'createFork', async () => { throw new Error('native fork failed'); });
+      await assert.rejects(branches.rewindSession('app-edit', 'message-assistant'), /native fork failed/);
+      assert.equal(sessionsDb.getSessionById('app-edit')?.provider_session_id, 'open-session-1');
+      assert.equal(sessionsDb.isProviderSessionSuperseded('open-session-1', 'opencode'), false);
+      native.mock.mockImplementation(async (_id: string, before: string) => {
+        assert.equal(before, 'second-user');
+        return { providerSessionId: 'ses_edited', jsonlPath: null };
+      });
+      await branches.rewindSession('app-edit', 'message-assistant');
+      assert.equal(sessionsDb.getSessionById('app-edit')?.provider_session_id, 'ses_edited');
+      assert.deepEqual(sessionsDb.getSupersededProviderSessionIds('app-edit', 'opencode'), ['open-session-1']);
+      await new OpenCodeSessionSynchronizer().synchronize();
+      assert.equal(sessionsDb.getSessionByProviderSessionId('open-session-1'), null);
+      assert.equal(sessionsDb.getSessionById('app-edit')?.provider_session_id, 'ses_edited');
+    });
+  } finally {
+    restoreHome();
+    await rm(root, { recursive: true, force: true });
   }
 });
