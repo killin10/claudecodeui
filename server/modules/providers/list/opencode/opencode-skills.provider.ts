@@ -2,11 +2,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { SkillsProvider } from '@/modules/providers/shared/skills/skills.provider.js';
-import type { ProviderSkillSource } from '@/shared/types.js';
+import type { ProviderSkillListOptions, ProviderSkillSource } from '@/shared/types.js';
 import {
   addUniqueProviderSkillSource,
   findTopmostGitRoot,
 } from '@/shared/utils.js';
+
+import { listOpenCodeInvocations } from './opencode-inputs.provider.js';
 
 const OPENCODE_PROJECT_SKILL_DIRS = [
   ['.opencode', 'skills'],
@@ -23,6 +25,10 @@ const OPENCODE_USER_SKILL_DIRS = [
 export class OpenCodeSkillsProvider extends SkillsProvider {
   constructor() {
     super('opencode');
+  }
+
+  async listInvocations(options?: ProviderSkillListOptions) {
+    return listOpenCodeInvocations(path.resolve(options?.workspacePath ?? process.cwd()));
   }
 
   protected async getSkillSources(workspacePath: string): Promise<ProviderSkillSource[]> {

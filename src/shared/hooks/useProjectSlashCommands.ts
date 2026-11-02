@@ -17,6 +17,7 @@ type ProviderSkillsResponse = {
   success?: boolean;
   data?: {
     skills?: ProviderSkill[];
+    invocations?: Array<{ name: string; description: string; kind: 'skill' | 'command'; path?: string }>;
   };
 };
 
@@ -116,18 +117,23 @@ export function useProjectSlashCommands(
 
         const data = await response.json();
         const skillsResponse = await api.providers.skills(provider, { workspacePath });
+        if (provider === 'opencode' && !skillsResponse.ok) throw new Error('Failed to fetch OpenCode native commands');
         const skillsData = skillsResponse.ok
           ? ((await skillsResponse.json()) as ProviderSkillsResponse)
           : null;
+        const nativeCommands: SlashCommand[] | undefined = skillsData?.data?.invocations?.map((entry) => ({
+          name: entry.name, description: entry.description, path: entry.path,
+          type: entry.kind === 'skill' ? 'skill' : 'native', namespace: 'opencode',
+        }));
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
           .map(mapSkillToSlashCommand);
         const allCommands: SlashCommand[] = [
-          ...((data.builtIn || []) as SlashCommand[]).map((command) => ({
+          ...((data.builtIn || []) as SlashCommand[]).filter((command) => !nativeCommands?.some((entry) => entry.name === command.name)).map((command) => ({
             ...command,
             type: 'built-in',
           })),
-          ...skillCommands,
-          ...((data.custom || []) as SlashCommand[]).map((command) => ({
+          ...(nativeCommands ?? skillCommands),
+          ...((provider === 'opencode' ? [] : data.custom || []) as SlashCommand[]).map((command) => ({
             ...command,
             type: 'custom',
           })),

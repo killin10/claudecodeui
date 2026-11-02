@@ -31,14 +31,16 @@ import {
 } from '@/shared/utils.js';
 import type {
   AnyRecord,
-  BackgroundTaskSummary,
   ProviderModelsDefinition,
   ProviderPermissionDecision,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 
+import { sendOpenCodeInput } from './opencode-inputs.provider.js';
+import { OpenCodeBackgroundWork } from './opencode-background.provider.js';
 import { startOpenCodeServer } from './opencode-server.provider.js';
+import { readOpenCodeUsage, recordOpenCodeContextWindows } from './opencode-usage.provider.js';
 import { OpenCodeEventProjector } from './opencode-events.provider.js';
 
 // The notifications module is still JavaScript, and its defaults (`dedupeKey = null`,
@@ -116,7 +118,8 @@ type OpenCodeTurn = {
   abortFinished: Promise<void> | null;
   /** Wakes a turn that is waiting for OpenCode to finish. */
   finish(): void;
-  tasks: Map<string, BackgroundTaskSummary>;
+  work: OpenCodeBackgroundWork;
+  directory: string;
 };
 
 /** A permission or question the turn is waiting on the chat to answer. */
@@ -355,48 +358,7 @@ function readOpenCodeTokenUsage(sessionId: string | null) {
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    const columns = db.prepare('PRAGMA table_info(session_v2)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map((column) => column.name));
-    const requiredColumns = ['tokens_input', 'tokens_output', 'tokens_reasoning', 'tokens_cache_read', 'tokens_cache_write'];
-    if (!requiredColumns.every((column) => columnNames.has(column))) {
-      return null;
-    }
-
-    const row = db.prepare(`
-      SELECT
-        tokens_input AS inputTokens,
-        tokens_output AS outputTokens,
-        tokens_reasoning AS reasoningTokens,
-        tokens_cache_read AS cacheReadTokens,
-        tokens_cache_write AS cacheWriteTokens
-      FROM session_v2
-      WHERE id = ?
-    `).get(sessionId) as AnyRecord | undefined;
-
-    if (!row) {
-      return null;
-    }
-
-    const inputTokens = Number(row.inputTokens || 0) + Number(row.cacheReadTokens || 0);
-    const outputTokens = Number(row.outputTokens || 0);
-    const used = Number(row.inputTokens || 0)
-      + outputTokens
-      + Number(row.reasoningTokens || 0)
-      + Number(row.cacheReadTokens || 0)
-      + Number(row.cacheWriteTokens || 0);
-    if (used <= 0) {
-      return null;
-    }
-
-    return {
-      used,
-      inputTokens,
-      outputTokens,
-      breakdown: {
-        input: inputTokens,
-        output: outputTokens,
-      },
-    };
+    return readOpenCodeUsage(db, sessionId);
   } catch {
     return null;
   } finally {
@@ -614,7 +576,8 @@ async function runOpenCodeTurn(
     aborted: false,
     abortFinished: null,
     finish: () => turnDone(),
-    tasks: new Map(),
+    work: new OpenCodeBackgroundWork(),
+    directory: workingDir,
   };
   activeTurns.set(turn.key, turn);
   liveTurns.add(turn);
@@ -654,7 +617,6 @@ async function runOpenCodeTurn(
   let turnError: string | null = null;
   let rootIdle = false;
   let completeSent = false;
-  let backgroundQuietTimer: ReturnType<typeof setTimeout> | undefined;
   let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
   const rootToolMessages = new Set<string>();
   const settledChildren = new Set<string>();
@@ -662,9 +624,18 @@ async function runOpenCodeTurn(
   const childProjectors = new Map<string, OpenCodeEventProjector>();
   const toolProgress = new Map<string, Record<string, JsonValue>>();
 
+  const sendTokenUsage = () => {
+    const tokenBudget = readOpenCodeTokenUsage(turn.providerSessionId);
+    if (tokenBudget) send(createNormalizedMessage({
+      kind: 'status', text: 'token_budget', tokenBudget,
+      sessionId: turnSessionId(), provider: PROVIDER,
+    }));
+  };
+
   const finishForeground = () => {
     rootIdle = true;
-    if (turn.tasks.size === 0) {
+    sendTokenUsage();
+    if (!turn.work.pending) {
       if (completeSent) settleBackground();
       else turnDone();
       return;
@@ -680,15 +651,7 @@ async function runOpenCodeTurn(
   };
 
   const settleBackground = () => {
-    if (!rootIdle || turn.tasks.size > 0) return;
-    clearTimeout(backgroundQuietTimer);
-    // Native child completion can enqueue a follow-up on its parent. Let that
-    // wakeup publish, then check process-local activity before closing its server.
-    backgroundQuietTimer = setTimeout(() => {
-      void turn.client!.session.active({ signal: turn.abortController.signal }).then((active) => {
-        if (rootIdle && turn.tasks.size === 0 && !active[turn.providerSessionId!]) turnDone();
-      }).catch((error) => { if (!turn.aborted) failTurn(readErrorMessage(error)); });
-    }, 250);
+    if (rootIdle && !turn.work.pending) turnDone();
   };
 
   // A resumed child emits no session.created event. Verify its ancestry before
@@ -950,20 +913,15 @@ async function runOpenCodeTurn(
   };
 
   const trackSpawnedChildren = (message: SessionMessageInfo, messageID: string, nativeSessionId: string) => {
-    if (message.type !== 'assistant' || nativeSessionId !== turn.providerSessionId) return;
+    if (message.type !== 'assistant') return;
     for (const part of message.content) {
       if (part.type !== 'tool' || (part.name !== 'subagent' && part.name !== 'task')) continue;
-      rootToolMessages.add(messageID);
+      if (nativeSessionId === turn.providerSessionId) rootToolMessages.add(messageID);
       const metadata = 'metadata' in part.state ? part.state.metadata : undefined;
       const childID = metadata?.sessionID;
       if (metadata?.status !== 'running' || typeof childID !== 'string' || settledChildren.has(childID)) continue;
       ownedSessions.add(childID);
       childToolIds.set(childID, part.id);
-      turn.tasks.set(childID, {
-        taskId: childID, toolUseId: part.id, taskType: 'subagent',
-        description: String((part.state.input as AnyRecord)?.description ?? 'OpenCode subagent'),
-        startedAt: message.time.created,
-      });
     }
   };
 
@@ -984,6 +942,7 @@ async function runOpenCodeTurn(
       }, { signal: turn.abortController.signal });
       applyToolProgress(message);
       trackSpawnedChildren(message, messageID, nativeSessionId);
+      turn.work.track(message, nativeSessionId !== turn.providerSessionId);
       for (const normalized of context.normalizeMessage({ type: 'session.message', message }, turnSessionId())) {
         projector.publish(parentToolUseId ? { ...normalized, parentToolUseId } : normalized);
       }
@@ -1018,15 +977,16 @@ async function runOpenCodeTurn(
     }
     if (event.type === 'session.execution.started') {
       settledChildren.delete(data.sessionID);
+      turn.work.executionStarted(data.sessionID);
       const child = await turn.client!.session.get({ sessionID: data.sessionID }, { signal: turn.abortController.signal });
-      if (!turn.tasks.has(data.sessionID)) turn.tasks.set(data.sessionID, {
+      if (!turn.work.tasks.has(data.sessionID)) turn.work.tasks.set(data.sessionID, {
         taskId: data.sessionID, toolUseId: data.sessionID, taskType: 'subagent',
         description: child.title || 'OpenCode subagent', startedAt: event.created, nested: true,
       });
     }
     if (event.type === 'session.execution.succeeded' || event.type === 'session.execution.failed' || event.type === 'session.execution.interrupted') {
       settledChildren.add(data.sessionID);
-      turn.tasks.delete(data.sessionID);
+      turn.work.executionEnded(data.sessionID);
       settleBackground();
     }
     for (const messageID of rootToolMessages) forwardMessage(messageID);
@@ -1059,6 +1019,7 @@ async function runOpenCodeTurn(
         return;
       case 'session.execution.succeeded':
         await messageQueue;
+        turn.work.executionEnded(data.sessionID);
         if (data.sessionID === turn.providerSessionId) finishForeground();
         return;
       case 'session.execution.interrupted':
@@ -1108,11 +1069,15 @@ async function runOpenCodeTurn(
       if (!await ownsSession(data.sessionID)) return;
     }
     if (!ownedSessions.has(data.sessionID) || turnEnded) return;
+    if (event.type === 'session.synthetic') {
+      turn.work.notificationDelivered(data.sessionID, data.metadata);
+    }
     if (event.type === 'permission.replied') pendingPrompts.get(event.data.requestID)?.settle();
     if (data.sessionID !== turn.providerSessionId) {
       await handleChildEvent(event);
       return;
     }
+    if (data.sessionID === turn.providerSessionId && event.type === 'session.compaction.ended') sendTokenUsage();
     if (data.sessionID === turn.providerSessionId && projector.handle(event)) return;
     await handleRootEvent(event);
   };
@@ -1232,10 +1197,12 @@ async function runOpenCodeTurn(
       registerProviderSession(created.id);
     }
     if (turn.aborted) throw new Error('aborted');
-    await client.session.prompt({
+    await recordOpenCodeContextWindows(client, turn.providerSessionId!, workingDir, turn.abortController.signal)
+      .catch((error) => console.warn('[OpenCode] Could not record model context windows:', readErrorMessage(error)));
+    await sendOpenCodeInput(client, workingDir, {
       sessionID: turn.providerSessionId!, text: promptText,
       ...(nativeFiles.length ? { files: nativeFiles } : {}),
-    }, requestOptions);
+    }, turn.abortController.signal);
 
     await turnFinished;
     await messageQueue;
@@ -1251,9 +1218,8 @@ async function runOpenCodeTurn(
     }
   } finally {
     turnEnded = true;
-    if (!turn.aborted && turnError && turn.tasks.size > 0) await interruptTurnWork(turn);
+    if (!turn.aborted && turnError && turn.work.tasks.size > 0) await interruptTurnWork(turn);
     clearTimeout(backgroundTimer);
-    clearTimeout(backgroundQuietTimer);
     liveTurns.delete(turn);
     // Whatever is still open was asked of a turn that has ended.
     for (const requestId of Array.from(turnPromptIds)) {
@@ -1286,18 +1252,6 @@ async function runOpenCodeTurn(
     return;
   }
 
-  // OpenCode's own database is keyed by the provider-native id.
-  const tokenBudget = readOpenCodeTokenUsage(turn.providerSessionId);
-  if (tokenBudget) {
-    send(createNormalizedMessage({
-      kind: 'status',
-      text: 'token_budget',
-      tokenBudget,
-      sessionId: finalSessionId,
-      provider: PROVIDER,
-    }));
-  }
-
   if (!completeSent) send(createCompleteMessage({ provider: PROVIDER, sessionId: finalSessionId, exitCode: completedNormally ? 0 : 1 }));
 
   if (completedNormally) {
@@ -1328,10 +1282,13 @@ async function runOpenCodeTurn(
  */
 async function interruptTurnWork(turn: OpenCodeTurn): Promise<void> {
   if (!turn.client) return;
-  const ids = new Set([...(turn.providerSessionId ? [turn.providerSessionId] : []), ...turn.tasks.keys()]);
+  const ids = new Set([...(turn.providerSessionId ? [turn.providerSessionId] : []), ...turn.work.tasks.keys()]);
   await Promise.all(Array.from(ids, async (sessionID) => {
     try {
-      await turn.client!.session.interrupt({ sessionID }, { signal: AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS) });
+      const signal = AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS);
+      if (!await turn.work.stop(turn.client!, sessionID, turn.directory, signal)) {
+        await turn.client!.session.interrupt({ sessionID }, { signal });
+      }
     } catch (error) {
       console.warn(`[OpenCode] Failed to interrupt ${sessionID}; stopping its server:`, error);
     }
@@ -1401,7 +1358,7 @@ function getPendingOpenCodePrompts(sessionId: string) {
  * provider, which treats subagents of a running turn as still in progress.
  */
 export function isOpenCodeSessionActive(sessionId: string): boolean {
-  return Array.from(liveTurns).some((turn) => turn.key === sessionId || turn.tasks.has(sessionId));
+  return Array.from(liveTurns).some((turn) => turn.key === sessionId || turn.work.tasks.has(sessionId));
 }
 
 /**
@@ -1413,12 +1370,12 @@ export const opencodeRuntime = {
   run: runOpenCodeTurn,
   abort: abortOpenCodeSession,
   listBackgroundWork: () => Array.from(liveTurns)
-    .filter((turn) => turn.tasks.size > 0)
-    .map((turn) => ({ sessionId: turn.key, tasks: Array.from(turn.tasks.values()) })),
+    .filter((turn) => turn.work.tasks.size > 0)
+    .map((turn) => ({ sessionId: turn.key, tasks: Array.from(turn.work.tasks.values()) })),
   async stopBackgroundTask(sessionId: string, taskId: string): Promise<boolean> {
-    const turn = Array.from(liveTurns).find((candidate) => candidate.key === sessionId && candidate.tasks.has(taskId));
+    const turn = Array.from(liveTurns).find((candidate) => candidate.key === sessionId && candidate.work.tasks.has(taskId));
     if (!turn?.client) return false;
-    await turn.client.session.interrupt({ sessionID: taskId }, { signal: AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS) });
+    await turn.work.stop(turn.client, taskId, turn.directory, AbortSignal.timeout(SESSION_ABORT_TIMEOUT_MS));
     // The terminal event removes the task only once native cleanup finishes.
     return true;
   },

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { isSessionNotFoundError } from '@opencode/client';
 
+import { readOpenCodeUsage } from '@/modules/providers/list/opencode/opencode-usage.provider.js';
 import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { isOpenCodeSessionActive } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
 import { startOpenCodeServer } from '@/modules/providers/list/opencode/opencode-server.provider.js';
@@ -45,15 +46,6 @@ type OpenCodeHistoryRow = {
   part_time_created: number | null;
   part_data: string | null;
 };
-
-type OpenCodeTokenTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-};
-
 
 /** Projects V2 message content onto the display rows shared by live and history rendering. */
 function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
@@ -278,72 +270,6 @@ const toAskUserQuestionCall = (toolMessage: NormalizedMessage, toolState: AnyRec
 const isStoppedTurnError = (error: unknown): boolean =>
   readOptionalString(readObjectRecord(error)?.name) === 'MessageAbortedError';
 
-const buildTokenUsage = (totals: OpenCodeTokenTotals | undefined): AnyRecord | undefined => {
-  if (!totals) {
-    return undefined;
-  }
-
-  const inputTokens = totals.inputTokens;
-  const displayInputTokens = inputTokens + totals.cacheReadTokens;
-  const outputTokens = totals.outputTokens;
-  const used = inputTokens
-    + outputTokens
-    + totals.reasoningTokens
-    + totals.cacheReadTokens
-    + totals.cacheWriteTokens;
-
-  if (used <= 0) {
-    return undefined;
-  }
-
-  return {
-    used,
-    inputTokens: displayInputTokens,
-    outputTokens,
-    breakdown: {
-      input: displayInputTokens,
-      output: outputTokens,
-    },
-  };
-};
-
-const readOpenCodeSessionColumnTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const columns = db.prepare('PRAGMA table_info(session_v2)').all() as { name: string }[];
-  const columnNames = new Set(columns.map((column) => column.name));
-  const requiredColumns = ['tokens_input', 'tokens_output', 'tokens_reasoning', 'tokens_cache_read', 'tokens_cache_write'];
-  if (!requiredColumns.every((column) => columnNames.has(column))) {
-    return undefined;
-  }
-
-  const row = db.prepare(`
-    SELECT
-      tokens_input AS inputTokens,
-      tokens_output AS outputTokens,
-      tokens_reasoning AS reasoningTokens,
-      tokens_cache_read AS cacheReadTokens,
-      tokens_cache_write AS cacheWriteTokens
-    FROM session_v2
-    WHERE id = ?
-  `).get(sessionId) as OpenCodeTokenTotals | undefined;
-
-  if (!row) {
-    return undefined;
-  }
-
-  return buildTokenUsage({
-    inputTokens: Number(row.inputTokens ?? 0),
-    outputTokens: Number(row.outputTokens ?? 0),
-    reasoningTokens: Number(row.reasoningTokens ?? 0),
-    cacheReadTokens: Number(row.cacheReadTokens ?? 0),
-    cacheWriteTokens: Number(row.cacheWriteTokens ?? 0),
-  });
-};
-
-const aggregateOpenCodeSessionTokenUsage = readOpenCodeSessionColumnTokenUsage;
-
 const readToolResult = (state: AnyRecord): SubagentActivity['toolResult'] => {
   const status = readOptionalString(state.status);
   if (status !== 'completed' && status !== 'error') {
@@ -542,7 +468,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       const rows = readHistoryRows(db, providerSessionId);
 
       const normalized = this.normalizeHistoryRows(rows, sessionId, db);
-      const tokenUsage = aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
+      const tokenUsage = readOpenCodeUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);
       const normalizedLimit = limit === null ? null : Math.max(0, limit);

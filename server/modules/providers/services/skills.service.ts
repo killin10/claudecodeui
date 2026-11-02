@@ -7,6 +7,10 @@ import type {
 } from '@/shared/types.js';
 
 export const providerSkillsService = {
+  /** Native invocations for the composer; other providers keep their existing skill menu. */
+  async listProviderInvocations(providerName: string, options?: ProviderSkillListOptions) {
+    return providerRegistry.resolveProvider(providerName).skills.listInvocations?.(options);
+  },
   /**
    * Lists normalized skills visible to one provider.
    */

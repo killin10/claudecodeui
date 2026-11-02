@@ -26,3 +26,9 @@ describe('TokenUsageSummary count', () => {
     assert.equal(shownCount(9_960_000), '10M');
   });
 });
+
+it('compaction awaiting a model request shows unavailable instead of zero context', () => {
+  const { getByRole, unmount } = render(<TokenUsageSummary usage={{ used: 0, contextUnavailable: true }} />);
+  assert.ok(getByRole('button').textContent?.includes('—'));
+  unmount();
+});

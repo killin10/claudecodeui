@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { readOpenCodeUsage } from '@/modules/providers/list/opencode/opencode-usage.provider.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
@@ -44,14 +45,6 @@ type TokenUsageResult = {
   };
   unsupported?: boolean;
   message?: string;
-};
-
-type OpenCodeTokenRow = {
-  inputTokens: number | null;
-  outputTokens: number | null;
-  reasoningTokens: number | null;
-  cacheReadTokens: number | null;
-  cacheWriteTokens: number | null;
 };
 
 /**
@@ -334,59 +327,11 @@ function claudeEntriesHaveUsage(entries: AnyRecord[]): boolean {
 function readOpenCodeTokenUsage(databasePath: string, providerSessionId: string): TokenUsageResult {
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
-    const columns = database.prepare('PRAGMA table_info(session_v2)').all() as Array<{ name: string }>;
-    const columnNames = new Set(columns.map((column) => column.name));
-    const requiredColumns = [
-      'tokens_input',
-      'tokens_output',
-      'tokens_reasoning',
-      'tokens_cache_read',
-      'tokens_cache_write',
-    ];
-
-    if (!requiredColumns.every((column) => columnNames.has(column))) {
-      return {
-        used: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        breakdown: { input: 0, output: 0 },
-        unsupported: true,
-        message: 'Token usage tracking is not available in this OpenCode database schema',
-      };
+    const usage = readOpenCodeUsage(database, providerSessionId);
+    if (!usage) {
+      throw new AppError('OpenCode session was not found.', { code: 'OPENCODE_SESSION_NOT_FOUND', statusCode: 404 });
     }
-
-    const row = database.prepare(`
-      SELECT
-        tokens_input AS inputTokens,
-        tokens_output AS outputTokens,
-        tokens_reasoning AS reasoningTokens,
-        tokens_cache_read AS cacheReadTokens,
-        tokens_cache_write AS cacheWriteTokens
-      FROM session_v2
-      WHERE id = ?
-    `).get(providerSessionId) as OpenCodeTokenRow | undefined;
-
-    if (!row) {
-      throw new AppError('OpenCode session was not found.', {
-        code: 'OPENCODE_SESSION_NOT_FOUND',
-        statusCode: 404,
-      });
-    }
-
-    const inputTokens = readUsageNumber(row.inputTokens) + readUsageNumber(row.cacheReadTokens);
-    const outputTokens = readUsageNumber(row.outputTokens);
-    const used = readUsageNumber(row.inputTokens)
-      + outputTokens
-      + readUsageNumber(row.reasoningTokens)
-      + readUsageNumber(row.cacheReadTokens)
-      + readUsageNumber(row.cacheWriteTokens);
-
-    return {
-      used,
-      inputTokens,
-      outputTokens,
-      breakdown: { input: inputTokens, output: outputTokens },
-    };
+    return usage;
   } finally {
     database.close();
   }

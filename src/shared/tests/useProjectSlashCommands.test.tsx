@@ -127,3 +127,16 @@ test('a disabled consumer does not request until it is enabled', async () => {
   await waitFor(() => assert.equal(result.current.commands.length, 1));
   assert.equal(listCommands.mock.calls.length, 1);
 });
+
+test('OpenCode uses its native catalog and overrides compact without offering Claude custom commands', async () => {
+  listCommands.mockResolvedValue(jsonResponse({ builtIn: [{ name: '/help' }, { name: '/compact' }], custom: [{ name: '/claude-only' }] }));
+  listSkills.mockResolvedValue(jsonResponse({ data: {
+    skills: [{ name: 'stale', command: '/stale', scope: 'project' }],
+    invocations: [{ name: '/compact', kind: 'command' }, { name: '/review', kind: 'skill', path: '/skill.md' }],
+  } }));
+  const { useProjectSlashCommands } = await import('@/shared/hooks/useProjectSlashCommands');
+  const { result } = renderHook(() => useProjectSlashCommands(project, 'opencode'));
+  await waitFor(() => assert.equal(result.current.isLoading, false));
+  assert.deepEqual(result.current.commands.map((command) => [command.name, command.type]),
+    [['/help', 'built-in'], ['/compact', 'native'], ['/review', 'skill']]);
+});

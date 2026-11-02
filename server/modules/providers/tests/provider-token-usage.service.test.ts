@@ -131,8 +131,10 @@ test('OpenCode token usage resolves its provider-native id from the session row'
         tokens_reasoning INTEGER,
         tokens_cache_read INTEGER,
         tokens_cache_write INTEGER
-      )
+      );
+      CREATE TABLE session_message (session_id TEXT, type TEXT, seq INTEGER, data TEXT);
     `);
+    database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?)').run('provider-session', 'assistant', 1, JSON.stringify({tokens: {input: 2, output: 1, reasoning: 1, cache: {read: 3, write: 1}}}));
     database.prepare(`
       INSERT INTO session_v2 (
         id,
@@ -154,10 +156,9 @@ test('OpenCode token usage resolves its provider-native id from the session row'
     });
 
     assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
-      used: 29,
-      inputTokens: 17,
-      outputTokens: 7,
-      breakdown: { input: 17, output: 7 },
+      used: 8, inputTokens: 6, outputTokens: 2, breakdown: { input: 6, output: 2 },
+      contextUnavailable: false,
+      cumulative: { used: 29, inputTokens: 19, outputTokens: 10, breakdown: { input: 19, output: 10 } },
     });
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });

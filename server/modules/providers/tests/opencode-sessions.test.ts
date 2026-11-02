@@ -67,6 +67,7 @@ const createOpenCodeDatabase = async (homeDir: string, workspacePath: string): P
     }));
     insert.run('message-assistant', 'open-session-1', 'assistant', 2, JSON.stringify({
       time: { created: 1700000002000, completed: 1700000003000 },
+      tokens: { input: 5, output: 2, reasoning: 1, cache: { read: 3, write: 1 } },
       content: [
         { type: 'reasoning', text: 'I will inspect the provider shape first.' },
         { type: 'text', text: 'The provider is wired.' },
@@ -281,13 +282,9 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     assert.equal(history.messages[3]?.kind, 'tool_use');
     assert.deepEqual(history.messages[3]?.toolResult, { content: 'ok', isError: false });
     assert.deepEqual(history.tokenUsage, {
-      used: 42,
-      inputTokens: 13,
-      outputTokens: 20,
-      breakdown: {
-        input: 13,
-        output: 20,
-      },
+      used: 12, inputTokens: 9, outputTokens: 3, breakdown: { input: 9, output: 3 },
+      contextUnavailable: false,
+      cumulative: { used: 42, inputTokens: 15, outputTokens: 27, breakdown: { input: 15, output: 27 } },
     });
 
     const paged = await provider.fetchHistory('open-session-1', { limit: 2, offset: 0 });

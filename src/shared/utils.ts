@@ -241,6 +241,10 @@ export const getPageTitle = (
 export const isSkillCommand = (command: SlashCommand): boolean =>
   command.type === 'skill' || command.metadata?.type === 'skill';
 
+/** Used by chat command selection and submission: native invocations and skills travel through the provider runtime. */
+export const isProviderCommand = (command: SlashCommand): boolean =>
+  isSkillCommand(command) || command.type === 'native';
+
 // ---------------------------
 
 //----------------- QUICK SETTINGS PANEL ------------

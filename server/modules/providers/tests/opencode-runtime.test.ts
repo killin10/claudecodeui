@@ -467,7 +467,7 @@ test('bypassPermissions answers permissions and questions without asking anyone'
   // Unanswered, so the agent carries on instead of the turn ending.
   assert.ok(findRequest(turn.requests, 'DELETE', /\/form\/que_1$/));
   // A bypassed turn does not touch the session's question rule.
-  assert.equal(findRequest(turn.requests, 'PATCH', /^\/api\/session\//), undefined);
+  assert.ok(turn.requests.filter((request) => request.method === 'PATCH').every((request) => !request.body?.permission));
 });
 
 test('acceptEdits approves file edits and still asks for everything else', async () => {
@@ -880,4 +880,101 @@ test('leaving a CloudCLI plan restores the saved agent instead of the current de
   assert.equal(turn.error, null);
   assert.equal(findRequest(turn.requests, 'POST', /\/agent$/)?.body.agent, 'reviewer');
   assert.equal(findRequest(turn.requests, 'PATCH', /\/ses_plan$/)?.body.metadata.cloudcliPreviousAgent, null);
+});
+
+test('detached child notifications survive a delay and finish their parent followup', async () => {
+  const turn = await runTurn({ scenario: { steps: [{ type: 'detached-child', childID: 'ses_delayed' }] } });
+  assert.equal(turn.error, null);
+  assert.ok(turn.frames.some((frame) => frame.content === 'Background result received'));
+  assert.equal(turn.frames.filter((frame) => frame.kind === 'complete').length, 1);
+  assert.deepEqual(opencodeRuntime.listBackgroundWork(), []);
+  assert.ok(await waitForExit(turn.serverPid!));
+});
+
+for (const stop of [false, true]) {
+  test(`background shell stays alive through notification and followup (stop=${stop})`, async () => {
+    let stopping: Promise<boolean> | undefined;
+    let listed: ReturnType<typeof opencodeRuntime.listBackgroundWork> = [];
+    const turn = await runTurn({
+      scenario: { steps: [{ type: 'background-shell', shellID: 'shl_owned', stop }] },
+      onFrame(frame) {
+        if (frame.kind !== 'complete') return;
+        listed = opencodeRuntime.listBackgroundWork();
+        if (stop) stopping = opencodeRuntime.stopBackgroundTask('app-session', 'shl_owned');
+      },
+    });
+    assert.equal(turn.error, null);
+    assert.equal(listed[0]?.tasks[0]?.taskType, 'shell');
+    assert.ok(turn.frames.some((frame) => frame.content === 'Background result received'));
+    assert.equal(turn.frames.filter((frame) => frame.kind === 'complete').length, 1);
+    if (stop) {
+      assert.equal(await stopping, true);
+      assert.ok(findRequest(turn.requests, 'DELETE', /\/shell\/shl_owned$/));
+      assert.equal(findRequest(turn.requests, 'POST', /shl_owned\/interrupt$/), undefined);
+    }
+    assert.deepEqual(opencodeRuntime.listBackgroundWork(), []);
+    assert.equal(await opencodeRuntime.stopBackgroundTask('app-session', 'shl_foreign'), false);
+    assert.ok(await waitForExit(turn.serverPid!));
+  });
+}
+
+test('native skill invocation attaches its id and retains arguments and files', async () => {
+  const turn = await runTurn({ command: '/review check changes', files: [{ path: '/tmp/review.txt', name: 'review.txt' }],
+    scenario: { skills: [{ id: 'review', name: 'Review', path: '/tmp/skill', description: 'Review code' }], steps: [] } });
+  assert.equal(turn.error, null);
+  const prompt = findRequest(turn.requests, 'POST', /\/prompt$/)?.body;
+  assert.deepEqual(prompt.skills, [{ id: 'review', mention: { start: 0, end: 7, text: '/review' } }]);
+  assert.equal(prompt.text, '/review check changes');
+  assert.equal(prompt.files[0].name, 'review.txt');
+});
+
+test('native commands and compact use their own APIs', async () => {
+  const command = await runTurn({ command: '/review check changes', scenario: { commands: [{ name: 'review' }], steps: [] } });
+  assert.equal(command.error, null);
+  assert.equal(findRequest(command.requests, 'POST', /\/prompt$/), undefined);
+  assert.deepEqual(findRequest(command.requests, 'POST', /\/command$/)?.body, { name: 'review', text: 'check changes' });
+  const compact = await runTurn({ command: '/compact', scenario: { steps: [] } });
+  assert.equal(compact.error, null);
+  assert.ok(findRequest(compact.requests, 'POST', /\/compact$/));
+  assert.equal(findRequest(compact.requests, 'POST', /\/prompt$/), undefined);
+});
+
+
+test('explicit skill mentions remain unambiguous beside a native command and inside text', async () => {
+  const turn = await runTurn({ command: 'Please /skill:review check changes', scenario: {
+    commands: [{ name: 'review' }], skills: [{ id: 'review', name: 'Review', path: '/skill.md' }], steps: [],
+  } });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/command$/), undefined);
+  assert.deepEqual(findRequest(turn.requests, 'POST', /\/prompt$/)?.body.skills,
+    [{ id: 'review', mention: { start: 7, end: 20, text: '/skill:review' } }]);
+});
+
+test('an unavailable explicit skill fails visibly instead of becoming ordinary prompt text', async () => {
+  const turn = await runTurn({ command: '/skill:removed do work', scenario: { steps: [] } });
+  assert.match(turn.error?.message ?? '', /skill not found: removed/);
+  assert.equal(findRequest(turn.requests, 'POST', /\/prompt$/), undefined);
+});
+
+
+test('native menu waits for plugin activation and distinguishes command and skill collisions', async () => {
+  setEnv('FAKE_OPENCODE_SCENARIO', JSON.stringify({ skills: [{ id: 'review', name: 'Review', path: '/skill.md' }],
+    commands: [{ name: 'review' }], steps: [] }));
+  setEnv('FAKE_OPENCODE_LOG', path.join(tempRoot, 'menu-requests.jsonl'));
+  const { listOpenCodeInvocations } = await import('@/modules/providers/list/opencode/opencode-inputs.provider.js');
+  const invocations = await listOpenCodeInvocations(projectDir);
+  assert.deepEqual(invocations.map((entry) => [entry.name, entry.kind]),
+    [['/compact', 'command'], ['/review', 'command'], ['/skill:review', 'skill']]);
+});
+
+
+test('a native command can carry a skill mention in its arguments', async () => {
+  const turn = await runTurn({ command: '/review use /skill:checks', scenario: {
+    commands: [{ name: 'review' }], skills: [{ id: 'checks', name: 'Checks', path: '/skill.md' }], steps: [],
+  } });
+  assert.equal(turn.error, null);
+  assert.deepEqual(findRequest(turn.requests, 'POST', /\/command$/)?.body, {
+    name: 'review', text: 'use /skill:checks',
+    skills: [{ id: 'checks', mention: { start: 4, end: 17, text: '/skill:checks' } }],
+  });
 });

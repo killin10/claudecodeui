@@ -2,7 +2,7 @@
 
 CloudCLI requires OpenCode **2.1.4 or a newer 2.x release**. It uses the official `@opencode/client` package, pinned to 2.1.4. The former `@opencode-ai/sdk/v2` entry point implements the V1 server protocol and is no longer used.
 
-Each turn starts an authenticated `opencode serve` on a random loopback port. CloudCLI checks `/api/info` for readiness instead of parsing the CLI's startup banner, then subscribes to events before sending the prompt. The child inherits the service environment; authentication and ownership variables are added only to that child. Completion, failure and cancellation stop the owned process.
+Each turn starts an authenticated `opencode serve` on a random loopback port. CloudCLI checks `/api/info` for readiness instead of parsing the CLI's startup banner, then subscribes to events before sending the prompt. The child inherits the service environment; authentication and ownership variables are added only to that child. Foreground completion retains the process while background work is pending. Failure, cancellation or completion of all work stops the owned process.
 
 ## Supported behavior
 
@@ -11,6 +11,11 @@ Each turn starts an authenticated `opencode serve` on a random loopback port. Cl
 - Reply to permission requests and map V2 forms to the existing question panel. Noninteractive runs cancel forms instead of inventing user answers.
 - Read history and usage from `session_v2` and `session_message` in OpenCode's database. Watch both the database and its WAL for changes.
 - Discover active credential integration identifiers from the V2 credential table without reading credential values. Manage MCP entries under `mcp.servers`, retaining other MCP settings.
+- List and stop background shell and subagent tasks. Detached tasks retain the server until their native completion notification is delivered and the resulting execution finishes. A 30-minute ceiling bounds retained background work.
+- Discover commands and Skills from the native catalog. `/review` and other native commands use `session.command`; `/compact` uses `session.compact` and accepts no arguments or attachments. The menu inserts `/skill:<id>` for Skills to distinguish them from commands with the same name. Skill mentions in text or command arguments carry native IDs and mention offsets; an unavailable explicit Skill reports an error.
+- Display the last model request's context usage separately from cumulative session usage. Input includes cache reads and writes; output includes reasoning tokens. Model windows are obtained from the native catalog and saved through the session metadata API. Successful compaction marks context usage unavailable until the next model request measures it.
+
+Native Skill and command discovery waits for plugin activation through `model.list`. In OpenCode 2.1.4, reading `skill.list` or `command.list` immediately after startup can return an incomplete catalog.
 
 The runtime does not fall back to V1. Existing V1 sessions must be migrated by OpenCode before CloudCLI can read them through the V2 store. CloudCLI does not rewrite the provider database. Its application session mapping remains separate, and deleting an application session never deletes the shared OpenCode database.
 
@@ -32,6 +37,6 @@ npm run typecheck
 npm run lint
 ```
 
-The turn's event and permission callbacks intentionally share one lifecycle closure: cancellation, prompt resolution and stream completion must observe the same state. Server process ownership is isolated in `opencode-server.provider.ts`, and message projection is shared by live and historical rendering in the sessions provider.
+The turn's event and permission callbacks intentionally share one lifecycle closure: cancellation, prompt resolution and stream completion must observe the same state. Separate provider components own server processes, background task tracking, native input dispatch and usage accounting. Live events, history and the token endpoint share the same usage calculation.
 
 Protocol references: [V2 migration](https://opencode.ai/v2/docs/migrate-v1/), [official client](https://opencode.ai/v2/docs/build/client), [API](https://opencode.ai/v2/docs/api).

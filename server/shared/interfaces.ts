@@ -9,6 +9,7 @@ import type {
   NormalizedMessage,
   ProviderSkill,
   ProviderSkillListOptions,
+  ProviderInvocation,
   ProviderAuthStatus,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
@@ -163,6 +164,9 @@ export interface IProviderAuth {
  * provider. Each skill is read from a `SKILL.md` file under its skill directory.
  */
 export interface IProviderSkills {
+  /** Optional native menu entries, independent of filesystem skill management. */
+  listInvocations?(options?: ProviderSkillListOptions): Promise<ProviderInvocation[]>;
+
   /**
    * Lists all skills visible to this provider for the optional workspace.
    */

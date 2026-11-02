@@ -12,6 +12,7 @@ import type {
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 
+import { isProviderCommand } from '@/shared/utils';
 import { api, ApiRequestError } from '@/shared/api';
 import { PROVIDER_PERMISSION_PREFERENCE_KEYS } from '@/shared/constants';
 import { readUserPreference } from '@/shared/userSettings';
@@ -938,7 +939,7 @@ export function useChatComposerState({
                 metadata: { type: 'builtin' },
               } as SlashCommand)
             : undefined);
-        if (matchedCommand && matchedCommand.type !== 'skill') {
+        if (matchedCommand && !isProviderCommand(matchedCommand)) {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
           recordSentMessage(currentInput);
           setInput('');

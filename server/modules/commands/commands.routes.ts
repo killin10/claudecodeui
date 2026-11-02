@@ -340,6 +340,8 @@ Custom commands can be created in:
       action: "cost",
       data: {
         tokenUsage: {
+          ...(tokenUsage.contextUnavailable !== undefined ? { contextUnavailable: tokenUsage.contextUnavailable } : {}),
+          ...(tokenUsage.cumulative ? { cumulative: tokenUsage.cumulative } : {}),
           used,
           total,
         },

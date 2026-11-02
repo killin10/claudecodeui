@@ -21,6 +21,8 @@ type Step =
   | { type: 'form'; form: FormInfo; directory: string }
   | { type: 'interrupt' }
   | { type: 'background'; childID: string }
+  | { type: 'background-shell'; shellID: string; stop?: boolean }
+  | { type: 'detached-child'; childID: string }
   /** Several requests asked at once; a reject of one rejects the rest, as OpenCode does. */
   | { type: 'parallel-permissions'; requests: Array<{ id: string; permission: string; patterns: string[]; always: string[] }> }
   | { type: 'error'; name: string; message: string }
@@ -36,6 +38,8 @@ type Scenario = {
   agents?: Array<{ name: string; permission: PermissionRule[] }>;
   defaultAgent?: string;
   messages?: Record<string, any>;
+  skills?: unknown[];
+  commands?: unknown[];
   /** Answered with a status instead of 204, as OpenCode does for a bad prompt. */
   promptStatus?: number;
   /** Version /global/health reports; null makes the route missing, as before OpenCode 1.0.224. */
@@ -74,6 +78,7 @@ if (args[0] !== 'serve') {
 const streams = new Set<http.ServerResponse>();
 const sessions = new Map(Object.entries(scenario.sessions ?? {}));
 const waiting = new Map<string, (reply: { kind: 'permission' | 'question'; value: unknown }) => void>();
+let catalogReady = false;
 let eventCounter = 0;
 let partCounter = 0;
 let turnAborted: (() => void) | null = null;
@@ -169,6 +174,35 @@ async function runTurn(sessionID: string): Promise<void> {
   emit('message.updated', { sessionID, info: { id: 'msg_assistant', sessionID, role: 'assistant' } });
 
   for (const step of scenario.steps) {
+    if (step.type === 'background-shell' || step.type === 'detached-child') {
+      const shell = step.type === 'background-shell';
+      const taskID = shell ? step.shellID : step.childID;
+      if (!shell) {
+        sessions.set(taskID, { parentID: sessionID });
+        emit('session.created', { sessionID: taskID, parentID: sessionID });
+      }
+      messages.set('msg_detached', {
+        id: 'msg_detached', type: 'assistant', time: { created: Date.now() },
+        content: [{ type: 'tool', name: shell ? 'shell' : 'subagent', id: 'tool_background', state: {
+          status: 'completed', input: { background: true, command: 'sleep 1' },
+          metadata: { status: 'running', ...(shell ? { shellID: taskID } : { sessionID: taskID }) }, content: [],
+        } }],
+      });
+      emit('session.tool.success', { sessionID, assistantMessageID: 'msg_detached', id: 'tool_background' });
+      emit('session.execution.succeeded', { sessionID });
+      if (shell && step.stop) await aborted;
+      if (!shell) emit('session.execution.succeeded', { sessionID: taskID });
+      // Native notifications can arrive well after child execution ends.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      emit('session.execution.started', { sessionID });
+      emit('session.synthetic', { sessionID, text: 'background finished', metadata: {
+        source: shell ? 'shell' : 'subagent', ...(shell ? { shellID: taskID } : { childID: taskID }), state: 'completed',
+      } });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      emitPart(sessionID, { messageID: 'msg_followup', type: 'text', text: 'Background result received' });
+      emit('session.execution.succeeded', { sessionID });
+      return;
+    }
     if (step.type === 'background') {
       sessions.set(step.childID, { parentID: sessionID });
       emit('session.created', { sessionID: step.childID, parentID: sessionID });
@@ -371,17 +405,40 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && ['/model', '/skill', '/command'].includes(path)) {
+    if (path === '/model') catalogReady = true;
+    if (!catalogReady) {
+      sendJson(res, 200, { location: { directory: directoryHeader }, data: [] });
+      return;
+    }
+    const data = path === '/skill' ? scenario.skills ?? [] : path === '/command' ? scenario.commands ?? [] : [
+      { id: 'gpt-5.6-terra', providerID: 'github-copilot', limit: { context: 128000 } },
+    ];
+    sendJson(res, 200, { location: { directory: directoryHeader }, data });
+    return;
+  }
+  if (req.method === 'DELETE' && path.startsWith('/shell/')) {
+    turnAborted?.();
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && path === '/config') {
     sendJson(res, 200, [{ type: 'document', info: { default_agent: scenario.defaultAgent ?? 'build' } }]);
     return;
   }
 
-  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/prompt$/.exec(path))) {
+  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/(prompt|command|compact)$/.exec(path))) {
     if (scenario.promptStatus) {
       sendJson(res, scenario.promptStatus, { name: 'BadRequest', data: { message: 'The prompt was refused' } });
       return;
     }
-    sendJson(res, 200, { data: { id: 'inbox_1', sessionID: match[1], type: 'user' } });
+    if (match[2] === 'command') {
+      res.writeHead(204);
+      res.end();
+    } else {
+      sendJson(res, 200, { data: { id: 'inbox_1', sessionID: match[1], type: 'user' } });
+    }
     void runTurn(match[1]);
     return;
   }

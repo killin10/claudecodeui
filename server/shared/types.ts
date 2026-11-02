@@ -711,6 +711,14 @@ export type FetchHistoryResult = {
  */
 export type ProviderSkillScope = 'user' | 'project' | 'plugin' | 'repo' | 'admin' | 'system';
 
+/** Native provider invocations shown in the composer; names include the slash, paths identify skills only. */
+export type ProviderInvocation = {
+  name: string;
+  description: string;
+  kind: 'skill' | 'command';
+  path?: string;
+};
+
 /**
  * Shared input accepted by provider skill listing operations.
  *

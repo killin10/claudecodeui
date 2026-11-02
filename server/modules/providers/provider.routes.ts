@@ -759,7 +759,8 @@ router.get(
     const provider = parseProvider(req.params.provider);
     const workspacePath = readOptionalQueryString(req.query.workspacePath);
     const skills = await providerSkillsService.listProviderSkills(provider, { workspacePath });
-    res.json(createApiSuccessResponse({ provider, skills }));
+    const invocations = await providerSkillsService.listProviderInvocations(provider, { workspacePath });
+    res.json(createApiSuccessResponse({ provider, skills, ...(invocations ? { invocations } : {}) }));
   }),
 );
 

@@ -732,6 +732,8 @@ export type ModelCommandData = {
 /** Result payload of the chat `/cost` slash command, carrying the session's token usage totals and input/output breakdown for the command modal's usage view. */
 export type CostCommandData = {
   tokenUsage?: {
+    contextUnavailable?: boolean;
+    cumulative?: { used: number; cost?: number };
     used?: number;
     total?: number;
   };

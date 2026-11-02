@@ -427,7 +427,8 @@ function CostContent({ data }: { data: CostCommandData }) {
     typeof data.tokenBreakdown?.input === 'number' ||
     typeof data.tokenBreakdown?.output === 'number';
   const usageRows = [
-    { label: 'Total tokens used', value: formatNumber(used), icon: Activity },
+    { label: 'Current context tokens', value: data.tokenUsage?.contextUnavailable ? 'Awaiting next model request' : formatNumber(used), icon: Activity },
+    ...(data.tokenUsage?.cumulative ? [{ label: 'Session cumulative tokens', value: formatNumber(data.tokenUsage.cumulative.used), icon: Coins }] : []),
     ...(hasBreakdown
       ? [
           {
