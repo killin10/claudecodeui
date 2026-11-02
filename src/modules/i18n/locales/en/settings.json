@@ -1,4 +1,26 @@
 {
+  "opencodePermissions": {
+    "title": "OpenCode permissions",
+    "description": "Edit user rules shared by OpenCode sessions. Later matching rules take precedence; agent and session rules may also apply. Changes apply to new turns.",
+    "directory": "Inspect rules for",
+    "home": "Home directory",
+    "loading": "Loading or saving…",
+    "reload": "Reload",
+    "userRules": "User rules",
+    "action": "Action",
+    "resource": "Resource",
+    "effect": "Effect",
+    "up": "Move up",
+    "down": "Move down",
+    "remove": "Remove",
+    "add": "Add rule",
+    "save": "Save user rules",
+    "sources": "Native configuration sources (read only)",
+    "inline": "Inline configuration",
+    "empty": "No configured rules for this directory.",
+    "saved": "Saved project approvals (Always allow)",
+    "noSaved": "No saved approvals for this project."
+  },
   "title": "Settings",
   "tabs": {
     "account": "Account",

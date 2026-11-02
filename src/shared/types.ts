@@ -1761,6 +1761,21 @@ type SnippetHighlight = {
 
 // ---------------------------
 
+//----------------- OPENCODE PERMISSION SETTINGS ------------
+
+/** One ordered native V2 permission rule, shared by the editor and source display. */
+export type OpenCodePermissionRule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' };
+
+/** Permission-only response for Settings; never contains other native configuration fields. */
+export type OpenCodePermissionSettings = {
+  directory: string;
+  editable: { path: string; revision: string; rules: OpenCodePermissionRule[] };
+  sources: Array<{ path: string | null; rules: OpenCodePermissionRule[]; agents: Array<{ name: string; rules: OpenCodePermissionRule[] }> }>;
+  saved: Array<{ id: string; action: string; resource: string }>;
+};
+
+// ---------------------------
+
 //----------------- PROVIDER SKILLS ------------
 
 /** The LLM provider whose skills are being listed, uploaded or deleted; use it to target the provider-specific skills endpoints. */

@@ -1,4 +1,26 @@
 {
+  "opencodePermissions": {
+    "title": "OpenCode 权限",
+    "description": "编辑 OpenCode 会话共用的用户规则。后面的匹配规则优先，Agent 和会话还可能附加规则。修改从新一轮对话开始生效。",
+    "directory": "查看目录的规则",
+    "home": "用户主目录",
+    "loading": "正在加载或保存…",
+    "reload": "重新加载",
+    "userRules": "用户规则",
+    "action": "操作",
+    "resource": "资源",
+    "effect": "处理方式",
+    "up": "上移",
+    "down": "下移",
+    "remove": "删除",
+    "add": "添加规则",
+    "save": "保存用户规则",
+    "sources": "原生配置来源（只读）",
+    "inline": "内联配置",
+    "empty": "此目录没有配置权限规则。",
+    "saved": "已保存的项目授权（始终允许）",
+    "noSaved": "此项目没有已保存的授权。"
+  },
   "title": "设置",
   "tabs": {
     "account": "账户",

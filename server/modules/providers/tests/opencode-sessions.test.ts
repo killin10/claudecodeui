@@ -553,7 +553,7 @@ test('V2 compaction, shell and skill records remain visible in history projectio
   assert.equal(shell.toolResult?.content, '/tmp');
   assert.equal(shell.toolResult?.isError, false);
   assert.match(normalize({ type: 'skill', name: 'review', text: 'Review instructions' }).content!, /Review instructions/);
-  assert.equal(normalize({ type: 'model-switched', model: { providerID: 'test', id: 'review-model' } }).text, 'Model: test/review-model');
+  assert.equal(normalize({ type: 'model-switched', model: { providerID: 'test', id: 'review-model' } }).content, 'Model: test/review-model');
 });
 
 

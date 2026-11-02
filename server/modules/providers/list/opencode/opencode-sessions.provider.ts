@@ -131,11 +131,11 @@ function normalizeSpecialMessage(part: AnyRecord, base: Pick<NormalizedMessage, 
     case 'synthetic':
       return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: part.text ?? '' });
     case 'agent-switched':
-      return createNormalizedMessage({ ...base, kind: 'status', text: `Agent: ${part.agent}` });
+      return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: `Agent: ${part.agent}` });
     case 'model-switched':
-      return createNormalizedMessage({ ...base, kind: 'status', text: `Model: ${part.model?.providerID}/${part.model?.id}` });
+      return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: `Model: ${part.model?.providerID}/${part.model?.id}` });
     case 'location-switched':
-      return createNormalizedMessage({ ...base, kind: 'status', text: `Directory: ${part.location?.directory ?? ''}` });
+      return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: `Directory: ${part.location?.directory ?? ''}` });
     default:
       return null;
   }
@@ -439,10 +439,11 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   }
 
   /** Normalizes a V2 message fetched after a content event, using the same ids as history. */
-  normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
+  normalizeMessage(rawMessage: unknown, sessionId: string | null, options: { hydrateSubagents?: boolean } = {}): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
     if (raw?.type !== 'session.message' || !readObjectRecord(raw.message)) return [];
-    const db = openOpenCodeDatabaseForLiveEvent();
+    // Text-only search already has a reader and must not open a new database per row.
+    const db = options.hydrateSubagents === false ? null : openOpenCodeDatabaseForLiveEvent();
     try {
       return this.normalizeHistoryRows(messageRows(raw.message), sessionId ?? '', db);
     } finally {

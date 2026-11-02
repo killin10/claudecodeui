@@ -424,6 +424,8 @@ export const api = {
     updateCli: (provider: string) =>
       post(`/api/providers/${encodeURIComponent(provider)}/cli/update`),
     claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
+    opencodeSettingsPermissions: (workspacePath?: string) => get(`/api/providers/opencode/settings-permissions${workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : ''}`),
+    saveOpenCodeSettingsPermissions: (input: unknown) => put('/api/providers/opencode/settings-permissions', input),
 
     models: (provider: string) => get(`/api/providers/${provider}/models`),
     createModel: (provider: string, input: unknown) =>

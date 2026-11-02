@@ -2,6 +2,7 @@ import express, { type Request, type Response } from 'express';
 
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { claudeSettingsPermissionsService } from '@/modules/providers/services/claude-settings-permissions.service.js';
+import { opencodeSettingsPermissionsService } from '@/modules/providers/services/opencode-settings-permissions.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerCliService } from '@/modules/providers/services/provider-cli.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
@@ -875,6 +876,14 @@ router.get(
     res.json(createApiSuccessResponse({ sources }));
   }),
 );
+
+router.get('/opencode/settings-permissions', asyncHandler(async (req: Request, res: Response) => {
+  res.json(createApiSuccessResponse(await opencodeSettingsPermissionsService.read(readOptionalQueryString(req.query.workspacePath))));
+}));
+
+router.put('/opencode/settings-permissions', asyncHandler(async (req: Request, res: Response) => {
+  res.json(createApiSuccessResponse(await opencodeSettingsPermissionsService.save(req.body)));
+}));
 
 // ----------------- Session routes -----------------
 /**

@@ -146,10 +146,9 @@ type RememberedApproval = {
 // A completed foreground turn can retain its server while child sessions run.
 const liveTurns = new Set<OpenCodeTurn>();
 const pendingPrompts = new Map<string, PendingOpenCodePrompt>();
-// "Always allow" is remembered by OpenCode only in its server's memory, and a
-// turn's server stops with the turn. The approved patterns are kept here per
-// chat instead (in memory, never persisted), so a later turn in the same chat
-// is not asked again for what the user already allowed always.
+// V2 persists approvals with explicit save resources in its project store.
+// This per-chat cache also covers requests without save resources; those
+// fallback approvals last only until CloudCLI restarts or evicts the chat.
 const rememberedApprovals = new Map<string, RememberedApproval[]>();
 
 // ---------------------------------------------------------------------------
@@ -612,7 +611,7 @@ async function runOpenCodeTurn(
   const notify = (event: AnyRecord) => notifyUserIfEnabled({ userId, event: notificationEvent(event) });
 
   const turnPromptIds = new Set<string>();
-  const projector = new OpenCodeEventProjector(turnSessionId, send);
+  const projector = new OpenCodeEventProjector(turnSessionId, send, context.normalizeMessage);
   const forms = new Map<string, FormInfo>();
   const formDirectories = new Map<string, string>();
   const ownedSessions = new Set(resumeSessionId ? [resumeSessionId] : []);
@@ -960,7 +959,7 @@ async function runOpenCodeTurn(
     if (parentToolUseId) {
       let childProjector = childProjectors.get(data.sessionID);
       if (!childProjector) {
-        childProjector = new OpenCodeEventProjector(turnSessionId, (message) => send({ ...message, parentToolUseId }));
+        childProjector = new OpenCodeEventProjector(turnSessionId, (message) => send({ ...message, parentToolUseId }), context.normalizeMessage);
         childProjectors.set(data.sessionID, childProjector);
       }
       if (childProjector.handle(event)) return;

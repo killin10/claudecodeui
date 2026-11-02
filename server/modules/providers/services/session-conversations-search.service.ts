@@ -7,9 +7,10 @@ import { rgPath } from '@vscode/ripgrep';
 
 import { isClaudeNonTurnMessageRow, stripAnsiSequences } from '@/shared/utils.js';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { readOpenCodeSearchMessages } from '@/modules/providers/list/opencode/opencode-search.provider.js';
 
 type AnyRecord = Record<string, any>;
-type SearchableProvider = 'claude' | 'codex';
+type SearchableProvider = 'claude' | 'codex' | 'opencode';
 
 type SearchSnippetHighlight = {
   start: number;
@@ -93,7 +94,7 @@ type ProjectBucket = {
   sessions: SearchableSessionRow[];
 };
 
-const SUPPORTED_PROVIDERS = new Set<SearchableProvider>(['claude', 'codex']);
+const SUPPORTED_PROVIDERS = new Set<SearchableProvider>(['claude', 'codex', 'opencode']);
 const MAX_MATCHES_PER_SESSION = 2;
 const RIPGREP_FILE_CHUNK_SIZE = 40;
 const RIPGREP_CHUNK_CONCURRENCY = 6;
@@ -534,14 +535,10 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
     }
 
     const rawJsonlPath = typeof row.jsonl_path === 'string' ? row.jsonl_path.trim() : '';
-    if (!rawJsonlPath) {
-      continue;
-    }
-
-    const absoluteJsonlPath = path.resolve(rawJsonlPath);
-    if (!fsSync.existsSync(absoluteJsonlPath)) {
-      continue;
-    }
+    const absoluteJsonlPath = rawJsonlPath ? path.resolve(rawJsonlPath) : '';
+    if (provider === 'opencode') {
+      if (!row.provider_session_id) continue;
+    } else if (!absoluteJsonlPath || !fsSync.existsSync(absoluteJsonlPath)) continue;
 
     /**
      * Active session rows can still belong to an archived project because
@@ -1126,6 +1123,31 @@ async function parseCodexSessionMatches(
   };
 }
 
+async function parseOpenCodeSessionMatches(
+  session: SearchableSessionRow,
+  runtime: SearchRuntime,
+): Promise<SessionConversationResult | null> {
+  const matches: SessionConversationMatch[] = [];
+  for await (const message of readOpenCodeSearchMessages(session.provider_session_id!, runtime.isAborted)) {
+    if (runtime.totalMatches >= runtime.limit || runtime.isAborted()) break;
+    if (!runtime.matchesQuery(message.text)) continue;
+    addSessionMatch(runtime, matches, {
+      role: message.role,
+      ...runtime.buildSnippet(message.text),
+      timestamp: message.timestamp,
+      messageUuid: message.id,
+      provider: 'opencode',
+    });
+    if (matches.length >= MAX_MATCHES_PER_SESSION) break;
+  }
+  return matches.length ? {
+    sessionId: session.session_id,
+    provider: 'opencode',
+    sessionSummary: toSummaryText(session.custom_name, null, 'OpenCode Session'),
+    matches,
+  } : null;
+}
+
 async function parseSessionMatches(
   session: SearchableSessionRow,
   runtime: SearchRuntime,
@@ -1135,6 +1157,9 @@ async function parseSessionMatches(
   }
   if (session.provider === 'codex') {
     return parseCodexSessionMatches(session, runtime);
+  }
+  if (session.provider === 'opencode') {
+    return parseOpenCodeSessionMatches(session, runtime);
   }
   return null;
 }
@@ -1181,6 +1206,7 @@ export async function searchConversations(
   const searchablePathEntries: SearchablePathEntry[] = [];
 
   for (const session of searchableSessions) {
+    if (session.provider === 'opencode') continue;
     const normalizedPath = normalizeComparablePath(session.jsonl_path);
     if (!normalizedPath) {
       continue;
@@ -1204,11 +1230,14 @@ export async function searchConversations(
     words,
     signal ?? undefined,
   );
-  if (isAborted() || matchedFileKeys.size === 0) {
+  if (isAborted()) {
     return { results: [], titleResults, totalMatches: 0, query: safeQuery };
   }
 
   const matchedSessionKeys = new Set<string>();
+  for (const session of searchableSessions) {
+    if (session.provider === 'opencode') matchedSessionKeys.add(getSessionKey(session));
+  }
   for (const fileKey of matchedFileKeys) {
     const sessions = sessionsByPathKey.get(fileKey);
     if (!sessions) {

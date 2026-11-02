@@ -3,6 +3,7 @@ import { McpServers } from '@/modules/mcp';
 import { ProviderSkills } from '@/modules/skills';
 import AccountContent from '@/modules/settings/tabs/agents-settings/sections/content/AccountContent';
 import PermissionsContent from '@/modules/settings/tabs/agents-settings/sections/content/PermissionsContent';
+import { OpenCodePermissionsContent } from '@/modules/settings/tabs/agents-settings/sections/content/OpenCodePermissionsContent';
 
 type AgentCategoryContentSectionProps = {
   selectedAgent: AgentProvider;
@@ -82,6 +83,10 @@ export default function AgentCategoryContentSection({
           permissionMode={codexPermissionMode}
           onPermissionModeChange={onCodexPermissionModeChange}
         />
+      )}
+
+      {selectedCategory === 'permissions' && selectedAgent === 'opencode' && (
+        <OpenCodePermissionsContent projects={projects} />
       )}
 
       {selectedCategory === 'mcp' && (

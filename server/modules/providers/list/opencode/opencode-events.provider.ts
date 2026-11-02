@@ -3,6 +3,28 @@ import type { OpenCodeEvent } from '@opencode/client';
 import type { NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage } from '@/shared/utils.js';
 
+function specialMessage(event: OpenCodeEvent) {
+  if (!('created' in event)) return null;
+  // V2 derives these persisted message IDs from their durable event IDs.
+  const base = { id: event.id.replace(/^evt_/, 'msg_'), time: { created: event.created } };
+  switch (event.type) {
+    case 'session.skill.activated':
+      return { ...base, type: 'skill', name: event.data.name, text: event.data.text };
+    case 'session.agent.selected':
+      return { ...base, type: 'agent-switched', agent: event.data.agent };
+    case 'session.model.selected':
+      return { ...base, type: 'model-switched', model: event.data.model };
+    case 'session.moved':
+      return { ...base, type: 'location-switched', location: event.data.location };
+    case 'session.synthetic':
+      return { ...base, type: 'synthetic', text: event.data.text };
+    case 'session.instructions.updated':
+      return event.data.text === undefined ? null : { ...base, type: 'system', text: event.data.text };
+    default:
+      return null;
+  }
+}
+
 /** Used by the OpenCode runtime to project transient V2 events without fetching a message per token. */
 export class OpenCodeEventProjector {
   private readonly parts = new Map<string, { content: string; timestamp: string }>();
@@ -13,6 +35,7 @@ export class OpenCodeEventProjector {
   constructor(
     private readonly sessionId: () => string,
     private readonly send: (message: NormalizedMessage) => void,
+    private readonly normalize: (raw: unknown, sessionId: string | null) => NormalizedMessage[],
   ) {}
 
   publish(message: NormalizedMessage): void {
@@ -23,6 +46,11 @@ export class OpenCodeEventProjector {
   }
 
   handle(event: OpenCodeEvent): boolean {
+    const message = specialMessage(event);
+    if (message) {
+      for (const row of this.normalize({ type: 'session.message', message }, this.sessionId())) this.publish(row);
+      return true;
+    }
     switch (event.type) {
       case 'session.text.delta':
       case 'session.reasoning.delta': {

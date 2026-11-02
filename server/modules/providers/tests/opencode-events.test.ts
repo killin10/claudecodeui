@@ -7,9 +7,12 @@ import { OpenCodeEventProjector } from '@/modules/providers/list/opencode/openco
 import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/opencode-sessions.provider.js';
 import type { NormalizedMessage } from '@/shared/types.js';
 
+const sessions = new OpenCodeSessionsProvider();
+const normalize = (raw: unknown, sessionId: string | null) => sessions.normalizeMessage(raw, sessionId);
+
 test('text and reasoning have independent ordinals and reconcile with persisted rows', () => {
   const frames: NormalizedMessage[] = [];
-  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame));
+  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame), normalize);
   const event = (type: string, value: string) => ({
     type, id: 'evt_1', created: 1,
     data: { sessionID: 'ses_1', assistantMessageID: 'msg_1', ordinal: 0, delta: value, text: value },
@@ -29,7 +32,7 @@ test('text and reasoning have independent ordinals and reconcile with persisted 
 
 test('compaction updates the same native history row from running to done', () => {
   const frames: NormalizedMessage[] = [];
-  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame));
+  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame), normalize);
   projector.handle({ type: 'session.compaction.started', id: 'evt_start', created: 1,
     data: { sessionID: 'ses_1', inputID: 'msg_compact', reason: 'auto' } } as OpenCodeEvent);
   projector.handle({ type: 'session.compaction.ended', id: 'evt_end', created: 2,
@@ -37,4 +40,28 @@ test('compaction updates the same native history row from running to done', () =
   assert.deepEqual(frames.map((frame) => frame.id), ['msg_compact_0', 'msg_compact_0']);
   assert.deepEqual(frames.map((frame) => frame.compact?.phase), ['running', 'done']);
   assert.equal(frames[1].content, 'Summary');
+});
+
+test('durable notices share their history identity and replay does not duplicate them', () => {
+  const frames: NormalizedMessage[] = [];
+  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame), normalize);
+  const cases = [
+    ['session.skill.activated', { id: 'review', name: 'Review', text: 'Review instructions' }, { type: 'skill', name: 'Review', text: 'Review instructions' }],
+    ['session.agent.selected', { agent: 'plan' }, { type: 'agent-switched', agent: 'plan' }],
+    ['session.model.selected', { model: { providerID: 'test', id: 'model' } }, { type: 'model-switched', model: { providerID: 'test', id: 'model' } }],
+    ['session.moved', { location: { directory: '/repo' } }, { type: 'location-switched', location: { directory: '/repo' } }],
+    ['session.synthetic', { text: 'Background done' }, { type: 'synthetic', text: 'Background done' }],
+    ['session.instructions.updated', { text: 'New instructions' }, { type: 'system', text: 'New instructions' }],
+  ] as const;
+  for (const [index, [type, data, message]] of cases.entries()) {
+    const event = { id: `evt_${index}`, created: 1700000000000, type, data: { sessionID: 'ses_native', ...data } } as OpenCodeEvent;
+    assert.equal(projector.handle(event), true);
+    projector.handle(event);
+    const history = normalize({ type: 'session.message', message: {
+      ...message, id: `msg_${index}`, time: { created: 1700000000000 },
+    } }, 'app')[0];
+    assert.deepEqual(frames[index], history);
+    projector.publish(history);
+    assert.equal(frames.length, index + 1);
+  }
 });

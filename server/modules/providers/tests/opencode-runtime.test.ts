@@ -200,6 +200,28 @@ async function runTurn(options: TurnOptions) {
 }
 
 const kinds = (frames: Frame[]) => frames.map((frame) => frame.kind);
+
+test('native notices reach the active chat while foreign session notices are ignored', async () => {
+  const turn = await runTurn({ scenario: {
+    newSessionId: 'ses_notice',
+    events: [
+      { type: 'session.skill.activated', data: { sessionID: 'ses_notice', id: 'review', name: 'Review', text: 'Review instructions' } },
+      { type: 'session.agent.selected', data: { sessionID: 'ses_notice', agent: 'plan' } },
+      { type: 'session.model.selected', data: { sessionID: 'ses_notice', model: { providerID: 'test', id: 'model' } } },
+      { type: 'session.moved', data: { sessionID: 'ses_notice', location: { directory: '/repo' } } },
+      { type: 'session.skill.activated', data: { sessionID: 'ses_foreign', id: 'private', name: 'Private', text: 'not this chat' } },
+    ],
+    sessions: { ses_foreign: {} },
+    steps: [{ type: 'text', text: 'Done' }],
+  } });
+  assert.equal(turn.error, null);
+  assert.equal(turn.frames.filter((frame) => frame.content === 'Skill: Review\nReview instructions').length, 1);
+  assert.ok(turn.frames.some((frame) => frame.kind === 'text' && frame.content === 'Agent: plan'));
+  assert.ok(turn.frames.some((frame) => frame.kind === 'text' && frame.content === 'Model: test/model'));
+  assert.ok(turn.frames.some((frame) => frame.kind === 'text' && frame.content === 'Directory: /repo'));
+  assert.ok(!JSON.stringify(turn.frames).includes('not this chat'));
+});
+
 const findRequest = (requests: LogEntry[], method: string, pathPattern: RegExp) =>
   requests.find((entry) => entry.method === method && pathPattern.test(entry.path));
 
