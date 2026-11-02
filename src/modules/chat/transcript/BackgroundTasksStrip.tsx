@@ -157,7 +157,7 @@ export const BackgroundTasksStrip = memo(({ messages, tasks, sessionId, sendMess
       {fromMap.map((task) => {
         const kind = task.taskType === 'local_workflow'
           ? t('workflow.title', 'Workflow')
-          : task.taskType === 'local_bash'
+          : task.taskType === 'local_bash' || task.taskType === 'shell'
             ? t('workflow.backgroundCommand', 'Command')
             : t('workflow.backgroundAgent', 'Agent');
         const name = task.workflowName ?? task.description;

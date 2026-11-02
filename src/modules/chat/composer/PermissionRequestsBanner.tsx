@@ -1,12 +1,14 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldAlertIcon } from 'lucide-react';
+import type { FormInfo } from '@opencode/client';
 
 import type { PendingPermissionRequest } from '@/shared/types';
 import { buildClaudeToolPermissionEntry, formatToolInputForDisplay } from '@/modules/chat/utils/chatPermissions';
 import { getClaudeSettings } from '@/modules/chat/utils/chatStorage';
 import { getPermissionPanel, registerPermissionPanel } from '@/modules/chat/tools/configs/permissionPanelRegistry';
 import { AskUserQuestionPanel } from '@/modules/chat/tools/InteractiveRenderers/AskUserQuestionPanel';
+import { OpenCodeFormPanel } from '@/modules/chat/tools/InteractiveRenderers/OpenCodeFormPanel';
 import {
   Confirmation,
   ConfirmationAction,
@@ -71,6 +73,10 @@ export default function PermissionRequestsBanner({
   return (
     <div className="mb-3 space-y-2">
       {filteredRequests.map((request) => {
+        const form = (request.input as { form?: FormInfo } | undefined)?.form;
+        if (form) {
+          return <OpenCodeFormPanel key={request.requestId} request={request} form={form} agentLabel={providerLabel} onDecision={handlePermissionDecision} />;
+        }
         const CustomPanel = getPermissionPanel(request.toolName);
         if (CustomPanel) {
           return (

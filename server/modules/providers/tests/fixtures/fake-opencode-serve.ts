@@ -42,6 +42,8 @@ type Scenario = {
   commands?: unknown[];
   /** Answered with a status instead of 204, as OpenCode does for a bad prompt. */
   promptStatus?: number;
+  /** Native validation can reject a reply without settling the form. */
+  formReplyFailures?: number;
   /** Version /global/health reports; null makes the route missing, as before OpenCode 1.0.224. */
   version?: string | null;
   /** How long POST /session/:id/abort takes to answer. */
@@ -465,6 +467,11 @@ const server = http.createServer(async (req, res) => {
     if (!resolve || scenario.replyNotFound?.includes(requestID)) {
       resolve?.({ kind: 'permission', value: 'reject' });
       sendJson(res, 404, { _tag: 'NotFoundError', message: 'Request not found' });
+      return;
+    }
+    if (kind === 'form' && req.method !== 'DELETE' && scenario.formReplyFailures) {
+      scenario.formReplyFailures -= 1;
+      sendJson(res, 400, { _tag: 'InvalidRequestError', message: 'The form answer failed native validation.' });
       return;
     }
     waiting.delete(requestID);

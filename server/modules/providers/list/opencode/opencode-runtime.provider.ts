@@ -11,7 +11,6 @@ import type {
   SessionMessageInfo,
   PermissionRequest as OpenCodePermissionRequest,
   FormInfo,
-  FormAnswer,
 } from '@opencode/client';
 
 import {
@@ -42,6 +41,7 @@ import { OpenCodeBackgroundWork } from './opencode-background.provider.js';
 import { startOpenCodeServer } from './opencode-server.provider.js';
 import { readOpenCodeUsage, recordOpenCodeContextWindows } from './opencode-usage.provider.js';
 import { OpenCodeEventProjector } from './opencode-events.provider.js';
+import { prepareOpenCodeFormAnswer } from './opencode-forms.provider.js';
 
 // The notifications module is still JavaScript, and its defaults (`dedupeKey = null`,
 // `sessionId = null`) infer as the only accepted types; these state the shapes
@@ -105,7 +105,7 @@ type OpenCodePermissionReply = 'once' | 'always' | 'reject';
 
 type OpenCodeServer = { url: string; close(): void };
 
-/** One running turn, keyed in `activeTurns` by the session it runs for. */
+/** One live turn, including any background work retained after foreground completion. */
 type OpenCodeTurn = {
   key: string;
   /** Ends the event stream and stops a server that is still starting. */
@@ -143,7 +143,6 @@ type RememberedApproval = {
   pattern: string;
 };
 
-const activeTurns = new Map<string, OpenCodeTurn>();
 // A completed foreground turn can retain its server while child sessions run.
 const liveTurns = new Set<OpenCodeTurn>();
 const pendingPrompts = new Map<string, PendingOpenCodePrompt>();
@@ -304,6 +303,7 @@ function rememberApprovals(chatKey: string, permission: string, patterns: string
  */
 function toAskUserQuestionInput(request: FormInfo): AnyRecord {
   return {
+    form: request,
     questions: request.fields.map((field) => ({
       question: field.description || field.title || field.key,
       header: field.title || request.title,
@@ -562,13 +562,20 @@ async function runOpenCodeTurn(
   const resumeSessionId = pendingAppPlaceholder ? null : resolvedSessionId;
   const workingDir: string = cwd || projectPath || process.cwd();
   const userId = writer?.userId ?? null;
+  const turnKey = appSessionId ?? resumeSessionId ?? `opencode-${Date.now()}`;
+
+  // Like Claude's held run, the previous background turn is superseded by a
+  // new user turn. Stop it before opening another native host for this session.
+  if (Array.from(liveTurns).some((turn) => turn.key === turnKey)) {
+    await abortOpenCodeSession(turnKey);
+  }
 
   let turnDone!: () => void;
   const turnFinished = new Promise<void>((resolve) => {
     turnDone = resolve;
   });
   const turn: OpenCodeTurn = {
-    key: appSessionId ?? resumeSessionId ?? `opencode-${Date.now()}`,
+    key: turnKey,
     abortController: new AbortController(),
     server: null,
     client: null,
@@ -579,7 +586,6 @@ async function runOpenCodeTurn(
     work: new OpenCodeBackgroundWork(),
     directory: workingDir,
   };
-  activeTurns.set(turn.key, turn);
   liveTurns.add(turn);
   installExitHook();
 
@@ -689,11 +695,7 @@ async function runOpenCodeTurn(
     // Direct callers without an app session id find the turn by the
     // provider-native id from now on.
     if (!appSessionId && turn.key !== providerSessionId) {
-      if (activeTurns.get(turn.key) === turn) {
-        activeTurns.delete(turn.key);
-      }
       turn.key = providerSessionId;
-      activeTurns.set(turn.key, turn);
     }
 
     writer.setSessionId?.(providerSessionId);
@@ -719,36 +721,38 @@ async function runOpenCodeTurn(
     }
   };
 
-  const replyToQuestion = async (requestId: string, answers: string[][] | null) => {
+  const replyToQuestion = async (requestId: string, decision: ProviderPermissionDecision): Promise<boolean> => {
     try {
       const form = forms.get(requestId);
       const requestOptions = {
         signal: turn.abortController.signal,
         headers: { 'x-opencode-directory': encodeURIComponent(formDirectories.get(requestId) ?? workingDir) },
       };
-      if (answers && form) {
-        const answer: FormAnswer = {};
-        form.fields.forEach((field, index) => {
-          const selected = answers[index] ?? [];
-          if (selected.length === 0) return;
-          const values = selected.map((label) => 'options' in field
-            ? field.options?.find((option) => (option.label ?? String(option.value)) === label)?.value ?? label
-            : label);
-          if (field.type === 'external') answer[field.key] = true;
-          else if (field.type === 'multiselect') answer[field.key] = values.map(String);
-          else if (field.type === 'boolean') answer[field.key] = values[0] === 'true';
-          else if (field.type === 'number' || field.type === 'integer') answer[field.key] = Number(values[0]);
-          else answer[field.key] = String(values[0] ?? '');
-        });
+      if (decision.allow && form) {
+        const labels = readQuestionAnswers(decision.updatedInput, form.fields.map((field) => ({
+          question: field.description || field.title || field.key,
+        })));
+        const answer = prepareOpenCodeFormAnswer(form, decision.updatedInput, labels);
         await turn.client!.session.form.reply({ sessionID: form.sessionID, formID: requestId, answer }, requestOptions);
       } else {
         await turn.client!.session.form.cancel({ sessionID: form?.sessionID ?? turn.providerSessionId!, formID: requestId }, requestOptions);
       }
+      return true;
     } catch (error) {
       if (isNotFoundError(error) || turn.aborted || turnEnded) {
-        return;
+        return true;
       }
-      failTurn(`OpenCode did not accept the answer: ${readErrorMessage(error)}`);
+      // Validation and transport errors leave the native form open. Keep its
+      // identity and answers so the same prompt can be corrected/retried.
+      const pending = pendingPrompts.get(requestId);
+      if (pending) {
+        pending.context = { ...pending.context, validationError: readErrorMessage(error) };
+        send(createNormalizedMessage({
+          kind: 'permission_request', requestId, toolName: pending.toolName,
+          input: pending.input, context: pending.context, sessionId: turnSessionId(), provider: PROVIDER,
+        }));
+      }
+      return false;
     }
   };
 
@@ -759,9 +763,10 @@ async function runOpenCodeTurn(
     input: unknown;
     context: AnyRecord;
     timeoutMs: number;
-    onAnswer(decision: ProviderPermissionDecision): void;
+    onAnswer(decision: ProviderPermissionDecision): void | Promise<boolean>;
     onTimeout(): void;
   }) => {
+    let replying = false;
     const pending: PendingOpenCodePrompt = {
       requestId: prompt.requestId,
       // Keyed by the app session id so `chat.subscribe` can find it after a refresh.
@@ -771,14 +776,16 @@ async function runOpenCodeTurn(
       context: prompt.context,
       receivedAt: new Date(),
       timer: undefined,
-      answer: (decision) => {
-        if (pendingPrompts.get(prompt.requestId) !== pending) {
+      answer: async (decision) => {
+        if (pendingPrompts.get(prompt.requestId) !== pending || replying) {
           return;
         }
-        // Announced on the run stream so the replay buffer and every other
-        // tab watching the run drop the prompt as well.
-        pending.settle();
-        prompt.onAnswer(decision);
+        replying = true;
+        try {
+          if (await prompt.onAnswer(decision) !== false) pending.settle();
+        } finally {
+          replying = false;
+        }
       },
       settle: (reason) => {
         if (pendingPrompts.get(prompt.requestId) !== pending) {
@@ -866,7 +873,7 @@ async function runOpenCodeTurn(
     // Headless runs cannot supply user answers. Cancel the form explicitly.
     forms.set(request.id, request);
     if (permissionMode === 'bypassPermissions') {
-      void replyToQuestion(request.id, null);
+      void replyToQuestion(request.id, { allow: false });
       return;
     }
 
@@ -874,17 +881,12 @@ async function runOpenCodeTurn(
       requestId: request.id,
       toolName: 'AskUserQuestion',
       input: toAskUserQuestionInput(request),
-      // Tells the panel to answer with one label list per question and to
-      // offer Dismiss, which rejects the question in OpenCode.
-      context: { answerFormat: 'label-lists' },
+      // Retain label-list compatibility while native panels submit typed
+      // answers and wait for server acknowledgement before removing the form.
+      context: { answerFormat: 'label-lists', waitForResolution: true },
       timeoutMs: QUESTION_TIMEOUT_MS,
-      onAnswer: (decision) => {
-        void replyToQuestion(
-          request.id,
-          decision.allow ? readQuestionAnswers(decision.updatedInput, request.fields.map((field) => ({ question: field.description || field.title || field.key }))) : null,
-        );
-      },
-      onTimeout: () => void replyToQuestion(request.id, null),
+      onAnswer: (decision) => replyToQuestion(request.id, decision),
+      onTimeout: () => void replyToQuestion(request.id, { allow: false }),
     });
 
     notify({
@@ -1220,7 +1222,6 @@ async function runOpenCodeTurn(
     turnEnded = true;
     if (!turn.aborted && turnError && turn.work.tasks.size > 0) await interruptTurnWork(turn);
     clearTimeout(backgroundTimer);
-    liveTurns.delete(turn);
     // Whatever is still open was asked of a turn that has ended.
     for (const requestId of Array.from(turnPromptIds)) {
       pendingPrompts.get(requestId)?.settle('cancelled');
@@ -1233,11 +1234,9 @@ async function runOpenCodeTurn(
     turn.abortController.abort();
     turn.server?.close();
     await eventLoop;
+    liveTurns.delete(turn);
     for (const requestId of Array.from(turnPromptIds)) {
       pendingPrompts.get(requestId)?.settle('cancelled');
-    }
-    if (activeTurns.get(turn.key) === turn) {
-      activeTurns.delete(turn.key);
     }
   }
 
@@ -1296,23 +1295,24 @@ async function interruptTurnWork(turn: OpenCodeTurn): Promise<void> {
 }
 
 async function abortOpenCodeSession(sessionId: string): Promise<boolean> {
-  const turn = activeTurns.get(sessionId);
-  if (!turn) {
-    return false;
-  }
+  const turns = Array.from(liveTurns).filter((turn) => turn.key === sessionId);
+  await Promise.all(turns.map(abortOpenCodeTurn));
+  return turns.length > 0;
+}
 
+async function abortOpenCodeTurn(turn: OpenCodeTurn): Promise<void> {
   // A second stop (Stop pressed twice, Esc twice) waits for the first one, so
   // the run is reported stopped only once the turn really has been.
   if (turn.aborted) {
     await turn.abortFinished;
-    return true;
+    return;
   }
 
   // Flagged synchronously so the turn emits no `complete` of its own.
   turn.aborted = true;
   turn.abortFinished = (async () => {
     for (const prompt of Array.from(pendingPrompts.values())) {
-      if (prompt.sessionId === sessionId || prompt.sessionId === turn.providerSessionId) {
+      if (prompt.sessionId === turn.key || prompt.sessionId === turn.providerSessionId) {
         prompt.settle('cancelled');
       }
     }
@@ -1325,7 +1325,6 @@ async function abortOpenCodeSession(sessionId: string): Promise<boolean> {
   turn.finish();
 
   await turn.abortFinished;
-  return true;
 }
 
 /**

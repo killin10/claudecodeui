@@ -7,6 +7,7 @@ import type { QueueItemStatus, TodoItem } from '@/shared/types';
 const normalizeStatus = (status: string): QueueItemStatus => {
   if (status === 'completed') return 'completed';
   if (status === 'in_progress') return 'in_progress';
+  if (status === 'cancelled') return 'cancelled';
   return 'pending';
 };
 

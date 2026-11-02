@@ -148,6 +148,7 @@ export function describeBackgroundTask(task: BackgroundTaskSummary, t: TFunction
     case 'local_workflow':
       return t('claudeStatus.backgroundTask.workflow', { name: task.workflowName ?? task.description, defaultValue: 'Workflow {{name}}' });
     case 'local_bash':
+    case 'shell':
       return t('claudeStatus.backgroundTask.command', { description: task.description, defaultValue: 'Command {{description}}' });
     default:
       return t('claudeStatus.backgroundTask.agent', { description: task.description, defaultValue: 'Agent {{description}}' });

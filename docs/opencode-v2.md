@@ -7,11 +7,11 @@ Each turn starts an authenticated `opencode serve` on a random loopback port. Cl
 ## Supported behavior
 
 - Create or resume a session in the selected directory, select its model and reasoning variant, and switch between the plan agent and the configured default agent.
-- Display text, reasoning, tool results, errors and subagent activity. Live messages and history use the same message/content identifiers.
-- Reply to permission requests and map V2 forms to the existing question panel. Noninteractive runs cancel forms instead of inventing user answers.
+- Display text, reasoning, tool results, errors and subagent activity. Live messages and history use the same message/content identifiers. Native shell and todo tools use the command and checklist views; edit, write and patch tools use file previews and native diffs when available.
+- Reply to permission requests and render V2 forms with native field types, defaults, conditions and constraints. Rejected answers retain the form and entered values for correction or retry. Noninteractive runs cancel forms instead of inventing user answers.
 - Read history and usage from `session_v2` and `session_message` in OpenCode's database. Watch both the database and its WAL for changes.
 - Discover active credential integration identifiers from the V2 credential table without reading credential values. Manage MCP entries under `mcp.servers`, retaining other MCP settings.
-- List and stop background shell and subagent tasks. Detached tasks retain the server until their native completion notification is delivered and the resulting execution finishes. A 30-minute ceiling bounds retained background work.
+- List and stop background shell and subagent tasks. Detached tasks retain the server until their native completion notification is delivered and the resulting execution finishes. Starting a new user turn stops the previous turn's remaining background work before starting another server, matching the Claude integration. A 30-minute ceiling bounds retained background work.
 - Discover commands and Skills from the native catalog. `/review` and other native commands use `session.command`; `/compact` uses `session.compact` and accepts no arguments or attachments. The menu inserts `/skill:<id>` for Skills to distinguish them from commands with the same name. Skill mentions in text or command arguments carry native IDs and mention offsets; an unavailable explicit Skill reports an error.
 - Display the last model request's context usage separately from cumulative session usage. Input includes cache reads and writes; output includes reasoning tokens. Model windows are obtained from the native catalog and saved through the session metadata API. Successful compaction marks context usage unavailable until the next model request measures it.
 
@@ -32,11 +32,12 @@ The provider tests run the real V2 client against a temporary HTTP/SSE server an
 
 ```sh
 npm test
+npm run test:client
 npm run build
 npm run typecheck
 npm run lint
 ```
 
-The turn's event and permission callbacks intentionally share one lifecycle closure: cancellation, prompt resolution and stream completion must observe the same state. Separate provider components own server processes, background task tracking, native input dispatch and usage accounting. Live events, history and the token endpoint share the same usage calculation.
+The turn's event and permission callbacks intentionally share one lifecycle closure: cancellation, prompt resolution and stream completion must observe the same state. Separate provider components own server processes, background task tracking, native input dispatch, form validation, tool normalization and usage accounting. Live events, history and the token endpoint share the same usage calculation.
 
 Protocol references: [V2 migration](https://opencode.ai/v2/docs/migrate-v1/), [official client](https://opencode.ai/v2/docs/build/client), [API](https://opencode.ai/v2/docs/api).

@@ -8,6 +8,7 @@ import { readOpenCodeUsage } from '@/modules/providers/list/opencode/opencode-us
 import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { isOpenCodeSessionActive } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
 import { startOpenCodeServer } from '@/modules/providers/list/opencode/opencode-server.provider.js';
+import { normalizeOpenCodeTool } from '@/modules/providers/list/opencode/opencode-tools.provider.js';
 import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
@@ -70,7 +71,7 @@ function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
       ? state.content.map((item: AnyRecord) => item.type === 'text' ? item.text : item.uri ?? '').join('\n')
       : undefined;
     const normalizedPart = part.type === 'tool'
-      ? { ...part, tool: part.name, callID: part.id, state: { ...state, output, error: state.error?.message ?? state.error } }
+      ? { ...part, callID: part.id, ...normalizeOpenCodeTool(part.name, { ...state, output, error: state.error?.message ?? state.error }) }
       : part;
     return {
       ...base, part_id: part.type === 'text' || part.type === 'reasoning'
@@ -118,7 +119,7 @@ function normalizeSpecialMessage(part: AnyRecord, base: Pick<NormalizedMessage, 
     }
     case 'shell':
       return createNormalizedMessage({
-        ...base, kind: 'tool_use', toolName: 'shell', toolId: part.shellID,
+        ...base, kind: 'tool_use', toolName: 'Bash', toolId: part.shellID,
         toolInput: { command: part.command },
         ...(part.status !== 'running' ? { toolResult: {
           content: part.output?.output ?? '', isError: part.status !== 'exited' || part.exit !== 0,
@@ -279,6 +280,7 @@ const readToolResult = (state: AnyRecord): SubagentActivity['toolResult'] => {
   return {
     content: formatToolContent(state.output ?? state.error),
     isError: status === 'error',
+    ...(state.toolUseResult ? { toolUseResult: state.toolUseResult } : {}),
   };
 };
 
@@ -613,6 +615,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           toolMessage.toolResult = {
             content: formatToolContent(state.output ?? state.error),
             isError: status === 'error',
+            ...(state.toolUseResult ? { toolUseResult: state.toolUseResult } : {}),
           };
         }
 

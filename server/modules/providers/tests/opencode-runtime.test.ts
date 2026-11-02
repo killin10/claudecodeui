@@ -508,7 +508,7 @@ test('a question is answered with one label list per question and shown as a que
 
   const request = turn.frames.find((frame) => frame.kind === 'permission_request');
   assert.equal(request?.toolName, 'AskUserQuestion');
-  assert.deepEqual(request?.context, { answerFormat: 'label-lists' });
+  assert.deepEqual(request?.context, { answerFormat: 'label-lists', waitForResolution: true });
   assert.equal(request?.input.questions[1].multiSelect, true);
   assert.equal(request?.input.questions[0].question, 'Which color?');
   assert.equal(request?.input.questions[0].header, 'Color');
@@ -856,6 +856,67 @@ test('background children survive the foreground complete and can be stopped ind
   assert.ok(findRequest(turn.requests, 'POST', /\/ses_background\/interrupt$/));
   assert.deepEqual(opencodeRuntime.listBackgroundWork(), []);
   assert.ok(await waitForExit(turn.serverPid!));
+});
+
+test('a new turn retires the previous background host before running the same session again', async () => {
+  let foregroundDone!: () => void;
+  const foreground = new Promise<void>((resolve) => { foregroundDone = resolve; });
+  const older = runTurn({
+    appSessionId: 'app-overlap',
+    scenario: { steps: [{ type: 'background', childID: 'ses_previous_child' }] },
+    onFrame(frame) { if (frame.kind === 'complete') foregroundDone(); },
+  });
+  await foreground;
+  assert.equal(opencodeRuntime.listBackgroundWork().length, 1);
+  const newer = await runTurn({ appSessionId: 'app-overlap', scenario: { steps: [{ type: 'text', text: 'Next turn' }] } });
+  const previous = await older;
+  assert.equal(newer.error, null);
+  assert.equal(previous.error, null);
+  assert.ok(findRequest(previous.requests, 'POST', /\/ses_previous_child\/interrupt$/));
+  assert.equal(previous.frames.filter((frame) => frame.kind === 'complete').length, 1);
+  assert.equal(newer.frames.filter((frame) => frame.kind === 'complete').length, 1);
+  assert.deepEqual(opencodeRuntime.listBackgroundWork(), []);
+  assert.ok(await waitForExit(previous.serverPid!));
+  assert.ok(await waitForExit(newer.serverPid!));
+});
+
+test('invalid numeric answers retain the form and accept a corrected native answer', async () => {
+  let attempts = 0;
+  const turn = await runTurn({
+    scenario: { steps: [{ type: 'form', directory: projectDir, form: {
+      id: 'frm_count', sessionID: 'ses_fake_new', title: 'Count',
+      fields: [{ key: 'count', type: 'integer', required: true, minimum: 1, maximum: 5 }],
+    } }] },
+    onFrame(frame) {
+      if (frame.kind !== 'permission_request') return;
+      attempts += 1;
+      if (attempts === 1) return { allow: true, updatedInput: { answers: [['abc']] } };
+      assert.ok(frame.context.validationError);
+      assert.equal(opencodeRuntime.permissions.listPending('app-session').length, 1);
+      return { allow: true, updatedInput: { answer: { count: 3 } } };
+    },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(attempts, 2);
+  assert.equal(turn.frames.filter((frame) => frame.kind === 'permission_resolved').length, 1);
+  assert.equal(turn.frames.some((frame) => frame.kind === 'error'), false);
+  assert.deepEqual(findRequest(turn.requests, 'POST', /\/form\/frm_count\/reply$/)?.body, { answer: { count: 3 } });
+});
+
+test('a native form rejection is retryable without completing the turn or withdrawing the prompt', async () => {
+  let attempts = 0;
+  const turn = await runTurn({
+    scenario: { formReplyFailures: 1, steps: [questionStep] },
+    onFrame(frame) {
+      if (frame.kind !== 'permission_request') return;
+      attempts += 1;
+      return { allow: true, updatedInput: { answers: [['Red'], ['Small']] } };
+    },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(attempts, 2);
+  assert.equal(turn.frames.filter((frame) => frame.kind === 'permission_resolved').length, 1);
+  assert.equal(turn.frames.filter((frame) => frame.kind === 'complete').length, 1);
 });
 
 

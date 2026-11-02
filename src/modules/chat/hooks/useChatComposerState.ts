@@ -1489,7 +1489,8 @@ export function useChatComposerState({
       });
 
       setPendingPermissionRequests((previous) =>
-        previous.filter((request) => !validIds.includes(request.requestId)),
+        previous.filter((request) => !validIds.includes(request.requestId)
+          || (request.context as { waitForResolution?: boolean } | undefined)?.waitForResolution === true),
       );
     },
     [sendMessage, setPendingPermissionRequests],

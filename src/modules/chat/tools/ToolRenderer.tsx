@@ -115,6 +115,18 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
 
   if (!displayConfig) return null;
 
+  // Native file tools can report several authoritative diffs (including
+  // formatter changes); use the existing hunk viewer rather than inventing
+  // before/after contents for parts of a file that the provider did not send.
+  if (mode === 'input' && ['Edit', 'Write', 'ApplyPatch'].includes(toolName) && toolResult?.toolUseResult?.bashEditDiff) {
+    return <BashEditDiff toolUseResult={toolResult.toolUseResult} onFileOpen={onFileOpen} projectRoot={selectedProject?.fullPath} />;
+  }
+  if (mode === 'input' && toolName === 'ApplyPatch' && parsedData && typeof parsedData === 'object' && 'patch' in parsedData && typeof parsedData.patch === 'string') {
+    return <CollapsibleDisplay toolName={toolName} title="Patch" defaultOpen={false}>
+      <TextContent content={parsedData.patch} format="plain" />
+    </CollapsibleDisplay>;
+  }
+
   // Bash renders as a Codex-style command row: the command on a single line with
   // a chevron that expands to show the output inline. The combined view lives on
   // the input render; the separate result section is suppressed in MessageComponent.

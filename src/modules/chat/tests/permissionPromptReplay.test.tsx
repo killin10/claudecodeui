@@ -89,6 +89,16 @@ test('an unanswered request stays pending through a resolution for another id', 
   assert.equal(pending[0].requestId, 'req-open');
 });
 
+test('a retried form replaces its error context without duplicating the pending request', () => {
+  const { dispatch, getPending } = renderHandlers();
+  dispatch(requestEvent('frm_retry', 1));
+  dispatch({ ...requestEvent('frm_retry', 2), context: { validationError: 'Enter an integer.', waitForResolution: true } });
+  assert.equal(getPending().length, 1);
+  assert.deepEqual(getPending()[0].context, { validationError: 'Enter an integer.', waitForResolution: true });
+  dispatch(resolvedEvent('frm_retry', 3));
+  assert.deepEqual(getPending(), []);
+});
+
 test('a prompt replayed after a refresh keeps the context its panel reads', () => {
   const { dispatch, getPending } = renderHandlers();
 

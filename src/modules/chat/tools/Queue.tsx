@@ -85,6 +85,7 @@ export const QueueItemIndicator = React.forwardRef<HTMLDivElement, React.HTMLAtt
         {status === 'in_progress' && (
           <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500 dark:bg-blue-400" />
         )}
+        {status === 'cancelled' && <span className="text-muted-foreground" title="Cancelled">×</span>}
         {status === 'pending' && (
           <svg className="h-3.5 w-3.5 text-muted-foreground/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="9" strokeWidth={2} />
@@ -109,7 +110,7 @@ export const QueueItemContent = React.forwardRef<HTMLDivElement, React.HTMLAttri
         data-slot="queue-item-content"
         className={cn(
           'min-w-0 flex-1 text-xs',
-          status === 'completed' && 'text-muted-foreground line-through',
+          (status === 'completed' || status === 'cancelled') && 'text-muted-foreground line-through',
           status === 'in_progress' && 'font-medium text-foreground',
           status === 'pending' && 'text-foreground',
           className,

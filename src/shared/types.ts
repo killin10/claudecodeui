@@ -278,7 +278,7 @@ export type ServerEvent = {
 //----------------- SHARED UI PRIMITIVES ------------
 
 /** Progress state of a single queue row, driving the indicator the Queue primitive renders. */
-export type QueueItemStatus = 'completed' | 'in_progress' | 'pending';
+export type QueueItemStatus = 'completed' | 'in_progress' | 'pending' | 'cancelled';
 
 // ---------------------------
 

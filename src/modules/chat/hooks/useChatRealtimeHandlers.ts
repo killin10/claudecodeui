@@ -352,19 +352,21 @@ export function useChatRealtimeHandlers({
 
           if (sid === activeViewSessionId) {
             const previousPendingPermissionRequests = pendingPermissionRequestsRef.current;
-            if (!previousPendingPermissionRequests.some((request) => request.requestId === msg.requestId)) {
-              const nextPendingPermissionRequests = [...previousPendingPermissionRequests, {
-                requestId: msg.requestId as string,
-                toolName: (msg.toolName as string) || 'UnknownTool',
-                input: msg.input,
-                context: msg.context,
-                sessionId: sid || null,
-                receivedAt: new Date(),
-              }];
+            const incoming = {
+              requestId: msg.requestId as string,
+              toolName: (msg.toolName as string) || 'UnknownTool',
+              input: msg.input,
+              context: msg.context,
+              sessionId: sid || null,
+              receivedAt: new Date(),
+            };
+            const exists = previousPendingPermissionRequests.some((request) => request.requestId === msg.requestId);
+            const nextPendingPermissionRequests = exists
+              ? previousPendingPermissionRequests.map((request) => request.requestId === msg.requestId ? incoming : request)
+              : [...previousPendingPermissionRequests, incoming];
 
-              pendingPermissionRequestsRef.current = nextPendingPermissionRequests;
-              setPendingPermissionRequests(nextPendingPermissionRequests);
-            }
+            pendingPermissionRequestsRef.current = nextPendingPermissionRequests;
+            setPendingPermissionRequests(nextPendingPermissionRequests);
           }
           if (sid) {
             onSessionProcessing?.(sid);

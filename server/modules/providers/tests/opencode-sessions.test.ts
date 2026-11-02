@@ -80,6 +80,48 @@ const createOpenCodeDatabase = async (homeDir: string, workspacePath: string): P
   }
 };
 
+test('V2 tools use the same command, checklist and file diff shapes in live and history messages', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-tool-display-'));
+  const restoreHome = patchHomeDir(root);
+  const files = [
+    { file: 'a.ts', status: 'modified', patch: '--- a.ts\n+++ a.ts\n@@ -2,1 +2,1 @@\n-old\n+new\n' },
+    { file: 'b.ts', status: 'added', patch: '--- /dev/null\n+++ b.ts\n@@ -0,0 +1,1 @@\n+created\n' },
+  ];
+  const tools = [
+    ['shell', { command: 'npm test' }, {}],
+    ['todowrite', { todos: [{ content: 'Test', status: 'in_progress' }] }, {}],
+    ['edit', { path: 'a.ts', oldString: 'old', newString: 'new' }, { files: [files[0]] }],
+    ['write', { path: 'c.ts', content: 'written' }, {}],
+    ['patch', { patchText: '*** Begin Patch\n*** End Patch' }, { files }],
+  ] as const;
+  const message = { id: 'msg_tools', type: 'assistant', time: { created: 1700000006000 }, content: tools.map(([name, input, metadata], index) => ({
+    type: 'tool', name, id: `call_${index}`, state: { status: 'completed', input, metadata, content: [{ type: 'text', text: 'ok' }] },
+  })) };
+  try {
+    await createOpenCodeDatabase(root, root);
+    const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+    db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)').run(message.id, 'open-session-1', 'assistant', 3, JSON.stringify(message));
+    db.close();
+    const provider = new OpenCodeSessionsProvider();
+    const live = provider.normalizeMessage({ type: 'session.message', message }, 'open-session-1');
+    const history = await provider.fetchHistory('open-session-1', { limit: null });
+    const stored = history.messages.filter((row) => row.id.startsWith('msg_tools_'));
+    assert.deepEqual(stored, live);
+    assert.deepEqual(live.map((row) => row.toolName), ['Bash', 'TodoWrite', 'Edit', 'Write', 'ApplyPatch']);
+    assert.equal((live[2].toolInput as any).file_path, 'a.ts');
+    assert.equal((live[2].toolInput as any).old_string, 'old');
+    assert.equal((live[3].toolInput as any).content, 'written');
+    assert.ok(live[4].toolResult);
+    const diff = (live[4].toolResult.toolUseResult as any).bashEditDiff.files;
+    assert.equal(diff.length, 2);
+    assert.deepEqual(diff[0].hunks[0], { oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: ['-old', '+new'] });
+    assert.equal(diff[1].created, true);
+  } finally {
+    restoreHome();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('OpenCode session synchronizer indexes sqlite sessions without deletable transcript paths', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-sync-'));
   const workspacePath = path.join(tempRoot, 'workspace');
