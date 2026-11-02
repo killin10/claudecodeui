@@ -15,7 +15,6 @@ import type {
 } from '@/shared/types.js';
 import {
   createNormalizedMessage,
-  generateMessageId,
   getOpenCodeDatabasePath,
   normalizeProviderTimestamp,
   readObjectRecord,
@@ -29,7 +28,7 @@ import {
 const PROVIDER = 'opencode';
 
 /** OpenCode's tool for spawning a subagent; it runs in a child session of the caller. */
-const SUBAGENT_TOOL_NAME = 'task';
+const SUBAGENT_TOOL_NAME = 'subagent';
 
 /** Upper bound on how much of a subagent's timeline is sent to the client, as for Claude and Codex. */
 const MAX_TRANSMITTED_SUBAGENT_ACTIVITIES = 200;
@@ -50,6 +49,45 @@ type OpenCodeTokenTotals = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
 };
+
+
+/** Projects V2 message content onto the display rows shared by live and history rendering. */
+function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
+  const created = message.time?.created ?? 0;
+  const messageInfo = JSON.stringify({ role: message.type, error: message.error });
+  const base = { message_id: message.id, message_time_created: created, message_data: messageInfo };
+  if (message.type === 'user') {
+    return [{ ...base, part_id: '0', part_time_created: created, part_data: JSON.stringify({ type: 'text', text: message.text }) }];
+  }
+  if (message.type !== 'assistant') return [];
+  const rows = (message.content ?? []).map((part: AnyRecord, index: number) => {
+    const state = part.state ?? {};
+    const output = state.status !== 'error' && Array.isArray(state.content)
+      ? state.content.map((item: AnyRecord) => item.type === 'text' ? item.text : item.uri ?? '').join('\n')
+      : undefined;
+    const normalizedPart = part.type === 'tool'
+      ? { ...part, tool: part.name, callID: part.id, state: { ...state, output, error: state.error?.message ?? state.error } }
+      : part;
+    return {
+      ...base, part_id: String(index), part_time_created: created,
+      part_data: JSON.stringify(normalizedPart),
+    };
+  });
+  if (rows.length === 0 && message.error) {
+    rows.push({ ...base, part_id: null, part_time_created: created, part_data: null });
+  }
+  if (message.time?.completed) {
+    rows.push({ ...base, part_id: 'end', part_time_created: created, part_data: JSON.stringify({ type: 'step-finish' }) });
+  }
+  return rows;
+}
+
+function readHistoryRows(db: Database.Database, sessionId: string): OpenCodeHistoryRow[] {
+  const rows = db.prepare(
+    'SELECT id, type, data FROM session_message WHERE session_id = ? ORDER BY seq',
+  ).all(sessionId) as Array<{ id: string; type: string; data: string }>;
+  return rows.flatMap((row) => messageRows({ ...JSON.parse(row.data), id: row.id, type: row.type }));
+}
 
 const openOpenCodeDatabase = (): Database.Database | null => {
   const dbPath = getOpenCodeDatabasePath();
@@ -88,14 +126,6 @@ const extractText = (value: unknown): string => {
   return unwrapJsonStringLiteral(text);
 };
 
-const hasUserRole = (value: unknown): boolean => {
-  const record = readObjectRecord(value);
-  return readOptionalString(record?.role) === 'user';
-};
-
-// `opencode run --format json` nests each event's payload under `part`; older builds sent it flat.
-const readEventPart = (raw: AnyRecord): AnyRecord => readObjectRecord(raw.part) ?? {};
-
 // Error events carry an object (`{ name, data }`), not a string.
 const readEventError = (value: unknown): string | undefined => {
   const record = readObjectRecord(value);
@@ -118,12 +148,6 @@ const readEventError = (value: unknown): string | undefined => {
 
   const details = data ? JSON.stringify(data).slice(0, 200) : '';
   return [name, details].filter(Boolean).join(': ') || undefined;
-};
-
-const isUserTextEcho = (raw: AnyRecord): boolean => {
-  return readOptionalString(raw.role) === 'user'
-    || hasUserRole(raw.message)
-    || hasUserRole(raw.part);
 };
 
 /** OpenCode's ask-the-user tool. */
@@ -210,7 +234,7 @@ const readOpenCodeSessionColumnTokenUsage = (
   db: Database.Database,
   sessionId: string,
 ): AnyRecord | undefined => {
-  const columns = db.prepare('PRAGMA table_info(session)').all() as { name: string }[];
+  const columns = db.prepare('PRAGMA table_info(session_v2)').all() as { name: string }[];
   const columnNames = new Set(columns.map((column) => column.name));
   const requiredColumns = ['tokens_input', 'tokens_output', 'tokens_reasoning', 'tokens_cache_read', 'tokens_cache_write'];
   if (!requiredColumns.every((column) => columnNames.has(column))) {
@@ -224,7 +248,7 @@ const readOpenCodeSessionColumnTokenUsage = (
       tokens_reasoning AS reasoningTokens,
       tokens_cache_read AS cacheReadTokens,
       tokens_cache_write AS cacheWriteTokens
-    FROM session
+    FROM session_v2
     WHERE id = ?
   `).get(sessionId) as OpenCodeTokenTotals | undefined;
 
@@ -241,55 +265,7 @@ const readOpenCodeSessionColumnTokenUsage = (
   });
 };
 
-/**
- * OpenCode stores per-message token counts on assistant `message.data` objects
- * (see MessageV2.Assistant). Older DBs also had session-level counters; this
- * matches current `opencode.db` layouts that only persist message JSON.
- */
-const aggregateOpenCodeSessionTokenUsage = (
-  db: Database.Database,
-  sessionId: string,
-): AnyRecord | undefined => {
-  const sessionColumnUsage = readOpenCodeSessionColumnTokenUsage(db, sessionId);
-  if (sessionColumnUsage) {
-    return sessionColumnUsage;
-  }
-
-  const rows = db.prepare('SELECT data FROM message WHERE session_id = ?').all(sessionId) as { data: string }[];
-
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
-
-  for (const row of rows) {
-    const info = readJsonRecord(row.data);
-    if (readOptionalString(info?.role) !== 'assistant') {
-      continue;
-    }
-
-    const tokens = readObjectRecord(info?.tokens);
-    if (!tokens) {
-      continue;
-    }
-
-    inputTokens += Number(tokens.input ?? 0);
-    outputTokens += Number(tokens.output ?? 0);
-    reasoningTokens += Number(tokens.reasoning ?? 0);
-    const cache = readObjectRecord(tokens.cache);
-    cacheReadTokens += Number(cache?.read ?? 0);
-    cacheWriteTokens += Number(cache?.write ?? 0);
-  }
-
-  return buildTokenUsage({
-    inputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-  });
-};
+const aggregateOpenCodeSessionTokenUsage = readOpenCodeSessionColumnTokenUsage;
 
 const readToolResult = (state: AnyRecord): SubagentActivity['toolResult'] => {
   const status = readOptionalString(state.status);
@@ -311,16 +287,7 @@ const readOpenCodeSubagentActivity = (
   db: Database.Database,
   childSessionId: string,
 ): SubagentActivity[] => {
-  const rows = db.prepare(`
-    SELECT p.data AS part_data, p.time_created AS part_time_created
-    FROM part p
-    INNER JOIN message m
-      ON m.id = p.message_id
-     AND m.session_id = p.session_id
-    WHERE p.session_id = ?
-      AND json_extract(m.data, '$.role') = 'assistant'
-    ORDER BY COALESCE(m.time_created, 0), m.id, COALESCE(p.time_created, 0), p.id
-  `).all(childSessionId) as { part_data: string | null; part_time_created: number | null }[];
+  const rows = readHistoryRows(db, childSessionId).filter((row) => readJsonRecord(row.message_data)?.role === 'assistant');
 
   const activity: SubagentActivity[] = [];
   for (const row of rows) {
@@ -373,13 +340,13 @@ const attachOpenCodeSubagent = (
   db: Database.Database | null,
   runIsLive: boolean,
 ): void => {
-  if (message.toolName !== SUBAGENT_TOOL_NAME) {
+  if (message.toolName !== SUBAGENT_TOOL_NAME && message.toolName !== 'task') {
     return;
   }
 
   const input = readObjectRecord(state.input) ?? {};
   const metadata = readObjectRecord(state.metadata) ?? {};
-  const childSessionId = readOptionalString(metadata.sessionId);
+  const childSessionId = readOptionalString(metadata.sessionID) ?? readOptionalString(metadata.sessionId);
   const toolResult = message.toolResult;
   let status: SubagentInfo['status'] = runIsLive ? 'running' : 'stopped';
   if (metadata.interrupted === true) {
@@ -394,10 +361,10 @@ const attachOpenCodeSubagent = (
 
   const subagent: SubagentInfo = {
     id: childSessionId ?? message.toolId ?? message.id,
-    type: readOptionalString(input.subagent_type),
+    type: readOptionalString(input.agent) ?? readOptionalString(input.subagent_type),
     description: readOptionalString(input.description),
     status,
-    model: readOptionalString(readObjectRecord(metadata.model)?.modelID),
+    model: readOptionalString(readObjectRecord(metadata.model)?.id),
   };
 
   if (db && childSessionId) {
@@ -430,151 +397,18 @@ const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
   }
 };
 
+/** Used by the OpenCode provider to render V2 messages consistently in live chat and history. */
 export class OpenCodeSessionsProvider implements IProviderSessions {
-  /**
-   * Normalizes live OpenCode events into frontend messages. The OpenCode
-   * runtime forwards each finished part in the shape `opencode run --format json`
-   * printed (`{ type, timestamp, sessionID, part }`), so sessions recorded
-   * before the SDK runtime and live turns go through the same mapping.
-   */
+  /** Normalizes a V2 message fetched after a content event, using the same ids as history. */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);
-    if (!raw) {
-      return [];
+    if (raw?.type !== 'session.message' || !readObjectRecord(raw.message)) return [];
+    const db = openOpenCodeDatabaseForLiveEvent();
+    try {
+      return this.normalizeHistoryRows(messageRows(raw.message), sessionId ?? '', db);
+    } finally {
+      db?.close();
     }
-
-    const type = readOptionalString(raw.type) ?? readOptionalString(raw.event);
-    const eventSessionId = readOptionalString(raw.sessionID) ?? readOptionalString(raw.sessionId) ?? sessionId;
-    const timestamp = normalizeProviderTimestamp(raw.time ?? raw.timestamp);
-    const part = readEventPart(raw);
-    const toolState = readObjectRecord(part.state) ?? {};
-    const partMessageId = readOptionalString(part.messageID);
-    const partId = readOptionalString(part.id);
-    // Same id the history reader gives this part, so a reload does not duplicate it.
-    const baseId = (partMessageId && partId ? `${partMessageId}_${partId}` : undefined)
-      ?? readOptionalString(raw.id)
-      ?? readOptionalString(raw.messageID)
-      ?? generateMessageId('opencode');
-
-    if (type === 'text') {
-      // The client already renders an optimistic user bubble, so provider user
-      // echoes must not be streamed back as assistant text.
-      if (isUserTextEcho(raw)) {
-        return [];
-      }
-
-      const content = extractText(raw.text ?? raw.delta ?? raw.message ?? part.text);
-      if (!content.trim()) {
-        return [];
-      }
-
-      // A nested text part arrives once, complete: as its own assistant row it
-      // keeps the history id instead of merging with the next part's stream.
-      if (typeof part.text === 'string') {
-        return [createNormalizedMessage({
-          id: baseId,
-          sessionId: eventSessionId,
-          timestamp,
-          provider: PROVIDER,
-          kind: 'text',
-          role: 'assistant',
-          content,
-        })];
-      }
-
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'stream_delta',
-        content,
-      })];
-    }
-
-    if (type === 'reasoning') {
-      const content = extractText(raw.text ?? raw.delta ?? raw.message ?? part.text);
-      if (!content.trim()) {
-        return [];
-      }
-
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'thinking',
-        content,
-      })];
-    }
-
-    if (type === 'tool_use') {
-      const toolName = readOptionalString(raw.tool) ?? readOptionalString(raw.name) ?? readOptionalString(part.tool) ?? 'Tool';
-      const toolId = readOptionalString(raw.callID) ?? readOptionalString(raw.toolCallId) ?? readOptionalString(part.callID) ?? baseId;
-      const toolMessage = createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'tool_use',
-        toolName,
-        toolInput: raw.input ?? raw.arguments ?? toolState.input ?? {},
-        toolId,
-      });
-
-      const toolStatus = readOptionalString(toolState.status);
-      if (raw.output !== undefined || raw.error !== undefined) {
-        toolMessage.toolResult = {
-          content: formatToolContent(raw.output ?? raw.error),
-          isError: raw.error !== undefined,
-        };
-      } else if (toolStatus === 'completed' || toolStatus === 'error') {
-        toolMessage.toolResult = {
-          content: formatToolContent(toolState.output ?? toolState.error),
-          isError: toolStatus === 'error',
-        };
-      }
-
-      if (toolName === QUESTION_TOOL_NAME) {
-        toAskUserQuestionCall(toolMessage, toolState);
-      }
-
-      if (toolName === SUBAGENT_TOOL_NAME) {
-        // A task is forwarded only once it has finished, so its child session
-        // is complete in the database by now.
-        const db = openOpenCodeDatabaseForLiveEvent();
-        try {
-          attachOpenCodeSubagent(toolMessage, toolState, db, true);
-        } finally {
-          db?.close();
-        }
-      }
-
-      return [toolMessage];
-    }
-
-    if (type === 'error') {
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'error',
-        content: readEventError(raw.error) ?? readOptionalString(raw.message) ?? 'Unknown OpenCode error',
-      })];
-    }
-
-    if (type === 'step_finish') {
-      return [createNormalizedMessage({
-        id: baseId,
-        sessionId: eventSessionId,
-        timestamp,
-        provider: PROVIDER,
-        kind: 'stream_end',
-      })];
-    }
-
-    return [];
   }
 
   /**
@@ -594,25 +428,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     try {
-      const rows = db.prepare(`
-        SELECT
-          m.id AS message_id,
-          m.time_created AS message_time_created,
-          m.data AS message_data,
-          p.id AS part_id,
-          p.time_created AS part_time_created,
-          p.data AS part_data
-        FROM message m
-        LEFT JOIN part p
-          ON p.session_id = m.session_id
-         AND p.message_id = m.id
-        WHERE m.session_id = ?
-        ORDER BY
-          COALESCE(m.time_created, 0),
-          m.id,
-          COALESCE(p.time_created, 0),
-          p.id
-      `).all(providerSessionId) as OpenCodeHistoryRow[];
+      const rows = readHistoryRows(db, providerSessionId);
 
       const normalized = this.normalizeHistoryRows(rows, sessionId, db);
       const tokenUsage = aggregateOpenCodeSessionTokenUsage(db, providerSessionId);
@@ -633,7 +449,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[OpenCodeProvider] Failed to load session ${sessionId}:`, message);
-      return { messages: [], total: 0, hasMore: false, offset: 0, limit: null };
+      throw error;
     } finally {
       db.close();
     }
@@ -642,7 +458,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   private normalizeHistoryRows(
     rows: OpenCodeHistoryRow[],
     sessionId: string,
-    db: Database.Database,
+    db: Database.Database | null,
   ): NormalizedMessage[] {
     const normalized: NormalizedMessage[] = [];
     const emittedMessageErrors = new Set<string>();
@@ -668,7 +484,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
             timestamp,
             provider: PROVIDER,
             kind: 'error',
-            content: formatToolContent(messageInfo.error),
+            content: readEventError(messageInfo.error) ?? formatToolContent(messageInfo.error),
           }));
         }
       }

@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { CliVersionProbe, ProviderAuthStatus } from '@/shared/types.js';
+import { readOpenCodeConnectedIntegrations } from '@/shared/index.js';
 import { probeCliVersion, readObjectRecord, readOptionalString } from '@/shared/utils.js';
 
 type OpenCodeCredentialsStatus = {
@@ -21,6 +22,7 @@ const OPENCODE_ENV_CREDENTIAL_KEYS = [
   'OPENROUTER_API_KEY',
 ];
 
+/** Used by the OpenCode provider to report installation and V2 credential availability. */
 export class OpenCodeProviderAuth implements IProviderAuth {
   /**
    * Checks whether the OpenCode CLI is available to the server process, and
@@ -55,6 +57,10 @@ export class OpenCodeProviderAuth implements IProviderAuth {
    */
   private async checkCredentials(): Promise<OpenCodeCredentialsStatus> {
     try {
+      const integrations = readOpenCodeConnectedIntegrations();
+      if (integrations.length > 0) {
+        return { authenticated: true, email: `${integrations.join(', ')} credentials`, method: 'credentials_database' };
+      }
       const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
       const content = await readFile(authPath, 'utf8');
       const auth = readObjectRecord(JSON.parse(content)) ?? {};

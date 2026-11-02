@@ -182,7 +182,7 @@ test('providerMcpService handles opencode MCP config and capability validation',
     path.join(tempRoot, '.config', 'opencode', 'opencode.jsonc'),
     `{
       // Existing comments should not block OpenCode MCP reads.
-      "mcp": {}
+      "mcp": { "timeout": { "execution": 90000 } }
     }\n`,
     'utf8',
   );
@@ -208,14 +208,17 @@ test('providerMcpService handles opencode MCP config and capability validation',
     });
 
     const userConfig = await readJson(path.join(tempRoot, '.config', 'opencode', 'opencode.jsonc'));
-    const userServers = userConfig.mcp as Record<string, unknown>;
+    const userServers = (userConfig.mcp as Record<string, unknown>).servers as Record<string, unknown>;
     const userStdio = userServers['opencode-user-stdio'] as Record<string, unknown>;
+    assert.deepEqual((userConfig.mcp as Record<string, unknown>).timeout, { execution: 90000 });
+    assert.equal(userStdio.disabled, false);
+    assert.equal(userStdio.enabled, undefined);
     assert.equal(userStdio.type, 'local');
     assert.deepEqual(userStdio.command, ['node', 'server.js']);
     assert.deepEqual(userStdio.environment, { API_KEY: 'x' });
 
     const projectConfig = await readJson(path.join(workspacePath, 'opencode.json'));
-    const projectServers = projectConfig.mcp as Record<string, unknown>;
+    const projectServers = (projectConfig.mcp as Record<string, unknown>).servers as Record<string, unknown>;
     const projectHttp = projectServers['opencode-project-http'] as Record<string, unknown>;
     assert.equal(projectHttp.type, 'remote');
     assert.equal(projectHttp.url, 'https://opencode.example.com/mcp');
@@ -323,7 +326,7 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
     assert.ok((codexProject.mcp_servers as Record<string, unknown>)['global-http']);
 
     const opencodeProject = await readJson(path.join(workspacePath, 'opencode.json'));
-    assert.ok((opencodeProject.mcp as Record<string, unknown>)['global-http']);
+    assert.ok(((opencodeProject.mcp as Record<string, unknown>).servers as Record<string, unknown>)['global-http']);
 
     const cursorProject = await readJson(path.join(workspacePath, '.cursor', 'mcp.json'));
     assert.ok((cursorProject.mcpServers as Record<string, unknown>)['global-http']);
@@ -346,4 +349,3 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
 });
-

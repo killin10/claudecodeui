@@ -44,227 +44,35 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 const createOpenCodeDatabase = async (homeDir: string, workspacePath: string): Promise<void> => {
   const dataDir = path.join(homeDir, '.local', 'share', 'opencode');
   await mkdir(dataDir, { recursive: true });
-
   const db = new Database(path.join(dataDir, 'opencode.db'));
   try {
     db.exec(`
-      CREATE TABLE project (
-        id TEXT PRIMARY KEY,
-        worktree TEXT NOT NULL,
-        vcs TEXT,
-        name TEXT,
-        icon_url TEXT,
-        icon_color TEXT,
-        time_created INTEGER NOT NULL,
-        time_updated INTEGER NOT NULL,
-        time_initialized INTEGER,
-        sandboxes TEXT NOT NULL,
-        commands TEXT,
-        icon_url_override TEXT
+      CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+      CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, metadata TEXT,
+        time_created INTEGER, time_updated INTEGER, time_archived INTEGER,
+        tokens_input INTEGER DEFAULT 10, tokens_output INTEGER DEFAULT 20,
+        tokens_reasoning INTEGER DEFAULT 7, tokens_cache_read INTEGER DEFAULT 3, tokens_cache_write INTEGER DEFAULT 2
       );
-
-      CREATE TABLE session (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        parent_id TEXT,
-        slug TEXT NOT NULL,
-        directory TEXT NOT NULL,
-        title TEXT NOT NULL,
-        version TEXT NOT NULL,
-        share_url TEXT,
-        summary_additions INTEGER,
-        summary_deletions INTEGER,
-        summary_files INTEGER,
-        summary_diffs TEXT,
-        revert TEXT,
-        permission TEXT,
-        time_created INTEGER NOT NULL,
-        time_updated INTEGER NOT NULL,
-        time_compacting INTEGER,
-        time_archived INTEGER,
-        workspace_id TEXT,
-        path TEXT,
-        agent TEXT,
-        model TEXT,
-        cost REAL NOT NULL DEFAULT 0,
-        tokens_input INTEGER NOT NULL DEFAULT 0,
-        tokens_output INTEGER NOT NULL DEFAULT 0,
-        tokens_reasoning INTEGER NOT NULL DEFAULT 0,
-        tokens_cache_read INTEGER NOT NULL DEFAULT 0,
-        tokens_cache_write INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE message (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        time_created INTEGER NOT NULL,
-        time_updated INTEGER NOT NULL,
-        data TEXT NOT NULL,
-        FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE part (
-        id TEXT PRIMARY KEY,
-        message_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        time_created INTEGER NOT NULL,
-        time_updated INTEGER NOT NULL,
-        data TEXT NOT NULL,
-        FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX part_session_idx ON part (session_id);
-      CREATE INDEX session_project_idx ON session (project_id);
-      CREATE INDEX message_session_time_created_id_idx ON message (session_id, time_created, id);
-      CREATE INDEX part_message_id_id_idx ON part (message_id, id);
+      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT);
     `);
-
-    db.prepare(
-      'INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) VALUES (?, ?, ?, ?, ?)',
-    ).run(
-      'project-1',
-      workspacePath,
-      1_700_000_000_000,
-      1_700_000_001_000,
-      '[]',
-    );
-    db.prepare(`
-      INSERT INTO session (
-        id, project_id, slug, directory, title, version, time_created, time_updated, time_archived,
-        tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'open-session-1',
-      'project-1',
-      'open-session-1',
-      workspacePath,
-      'OpenCode indexed title',
-      '0.0.0',
-      1_700_000_000_000,
-      1_700_000_004_000,
-      null,
-      10,
-      20,
-      7,
-      3,
-      2,
-    );
-    db.prepare(`
-      INSERT INTO session (
-        id, project_id, parent_id, slug, directory, title, version, time_created, time_updated,
-        time_archived, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read,
-        tokens_cache_write
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'open-child-session-1',
-      'project-1',
-      'open-session-1',
-      'open-child-session-1',
-      workspacePath,
-      'OpenCode child session',
-      '0.0.0',
-      1_700_000_002_000,
-      1_700_000_005_000,
-      null,
-      5,
-      10,
-      2,
-      1,
-      1,
-    );
-
-    const userMessageData = JSON.stringify({
-      role: 'user',
-      time: { created: 1_700_000_001_000 },
-      agent: 'test',
-      model: { providerID: 'anthropic', modelID: 'claude' },
-    });
-    const assistantMessageData = JSON.stringify({
-      role: 'assistant',
-      time: { created: 1_700_000_002_000, completed: 1_700_000_003_000 },
-      parentID: 'message-user',
-      modelID: 'anthropic/claude-sonnet-4-5',
-      providerID: 'anthropic',
-      mode: 'default',
-      agent: 'test',
-      path: { cwd: '.', root: '.' },
-      cost: 0.01,
-      tokens: {
-        input: 10,
-        output: 20,
-        reasoning: 0,
-        cache: { read: 3, write: 2 },
-      },
-    });
-
-    db.prepare(
-      'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
-    ).run('message-user', 'open-session-1', 1_700_000_001_000, 1_700_000_001_500, userMessageData);
-    db.prepare(
-      'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
-    ).run('message-assistant', 'open-session-1', 1_700_000_002_000, 1_700_000_003_000, assistantMessageData);
-
-    const insertPart = db.prepare(`
-      INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    insertPart.run(
-      'part-user-text',
-      'message-user',
-      'open-session-1',
-      1_700_000_001_000,
-      1_700_000_001_000,
-      JSON.stringify({
-        type: 'text',
-        text: JSON.stringify('Build the OpenCode integration.'),
-      }),
-    );
-    insertPart.run(
-      'part-reasoning',
-      'message-assistant',
-      'open-session-1',
-      1_700_000_002_000,
-      1_700_000_002_000,
-      JSON.stringify({
-        type: 'reasoning',
-        text: 'I will inspect the provider shape first.',
-        time: { start: 0, end: 1 },
-      }),
-    );
-    insertPart.run(
-      'part-assistant-text',
-      'message-assistant',
-      'open-session-1',
-      1_700_000_002_500,
-      1_700_000_002_500,
-      JSON.stringify({
-        type: 'text',
-        text: 'The provider is wired.',
-      }),
-    );
-    insertPart.run(
-      'part-tool',
-      'message-assistant',
-      'open-session-1',
-      1_700_000_003_000,
-      1_700_000_003_000,
-      JSON.stringify({
-        type: 'tool',
-        tool: 'bash',
-        callID: 'tool-call-1',
-        state: {
-          status: 'completed',
-          input: { command: 'npm test' },
-          output: 'ok',
-          title: 'bash',
-          metadata: {},
-          time: { start: 0, end: 1 },
-        },
-      }),
-    );
+    db.prepare('INSERT INTO project VALUES (?, ?)').run('project-1', workspacePath);
+    const session = db.prepare('INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    session.run('open-session-1', 'project-1', null, workspacePath, 'OpenCode indexed title', 1700000000000, 1700000004000);
+    session.run('open-child-session-1', 'project-1', 'open-session-1', workspacePath, 'Child', 1700000002000, 1700000005000);
+    const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+    insert.run('message-user', 'open-session-1', 'user', 1, JSON.stringify({
+      time: { created: 1700000001000 }, text: 'Build the OpenCode integration.',
+    }));
+    insert.run('message-assistant', 'open-session-1', 'assistant', 2, JSON.stringify({
+      time: { created: 1700000002000, completed: 1700000003000 },
+      content: [
+        { type: 'reasoning', text: 'I will inspect the provider shape first.' },
+        { type: 'text', text: 'The provider is wired.' },
+        { type: 'tool', name: 'shell', id: 'tool-call-1',
+          state: { status: 'completed', input: { command: 'npm test' }, content: [{ type: 'text', text: 'ok' }] } },
+      ],
+    }));
   } finally {
     db.close();
   }
@@ -344,15 +152,38 @@ test('OpenCode session synchronizer adopts the pending app session before watche
 
   try {
     await createOpenCodeDatabase(tempRoot, workspacePath);
+    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
+    db.prepare('UPDATE session_v2 SET metadata = ? WHERE id = ?')
+      .run(JSON.stringify({ cloudcliSessionId: 'app-session-race' }), 'open-session-1');
+    db.close();
     await withIsolatedDatabase(() => {
       sessionsDb.createAppSession('app-session-race', 'opencode', workspacePath);
 
       const synchronizer = new OpenCodeSessionSynchronizer();
-      return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db')).then((sessionId) => {
+      return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db-wal')).then((sessionId) => {
         assert.equal(sessionId, 'app-session-race');
         assert.equal(sessionsDb.getAllSessions().length, 1);
         assert.equal(sessionsDb.getSessionById('app-session-race')?.provider_session_id, 'open-session-1');
       });
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('V2 history discovery does not adopt an unrelated pending app session in the same directory', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-unrelated-session-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('pending-app', 'opencode', workspacePath);
+      await new OpenCodeSessionSynchronizer().synchronize();
+      assert.equal(sessionsDb.getSessionById('pending-app')?.provider_session_id, null);
+      assert.ok(sessionsDb.getSessionByProviderSessionId('open-session-1'));
+      assert.equal(sessionsDb.getAllSessions().length, 2);
     });
   } finally {
     restoreHomeDir();
@@ -375,9 +206,9 @@ test('OpenCode sessions provider strips <images_input> from user turns and expos
     ]);
     const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
     try {
-      db.prepare('UPDATE part SET data = ? WHERE id = ?').run(
+      db.prepare('UPDATE session_message SET data = ? WHERE id = ?').run(
         JSON.stringify({ type: 'text', text: taggedPrompt }),
-        'part-user-text',
+        'message-user',
       );
     } finally {
       db.close();
@@ -395,149 +226,38 @@ test('OpenCode sessions provider strips <images_input> from user turns and expos
   }
 });
 
-test('OpenCode sessions provider normalizes quoted live text and skips user echoes', () => {
-  const provider = new OpenCodeSessionsProvider();
-  const normalized = provider.normalizeMessage({
-    type: 'text',
-    sessionID: 'open-session-live',
-    text: JSON.stringify('hello bro'),
-  }, null);
+const normalizeLiveMessage = (message: Record<string, unknown>) =>
+  new OpenCodeSessionsProvider().normalizeMessage({ type: 'session.message', message }, 'app-session');
 
-  assert.equal(normalized.length, 1);
-  assert.equal(normalized[0]?.kind, 'stream_delta');
-  assert.equal(normalized[0]?.content, 'hello bro');
-
-  const userEcho = provider.normalizeMessage({
-    type: 'text',
-    sessionID: 'open-session-live',
-    role: 'user',
-    text: 'hello bro',
-  }, null);
-
-  assert.deepEqual(userEcho, []);
-});
-
-// `opencode run --format json` (1.18) nests each event payload under `part`.
-const normalizeLiveEvent = (event: Record<string, unknown>) =>
-  new OpenCodeSessionsProvider().normalizeMessage(event, 'app-session');
-
-test('OpenCode sessions provider shows live text nested in part as an assistant row', () => {
-  const [message] = normalizeLiveEvent({
-    type: 'text',
-    sessionID: 'ses_1',
-    part: { type: 'text', text: 'ok', messageID: 'msg_1' },
+test('V2 content keeps separate stable ids for text, reasoning and tool results', () => {
+  const messages = normalizeLiveMessage({ id: 'msg_1', type: 'assistant', time: { created: 1700000000000 },
+    content: [
+      { type: 'text', text: 'Checking.' },
+      { type: 'reasoning', text: 'Thinking.' },
+      { type: 'text', text: 'Done.' },
+      { type: 'tool', id: 'call_1', name: 'shell', state: { status: 'completed',
+        input: { command: 'echo hi' }, content: [{ type: 'text', text: 'hi' }] } },
+    ],
   });
-
-  assert.equal(message?.kind, 'text');
-  assert.equal(message?.role, 'assistant');
-  assert.equal(message?.content, 'ok');
+  assert.deepEqual(messages.map((m) => [m.id, m.kind]),
+    [['msg_1_0', 'text'], ['msg_1_1', 'thinking'], ['msg_1_2', 'text'], ['msg_1_3', 'tool_use']]);
+  assert.deepEqual(messages[3].toolResult, { content: 'hi', isError: false });
+  assert.deepEqual(messages[3].toolInput, { command: 'echo hi' });
+  assert.equal(messages[3].toolId, 'call_1');
 });
 
-test('OpenCode sessions provider keeps two text parts of one step as separate rows', () => {
-  const textPart = (id: string, text: string) => normalizeLiveEvent({
-    type: 'text',
-    part: { id, messageID: 'msg_1', sessionID: 'ses_1', type: 'text', text },
+test('V2 errors and failed tool calls retain their readable messages', () => {
+  const messages = normalizeLiveMessage({ id: 'msg_error', type: 'assistant',
+    error: { type: 'APIError', message: 'Rate limit exceeded' },
+    content: [{ type: 'tool', name: 'read', id: 'call_read',
+      state: { status: 'error', input: {}, error: { type: 'ToolError', message: 'File missing' } } }],
   });
-  const [first] = textPart('prt_1', 'Checking.');
-  const [second] = textPart('prt_2', 'Done.');
-
-  assert.deepEqual(
-    [first, second].map((message) => [message?.kind, message?.id, message?.content]),
-    [['text', 'msg_1_prt_1', 'Checking.'], ['text', 'msg_1_prt_2', 'Done.']],
-  );
+  assert.equal(messages[0].content, 'Rate limit exceeded');
+  assert.deepEqual(messages[1].toolResult, { content: 'File missing', isError: true });
 });
 
-test('OpenCode sessions provider shows live reasoning nested in part as thinking', () => {
-  const [message] = normalizeLiveEvent({
-    type: 'reasoning',
-    sessionID: 'ses_1',
-    part: { type: 'reasoning', text: 'multiplying first' },
-  });
-
-  assert.equal(message?.kind, 'thinking');
-  assert.equal(message?.content, 'multiplying first');
-});
-
-test('OpenCode sessions provider gives a finished live tool its name, input and output', () => {
-  const [message] = normalizeLiveEvent({
-    type: 'tool_use',
-    sessionID: 'ses_1',
-    part: {
-      type: 'tool',
-      tool: 'bash',
-      callID: 'call_1',
-      state: { status: 'completed', input: { command: 'echo hi' }, output: 'hi\n' },
-    },
-  });
-
-  assert.equal(message?.kind, 'tool_use');
-  assert.equal(message?.toolName, 'bash');
-  assert.equal(message?.toolId, 'call_1');
-  assert.deepEqual(message?.toolInput, { command: 'echo hi' });
-  assert.deepEqual(message?.toolResult, { content: 'hi\n', isError: false });
-});
-
-test('OpenCode sessions provider reports a failed live tool as an error result', () => {
-  const [message] = normalizeLiveEvent({
-    type: 'tool_use',
-    sessionID: 'ses_1',
-    part: {
-      type: 'tool',
-      tool: 'read',
-      callID: 'call_2',
-      state: { status: 'error', input: { filePath: '/tmp/x' }, error: 'File not found: /tmp/x' },
-    },
-  });
-
-  assert.equal(message?.toolName, 'read');
-  assert.deepEqual(message?.toolResult, { content: 'File not found: /tmp/x', isError: true });
-});
-
-test('OpenCode sessions provider shows the message of an error event object', () => {
-  const [message] = normalizeLiveEvent({
-    type: 'error',
-    sessionID: 'ses_1',
-    error: { name: 'UnknownError', data: { message: 'Unexpected server error.', ref: 'err_1' } },
-  });
-
-  assert.equal(message?.kind, 'error');
-  assert.equal(message?.content, 'Unexpected server error.');
-});
-
-test('OpenCode sessions provider falls back to the name of an error event without a message', () => {
-  const [byName] = normalizeLiveEvent({ type: 'error', error: { name: 'ProviderAuthError' } });
-  const [byModel] = normalizeLiveEvent({
-    type: 'error',
-    error: { name: 'ProviderModelNotFoundError', data: { providerID: 'openai', modelID: 'gpt-old' } },
-  });
-  const [byData] = normalizeLiveEvent({ type: 'error', error: { name: 'APIError', data: { statusCode: 429 } } });
-
-  assert.equal(byName?.content, 'ProviderAuthError');
-  assert.equal(byModel?.content, 'ProviderModelNotFoundError: openai/gpt-old');
-  assert.equal(byData?.content, 'APIError: {"statusCode":429}');
-});
-
-test('OpenCode sessions provider gives live parts the id the history reader gives them', () => {
-  const part = { id: 'prt_1', messageID: 'msg_1', sessionID: 'ses_1' };
-  const [text] = normalizeLiveEvent({ type: 'text', part: { ...part, type: 'text', text: 'ok' } });
-  const [reasoning] = normalizeLiveEvent({ type: 'reasoning', part: { ...part, type: 'reasoning', text: 'hmm' } });
-  const [tool] = normalizeLiveEvent({
-    type: 'tool_use',
-    part: { ...part, type: 'tool', tool: 'bash', callID: 'call_1', state: { status: 'completed', output: '' } },
-  });
-
-  assert.equal(text?.id, 'msg_1_prt_1');
-  assert.equal(reasoning?.id, 'msg_1_prt_1');
-  assert.equal(tool?.id, 'msg_1_prt_1');
-});
-
-test('OpenCode sessions provider keeps reading flat live events', () => {
-  const [text] = normalizeLiveEvent({ type: 'text', text: 'flat' });
-  const [error] = normalizeLiveEvent({ type: 'error', error: 'flat error' });
-
-  assert.equal(text?.kind, 'stream_delta');
-  assert.equal(text?.content, 'flat');
-  assert.equal(error?.content, 'flat error');
+test('V1 wire events are no longer accepted', () => {
+  assert.deepEqual(new OpenCodeSessionsProvider().normalizeMessage({ type: 'text', text: 'v1' }, 'app'), []);
 });
 
 test('OpenCode sessions provider reads sqlite history and token usage', { concurrency: false }, async () => {
@@ -551,7 +271,7 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     const provider = new OpenCodeSessionsProvider();
     const history = await provider.fetchHistory('open-session-1');
 
-    assert.equal(history.total, 4);
+    assert.equal(history.total, 5);
     assert.equal(history.messages[0]?.kind, 'text');
     assert.equal(history.messages[0]?.role, 'user');
     assert.equal(history.messages[0]?.content, 'Build the OpenCode integration.');
@@ -572,7 +292,7 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     const paged = await provider.fetchHistory('open-session-1', { limit: 2, offset: 0 });
     assert.equal(paged.messages.length, 2);
     assert.equal(paged.hasMore, true);
-    assert.equal(paged.messages[0]?.content, 'The provider is wired.');
+    assert.equal(paged.messages[0]?.kind, 'tool_use');
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });
@@ -600,10 +320,11 @@ const QUESTION_TOOL_STATE = {
 };
 
 test('OpenCode sessions provider shows a live question call as the question card with its answers', () => {
-  const [message] = normalizeLiveEvent({
-    type: 'tool_use',
-    sessionID: 'ses_1',
-    part: { type: 'tool', tool: 'question', callID: 'call_q', state: QUESTION_TOOL_STATE },
+  const [message] = normalizeLiveMessage({
+    id: 'msg_question', type: 'assistant', content: [
+      { type: 'tool', name: 'question', id: 'call_q', state: { ...QUESTION_TOOL_STATE,
+        content: [{ type: 'text', text: 'Answered' }] } },
+    ],
   });
 
   assert.equal(message?.toolName, 'AskUserQuestion');
@@ -623,26 +344,14 @@ test('OpenCode history hides the error of a stopped turn and shows question call
     await createOpenCodeDatabase(tempRoot, workspacePath);
     const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
     try {
-      const insertMessage = db.prepare(
-        'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
-      );
-      const insertPart = db.prepare(
-        'INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)',
-      );
-      // Stopping a turn aborts the session, which stores this on the message it interrupted.
-      insertMessage.run('message-stopped', 'open-session-1', 1_700_000_005_000, 1_700_000_005_000, JSON.stringify({
-        role: 'assistant',
-        error: { name: 'MessageAbortedError', data: { message: 'The operation was aborted.' } },
+      const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+      insert.run('message-stopped', 'open-session-1', 'idle', 3, JSON.stringify({
+        outcome: 'interrupted', time: { created: 1700000005000 },
       }));
-      insertMessage.run('message-failed', 'open-session-1', 1_700_000_006_000, 1_700_000_006_000, JSON.stringify({
-        role: 'assistant',
-        error: { name: 'APIError', data: { message: 'Rate limit exceeded' } },
-      }));
-      insertPart.run('part-question', 'message-failed', 'open-session-1', 1_700_000_006_000, 1_700_000_006_000, JSON.stringify({
-        type: 'tool',
-        tool: 'question',
-        callID: 'call_q',
-        state: QUESTION_TOOL_STATE,
+      insert.run('message-failed', 'open-session-1', 'assistant', 4, JSON.stringify({
+        error: { type: 'APIError', message: 'Rate limit exceeded' },
+        content: [{ type: 'tool', name: 'question', id: 'call_q', state: { ...QUESTION_TOOL_STATE,
+          content: [{ type: 'text', text: 'Answered' }] } }],
       }));
     } finally {
       db.close();
@@ -673,44 +382,15 @@ const seedOpenCodeSession = async (
   workspacePath: string,
   options: { sessionId: string; title: string | null; firstUserText: string },
 ): Promise<void> => {
-  const dataDir = path.join(homeDir, '.local', 'share', 'opencode');
-  await mkdir(dataDir, { recursive: true });
-
-  const db = new Database(path.join(dataDir, 'opencode.db'));
+  await createOpenCodeDatabase(homeDir, workspacePath);
+  const db = new Database(path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db'));
   try {
-    db.exec(`
-      CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
-      CREATE TABLE session (
-        id TEXT PRIMARY KEY,
-        project_id TEXT,
-        parent_id TEXT,
-        directory TEXT,
-        title TEXT,
-        time_created INTEGER,
-        time_updated INTEGER,
-        time_archived INTEGER
-      );
-      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
-      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
-    `);
-
-    db.prepare('INSERT INTO project (id, worktree) VALUES (?, ?)').run('project-1', workspacePath);
-    db.prepare(`
-      INSERT INTO session (id, project_id, directory, title, time_created, time_updated, time_archived)
-      VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(options.sessionId, 'project-1', workspacePath, options.title, 1_700_000_000_000, 1_700_000_001_000);
-    db.prepare('INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)')
-      .run('message-user', options.sessionId, 1_700_000_001_000, JSON.stringify({ role: 'user' }));
-    db.prepare('INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)')
-      .run(
-        'part-user',
-        'message-user',
-        options.sessionId,
-        1_700_000_001_000,
-        // OpenCode persists the prompt as a JSON string literal inside the text
-        // field, so double-encode it here to exercise the unwrap on read.
-        JSON.stringify({ type: 'text', text: JSON.stringify(options.firstUserText) }),
-      );
+    db.prepare('DELETE FROM session_v2').run();
+    db.prepare('DELETE FROM session_message').run();
+    db.prepare('INSERT INTO session_v2 (id, project_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(options.sessionId, 'project-1', workspacePath, options.title, 1700000000000, 1700000001000);
+    db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)')
+      .run('user-1', options.sessionId, 'user', 1, JSON.stringify({ text: options.firstUserText }));
   } finally {
     db.close();
   }

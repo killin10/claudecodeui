@@ -21,6 +21,7 @@ type OpenCodeSessionRow = {
   time_created: number | null;
   time_updated: number | null;
   worktree: string | null;
+  metadata: string | null;
 };
 
 type SynchronizeRowsResult = {
@@ -52,11 +53,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
    * Handles watcher changes for opencode.db.
    */
   async synchronizeFile(filePath: string): Promise<string | null> {
-    if (path.basename(filePath) !== 'opencode.db') {
+    if (!/^opencode\.db(?:-wal)?$/.test(path.basename(filePath))) {
       return null;
     }
 
-    const result = this.synchronizeRows(undefined, 1);
+    const result = this.synchronizeRows();
     return result.firstSessionId;
   }
 
@@ -87,8 +88,9 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
           s.title AS title,
           s.time_created AS time_created,
           s.time_updated AS time_updated,
+          s.metadata AS metadata,
           p.worktree AS worktree
-        FROM session s
+        FROM session_v2 s
         LEFT JOIN project p ON p.id = s.project_id
         WHERE s.time_archived IS NULL
           AND s.parent_id IS NULL
@@ -124,7 +126,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
   private pruneChildSessions(db: Database.Database): void {
     const childSessions = db.prepare(`
       SELECT id
-      FROM session
+      FROM session_v2
       WHERE parent_id IS NOT NULL
     `).all() as OpenCodeChildSessionRow[];
 
@@ -141,14 +143,15 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
 
     const fallbackTitle = 'Untitled OpenCode Session';
-    const pendingAppSession = sessionsDb.getSessionByProviderSessionId(sessionId)
-      ?? sessionsDb.getSessionById(sessionId)
-      ?? sessionsDb.findLatestPendingAppSession(this.provider, projectPath);
-    if (pendingAppSession && !pendingAppSession.provider_session_id) {
+    const appSessionId = readOptionalString(readJsonRecord(row.metadata)?.cloudcliSessionId);
+    const pendingAppSession = appSessionId ? sessionsDb.getSessionById(appSessionId) : null;
+    if (pendingAppSession?.provider === this.provider
+      && pendingAppSession.project_path === projectPath
+      && (!pendingAppSession.provider_session_id || pendingAppSession.provider_session_id === appSessionId)) {
       // Slow networks can let the sqlite watcher index opencode.db before the
       // runtime reports its provider id back through the websocket mapping.
-      // Bind that id to the fresh app row first so the watcher does not create
-      // a temporary provider-id sidebar entry for the same session.
+      // Only bind an explicit marker from our runtime. Matching by directory
+      // could adopt an unrelated CLI session during a first V2 history scan.
       sessionsDb.assignProviderSessionId(pendingAppSession.session_id, sessionId);
     }
 
@@ -182,18 +185,9 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
 
   private readFirstUserText(db: Database.Database, sessionId: string): string | undefined {
     try {
-      const row = db.prepare(`
-        SELECT p.data AS data
-        FROM message m
-        INNER JOIN part p
-          ON p.session_id = m.session_id
-         AND p.message_id = m.id
-        WHERE m.session_id = ?
-          AND json_extract(m.data, '$.role') = 'user'
-          AND json_extract(p.data, '$.type') = 'text'
-        ORDER BY COALESCE(m.time_created, 0), COALESCE(p.time_created, 0)
-        LIMIT 1
-      `).get(sessionId) as { data: string | null } | undefined;
+      const row = db.prepare(
+        "SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq LIMIT 1",
+      ).get(sessionId) as { data: string | null } | undefined;
 
       const data = readJsonRecord(row?.data);
       const text = readOptionalString(data?.text);

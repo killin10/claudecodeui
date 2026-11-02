@@ -17,6 +17,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import spawn from 'cross-spawn';
+import Database from 'better-sqlite3';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import { parseFrontMatter } from '@/shared/frontmatter.js';
@@ -1048,7 +1049,25 @@ export function readJsonRecord(value: unknown): AnyRecord | null {
  * it as a deletable transcript path for an individual app session row.
  */
 export function getOpenCodeDatabasePath(): string {
-  return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'opencode.db');
+}
+
+/**
+ * Used by the providers module's OpenCode auth and model facets to discover V2
+ * integrations. Reads only identifiers of active credentials, never credential
+ * values. An absent database or pre-migration store contributes no integrations.
+ */
+export function readOpenCodeConnectedIntegrations(): string[] {
+  const databasePath = getOpenCodeDatabasePath();
+  if (!fs.existsSync(databasePath)) return [];
+  const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    if (!db.prepare("SELECT name FROM sqlite_master WHERE name = 'credential'").get()) return [];
+    const rows = db.prepare('SELECT DISTINCT integration_id FROM credential WHERE active = 1').all() as Array<{ integration_id: string }>;
+    return rows.map((row) => row.integration_id);
+  } finally {
+    db.close();
+  }
 }
 
 /**

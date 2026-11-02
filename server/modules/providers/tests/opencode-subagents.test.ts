@@ -11,19 +11,19 @@ import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/open
 // A `task` call as opencode 1.18 stores it: the child session id lives in `state.metadata`.
 const taskPart = (status: 'running' | 'completed' | 'error', metadata: Record<string, unknown> = {}) => ({
   type: 'tool',
-  tool: 'task',
-  callID: 'call_task',
+  name: 'subagent',
+  id: 'call_task',
   state: {
     status,
-    input: { description: 'Count Markdown files', subagent_type: 'general', prompt: 'Count the .md files.' },
+    input: { description: 'Count Markdown files', agent: 'general', prompt: 'Count the .md files.' },
     ...(status === 'completed'
-      ? { output: '<task id="ses_child" state="completed">\n<task_result>\n**3** files\n</task_result>\n</task>' }
+      ? { content: [{ type: 'text', text: '<task id="ses_child" state="completed">\n<task_result>\n**3** files\n</task_result>\n</task>' }] }
       : {}),
     ...(status === 'error' ? { error: 'Tool execution aborted' } : {}),
     metadata: {
       parentSessionId: 'ses_parent',
       sessionId: 'ses_child',
-      model: { modelID: 'gpt-6-luna', providerID: 'openai' },
+      model: { id: 'gpt-6-luna', providerID: 'openai' },
       ...metadata,
     },
   },
@@ -43,42 +43,28 @@ async function withOpenCodeDatabase(
   const db = new Database(path.join(dataDir, 'opencode.db'));
   try {
     db.exec(`
-      CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT);
-      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
-      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT);
+      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT);
     `);
-    const message = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?)');
-    const part = db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?)');
-
-    db.prepare('INSERT INTO session VALUES (?, ?)').run('ses_parent', null);
-    db.prepare('INSERT INTO session VALUES (?, ?)').run('ses_child', 'ses_parent');
-
-    message.run('msg_p1', 'ses_parent', 1, JSON.stringify({ role: 'user' }));
-    part.run('prt_p1', 'msg_p1', 'ses_parent', 1, JSON.stringify({ type: 'text', text: 'use a subagent' }));
-    message.run('msg_p2', 'ses_parent', 2, JSON.stringify({ role: 'assistant' }));
-    part.run('prt_p2', 'msg_p2', 'ses_parent', 2, JSON.stringify(parentTask));
-    part.run('prt_p3', 'msg_p2', 'ses_parent', 3, JSON.stringify({
-      type: 'tool', tool: 'glob', callID: 'call_parent_glob', state: { status: 'completed', input: {}, output: '' },
-    }));
-
-    // The child's own prompt is a user message: it is the call's input, not activity.
-    message.run('msg_c1', 'ses_child', 10, JSON.stringify({ role: 'user' }));
-    part.run('prt_c1', 'msg_c1', 'ses_child', 10, JSON.stringify({ type: 'text', text: 'Count the .md files.' }));
-    message.run('msg_c2', 'ses_child', 11, JSON.stringify({ role: 'assistant' }));
-    part.run('prt_c2', 'msg_c2', 'ses_child', 11, JSON.stringify({ type: 'reasoning', text: 'Globbing.' }));
-    part.run('prt_c3', 'msg_c2', 'ses_child', 12, JSON.stringify({
-      type: 'tool', tool: 'glob', callID: 'call_glob',
-      state: { status: 'completed', input: { pattern: '**/*.md' }, output: 'a.md\nb.md\nc.md' },
-    }));
-    part.run('prt_c4', 'msg_c2', 'ses_child', 13, JSON.stringify({
-      type: 'tool', tool: 'read', callID: 'call_read', state: { status: 'running', input: { filePath: 'a.md' } },
-    }));
-    part.run('prt_c5', 'msg_c2', 'ses_child', 14, JSON.stringify({ type: 'text', text: '3' }));
+    const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+    insert.run('msg_p1', 'ses_parent', 'user', 1, JSON.stringify({ text: 'use a subagent', time: { created: 1 } }));
+    insert.run('msg_p2', 'ses_parent', 'assistant', 2, JSON.stringify({ time: { created: 2 }, content: [
+      parentTask, { type: 'tool', name: 'glob', id: 'call_parent_glob',
+        state: { status: 'completed', input: {}, content: [{ type: 'text', text: '' }] } },
+    ] }));
+    insert.run('msg_c1', 'ses_child', 'user', 1, JSON.stringify({ text: 'Count the .md files.' }));
+    const content: Record<string, unknown>[] = [
+      { type: 'reasoning', text: 'Globbing.' },
+      { type: 'tool', name: 'glob', id: 'call_glob', state: { status: 'completed',
+        input: { pattern: '**/*.md' }, content: [{ type: 'text', text: 'a.md\nb.md\nc.md' }] } },
+      { type: 'tool', name: 'read', id: 'call_read', state: { status: 'running', input: { filePath: 'a.md' } } },
+      { type: 'text', text: '3' },
+    ];
     for (let step = 0; step < extraChildSteps; step += 1) {
-      part.run(`prt_x${String(step).padStart(4, '0')}`, 'msg_c2', 'ses_child', 100 + step, JSON.stringify({
-        type: 'tool', tool: 'read', callID: `call_x${step}`, state: { status: 'completed', input: {}, output: '' },
-      }));
+      content.push({ type: 'tool', name: 'read', id: `call_x${step}`, state: { status: 'completed',
+        input: {}, content: [{ type: 'text', text: '' }] } });
     }
+    insert.run('msg_c2', 'ses_child', 'assistant', 2, JSON.stringify({ time: { created: 11 }, content }));
   } finally {
     db.close();
   }
@@ -93,7 +79,7 @@ async function withOpenCodeDatabase(
 
 const readTask = async (provider: OpenCodeSessionsProvider) => {
   const history = await provider.fetchHistory('app-session', { providerSessionId: 'ses_parent' });
-  return { history, task: history.messages.find((message) => message.toolName === 'task') };
+  return { history, task: history.messages.find((message) => message.toolName === 'subagent') };
 };
 
 test('a task call in history becomes a subagent container with the child session timeline', { concurrency: false }, async () => {
@@ -167,13 +153,9 @@ test('a long subagent keeps its latest steps and reports the full count', { conc
 
 test('the live task event carries the subagent and its timeline', { concurrency: false }, async () => {
   await withOpenCodeDatabase(taskPart('completed'), async (provider) => {
-    const [message] = provider.normalizeMessage({
-      type: 'tool_use',
-      sessionID: 'ses_parent',
-      part: { id: 'prt_p2', messageID: 'msg_p2', sessionID: 'ses_parent', ...taskPart('completed') },
-    }, 'app-session');
+    const [message] = provider.normalizeMessage({ type: 'session.message', message: { id: 'msg_p2', type: 'assistant', content: [taskPart('completed')] } }, 'app-session');
 
-    assert.equal(message?.id, 'msg_p2_prt_p2');
+    assert.equal(message?.id, 'msg_p2_0');
     assert.equal(message?.subagent?.type, 'general');
     assert.equal(message?.subagent?.status, 'completed');
     assert.equal(message?.subagentTools?.length, 4);
@@ -187,7 +169,7 @@ test('a live task still renders as a subagent when the database cannot be opened
     await rm(dbPath);
     await mkdir(dbPath);
 
-    const [message] = provider.normalizeMessage({ type: 'tool_use', part: taskPart('completed') }, 'app-session');
+    const [message] = provider.normalizeMessage({ type: 'session.message', message: { id: 'msg_p2', type: 'assistant', content: [taskPart('completed')] } }, 'app-session');
 
     assert.equal(message?.subagent?.status, 'completed');
     assert.equal(message?.subagentTools, undefined);
@@ -196,25 +178,9 @@ test('a live task still renders as a subagent when the database cannot be opened
 
 test('a task whose child session is missing still renders as a subagent, without a timeline', { concurrency: false }, async () => {
   await withOpenCodeDatabase(taskPart('completed'), async (provider) => {
-    const [message] = provider.normalizeMessage({
-      type: 'tool_use',
-      part: taskPart('completed', { sessionId: 'ses_gone' }),
-    }, 'app-session');
+    const [message] = provider.normalizeMessage({ type: 'session.message', message: { id: 'msg_p2', type: 'assistant', content: [taskPart('completed', { sessionId: 'ses_gone' })] } }, 'app-session');
 
     assert.equal(message?.subagent?.id, 'ses_gone');
     assert.equal(message?.subagentTools, undefined);
-  });
-});
-
-test('a flat task event with an output is reported as completed', { concurrency: false }, async () => {
-  await withOpenCodeDatabase(taskPart('completed'), async (provider) => {
-    const [message] = provider.normalizeMessage({
-      type: 'tool_use',
-      tool: 'task',
-      input: { subagent_type: 'general', description: 'Count' },
-      output: '3',
-    }, 'app-session');
-
-    assert.equal(message?.subagent?.status, 'completed');
   });
 });

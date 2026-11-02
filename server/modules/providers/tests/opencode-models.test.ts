@@ -125,6 +125,25 @@ test('OpenCode falls back to the curated catalog only when no providers are know
   );
 });
 
+test('OpenCode V2 discovers active database credentials and JSONC providers', async () => {
+  await withOpenCodeHome(async (homeDir) => {
+    const dataDir = path.join(homeDir, '.local', 'share', 'opencode');
+    const configDir = path.join(homeDir, '.config', 'opencode');
+    await mkdir(dataDir, { recursive: true });
+    await mkdir(configDir, { recursive: true });
+    const db = new Database(path.join(dataDir, 'opencode.db'));
+    try {
+      db.exec("CREATE TABLE credential (integration_id TEXT, active INTEGER); INSERT INTO credential VALUES ('zhipuai-coding-plan', 1), ('inactive', 0)");
+    } finally {
+      db.close();
+    }
+    await writeFile(path.join(configDir, 'opencode.jsonc'), '{ // V2 custom provider\n "providers": { "custom": {} }, }');
+  }, async (adapter) => {
+    const models = await adapter.getSupportedModels();
+    assert.deepEqual(models.OPTIONS.map((model) => model.value).sort(), ['custom/test', 'zhipuai-coding-plan/glm-5.3']);
+  }, async () => ['inactive/test', 'custom/test', 'zhipuai-coding-plan/glm-5.3']);
+});
+
 test('OpenCode discovers only models available through connected providers', async () => {
   // Asking for a provider the user never connected fails the whole run with
   // "Model <id> is not valid", so an OpenCode Zen model must not be offered -
@@ -396,7 +415,7 @@ const writeOpenCodeSessionDatabase = async (homeDir: string, rows: Array<Record<
   const db = new Database(dbPath);
   try {
     db.exec(`
-      CREATE TABLE session (
+      CREATE TABLE session_v2 (
         id text PRIMARY KEY,
         model text,
         agent text,
@@ -406,7 +425,7 @@ const writeOpenCodeSessionDatabase = async (homeDir: string, rows: Array<Record<
       );
     `);
     const insert = db.prepare(
-      'INSERT INTO session (id, model, agent, directory, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO session_v2 (id, model, agent, directory, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)',
     );
     for (const [index, row] of rows.entries()) {
       insert.run(

@@ -48,6 +48,17 @@ const writeOpenCodeConfig = async (filePath: string, data: Record<string, unknow
   await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
 };
 
+function normalizeStoredServer(raw: unknown): unknown {
+  const server = readObjectRecord(raw);
+  if (!server) return raw;
+  const { enabled, timeout, ...rest } = server;
+  return {
+    ...rest,
+    ...(typeof enabled === 'boolean' ? { disabled: !enabled } : {}),
+    ...(timeout === undefined ? {} : { timeout: typeof timeout === 'number' ? { catalog: timeout } : timeout }),
+  };
+}
+
 const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string): Promise<OpenCodeConfigPath> => {
   const root = scope === 'user'
     ? path.join(os.homedir(), '.config', 'opencode')
@@ -66,6 +77,7 @@ const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string)
   return { filePath: jsonPath, exists: false };
 };
 
+/** Used by the OpenCode provider to manage V2 MCP settings in user and project scopes. */
 export class OpenCodeMcpProvider extends McpProvider {
   constructor() {
     super('opencode', ['user', 'project'], ['stdio', 'http']);
@@ -74,7 +86,10 @@ export class OpenCodeMcpProvider extends McpProvider {
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {
     const { filePath } = await resolveOpenCodeConfigPath(scope, workspacePath);
     const config = await readOpenCodeConfig(filePath);
-    return readObjectRecord(config.mcp) ?? {};
+    const mcp = readObjectRecord(config.mcp) ?? {};
+    const grouped = 'servers' in mcp || 'timeout' in mcp;
+    const servers = grouped ? readObjectRecord(mcp.servers) ?? {} : mcp;
+    return Object.fromEntries(Object.entries(servers).map(([name, config]) => [name, normalizeStoredServer(config)]));
   }
 
   protected async writeScopedServers(
@@ -84,7 +99,8 @@ export class OpenCodeMcpProvider extends McpProvider {
   ): Promise<void> {
     const { filePath } = await resolveOpenCodeConfigPath(scope, workspacePath);
     const config = await readOpenCodeConfig(filePath);
-    config.mcp = servers;
+    const mcp = readObjectRecord(config.mcp) ?? {};
+    config.mcp = { ...('servers' in mcp || 'timeout' in mcp ? mcp : {}), servers };
     await writeOpenCodeConfig(filePath, config);
   }
 
@@ -100,7 +116,7 @@ export class OpenCodeMcpProvider extends McpProvider {
       return {
         type: 'local',
         command: [input.command, ...(input.args ?? [])],
-        enabled: true,
+        disabled: false,
         environment: input.env ?? {},
       };
     }
@@ -115,7 +131,7 @@ export class OpenCodeMcpProvider extends McpProvider {
     return {
       type: 'remote',
       url: input.url,
-      enabled: true,
+      disabled: false,
       headers: input.headers ?? {},
     };
   }

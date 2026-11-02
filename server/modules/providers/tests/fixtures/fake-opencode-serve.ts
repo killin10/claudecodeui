@@ -1,19 +1,3 @@
-/**
- * A stand-in for `opencode serve`, used by the OpenCode runtime tests in place
- * of the real binary. The SDK's `createOpencodeServer` spawns it exactly like
- * OpenCode (`opencode serve --hostname=… --port=…`) and waits for the same
- * "listening" line; the runtime then talks to it through the SDK client.
- *
- * It implements just the API the runtime uses, with OpenCode's semantics where
- * they matter: Basic auth from OPENCODE_SERVER_PASSWORD, an SSE event stream
- * that opens with `server.connected`, `prompt_async` answering at once while
- * the turn runs, permission and question requests that wait for their reply,
- * a rejected permission or dismissed question ending the turn, and an abort
- * that reports MessageAbortedError.
- *
- * The turn is scripted through FAKE_OPENCODE_SCENARIO (JSON, see `Scenario`);
- * every request is appended to FAKE_OPENCODE_LOG as one JSON line.
- */
 import fs from 'node:fs';
 import http from 'node:http';
 
@@ -86,19 +70,51 @@ let eventCounter = 0;
 let partCounter = 0;
 let turnAborted: (() => void) | null = null;
 
-const emit = (type: string, properties: Record<string, unknown>) => {
-  const data = JSON.stringify({ id: `evt_${++eventCounter}`, type, properties });
+const forms = new Map<string, any>();
+const messages = new Map<string, any>();
+const emit = (type: string, properties: Record<string, any>) => {
+  if (type === 'message.updated') return;
+  if (type === 'session.error') {
+    type = properties.error.name === 'MessageAbortedError' ? 'session.execution.interrupted' : 'session.execution.failed';
+    properties = { sessionID: properties.sessionID, error: { type: properties.error.name, message: properties.error.data.message } };
+  }
+  if (type === 'permission.asked') {
+    properties = { id: properties.id, sessionID: properties.sessionID, action: properties.permission,
+      resources: properties.patterns, save: properties.always, metadata: properties.metadata };
+  }
+  if (type === 'question.asked') {
+    const form = { id: properties.id, sessionID: properties.sessionID, title: 'Question',
+      fields: properties.questions.map((q: any, index: number) => ({
+        key: String(index), title: q.question, type: q.multiple ? 'multiselect' : 'string',
+        options: q.options.map((option: any) => ({ ...option, value: option.label })),
+        custom: q.custom,
+      })) };
+    forms.set(form.id, form);
+    type = 'form.created';
+    properties = { form };
+  }
+  const data = JSON.stringify({ id: `evt_${++eventCounter}`, created: Date.now(), type, data: properties });
   for (const stream of streams) {
     stream.write(`data: ${data}\n\n`);
   }
 };
 
-const emitPart = (sessionID: string, part: Record<string, unknown>) => {
-  emit('message.part.updated', {
-    sessionID,
-    part: { id: `prt_${++partCounter}`, sessionID, messageID: 'msg_assistant', ...part },
-    time: Date.now(),
-  });
+const emitPart = (sessionID: string, part: Record<string, any>) => {
+  if (part.messageID === 'msg_user') return;
+  const messageID = `msg_${++partCounter}`;
+  const state = part.state;
+  const content = part.type === 'tool' ? {
+    type: 'tool', id: part.callID, name: part.tool,
+    state: { ...state, content: [{ type: 'text', text: state.output ?? '' }],
+      ...(state.error ? { error: { type: 'ToolError', message: state.error } } : {}) },
+  } : part;
+  const message = { id: messageID, type: 'assistant', time: { created: Date.now() },
+    content: part.type === 'step-finish' ? [] : [content] };
+  if (part.type === 'step-finish') (message.time as any).completed = Date.now();
+  messages.set(messageID, message);
+  const type = part.type === 'tool' ? (state.status === 'error' ? 'session.tool.failed' : 'session.tool.success')
+    : part.type === 'step-finish' ? 'session.step.ended' : `session.${part.type}.ended`;
+  emit(type, { sessionID, assistantMessageID: messageID, ordinal: 0, text: part.text });
 };
 
 const sendJson = (res: http.ServerResponse, status: number, body: unknown) => {
@@ -264,13 +280,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const path = url.pathname;
+  const path = url.pathname.replace(/^\/api/, '');
   let match: RegExpExecArray | null;
 
   if (req.method === 'GET' && path === '/event') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     streams.add(res);
-    res.write(`data: ${JSON.stringify({ id: 'evt_0', type: 'server.connected', properties: {} })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: 'evt_0', type: 'server.connected', data: {} })}\n\n`);
     req.on('close', () => streams.delete(res));
     return;
   }
@@ -278,7 +294,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/session') {
     const id = scenario.newSessionId ?? 'ses_fake_new';
     sessions.set(id, { permission: (body as { permission?: PermissionRule[] } | undefined)?.permission });
-    sendJson(res, 200, { id, title: 'New session', directory: url.searchParams.get('directory') });
+    sendJson(res, 200, { data: { id, title: 'New session' } });
     return;
   }
 
@@ -296,12 +312,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && path === '/global/health') {
+  if (req.method === 'GET' && path === '/info') {
     if (scenario.version === null) {
       sendJson(res, 404, { name: 'NotFoundError', data: { message: 'No route' } });
       return;
     }
-    sendJson(res, 200, { healthy: true, version: scenario.version ?? '1.19.5' });
+    sendJson(res, 200, { healthy: true, version: scenario.version ?? '2.1.4' });
     return;
   }
 
@@ -314,22 +330,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && path === '/config') {
-    sendJson(res, 200, scenario.defaultAgent ? { default_agent: scenario.defaultAgent } : {});
+    sendJson(res, 200, [{ type: 'document', info: { default_agent: scenario.defaultAgent ?? 'build' } }]);
     return;
   }
 
-  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/prompt_async$/.exec(path))) {
+  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/prompt$/.exec(path))) {
     if (scenario.promptStatus) {
       sendJson(res, scenario.promptStatus, { name: 'BadRequest', data: { message: 'The prompt was refused' } });
       return;
     }
-    res.writeHead(204);
-    res.end();
+    sendJson(res, 200, { data: { id: 'inbox_1', sessionID: match[1], type: 'user' } });
     void runTurn(match[1]);
     return;
   }
 
-  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/abort$/.exec(path))) {
+  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/interrupt$/.exec(path))) {
     if (scenario.askOnAbort) {
       emit('question.asked', { ...scenario.askOnAbort, sessionID: match[1] });
     }
@@ -341,34 +356,35 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && (match = /^\/(permission|question)\/([^/]+)\/(reply|reject)$/.exec(path))) {
-    const [, kind, requestID, action] = match;
+  if ((match = /^\/session\/([^/]+)\/(permission|form)\/([^/]+)(?:\/(reply))?$/.exec(path))) {
+    const [, sessionID, kind, requestID] = match;
     const resolve = waiting.get(requestID);
-    // The body OpenCode answers an unknown request id with (checked on 1.18.25).
-    const notFound = kind === 'permission'
-      ? { _tag: 'PermissionNotFoundError', requestID, message: `Permission request not found: ${requestID}` }
-      : { _tag: 'QuestionNotFoundError', requestID, message: `Question request not found: ${requestID}` };
-    if (!resolve) {
-      sendJson(res, 404, notFound);
-      return;
-    }
-    if (scenario.replyNotFound?.includes(requestID)) {
-      waiting.delete(requestID);
-      emit('permission.replied', { sessionID: 'any', requestID, reply: 'reject' });
-      resolve({ kind: kind as 'permission' | 'question', value: 'reject' });
-      sendJson(res, 404, notFound);
+    if (!resolve || scenario.replyNotFound?.includes(requestID)) {
+      resolve?.({ kind: 'permission', value: 'reject' });
+      sendJson(res, 404, { _tag: 'NotFoundError', message: 'Request not found' });
       return;
     }
     waiting.delete(requestID);
-    const payload = body as { reply?: string; answers?: unknown } | undefined;
-    const value = kind === 'permission' ? payload?.reply : action === 'reject' ? null : payload?.answers;
-    if (kind === 'permission') {
-      emit('permission.replied', { sessionID: 'any', requestID, reply: value });
-    } else {
-      emit(action === 'reject' ? 'question.rejected' : 'question.replied', { sessionID: 'any', requestID, answers: value });
-    }
-    resolve({ kind: kind as 'permission' | 'question', value });
-    sendJson(res, 200, true);
+    const payload = body as any;
+    const answers = forms.get(requestID)?.fields.map((field: any) => {
+      const value = payload?.answer?.[field.key];
+      return Array.isArray(value) ? value : value === undefined ? [] : [value];
+    });
+    const value = kind === 'permission' ? payload?.decision : req.method === 'DELETE' ? null : answers;
+    emit(kind === 'permission' ? 'permission.replied' : value === null ? 'form.cancelled' : 'form.replied',
+      { sessionID, requestID, id: requestID, reply: value });
+    resolve({ kind: kind === 'permission' ? 'permission' : 'question', value });
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  if ((match = /^\/session\/([^/]+)\/message\/([^/]+)$/.exec(path))) {
+    sendJson(res, 200, { data: messages.get(match[2]) });
+    return;
+  }
+  if ((match = /^\/session\/([^/]+)\/(agent|model)$/.exec(path))) {
+    res.writeHead(204);
+    res.end();
     return;
   }
 
@@ -379,5 +395,5 @@ server.listen(Number(readFlag('port') ?? 0), readFlag('hostname') ?? '127.0.0.1'
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
   log({ started: true, pid: process.pid, port, args, passwordSet: Boolean(password) });
-  console.log(`opencode server listening on http://${readFlag('hostname') ?? '127.0.0.1'}:${port}`);
+  console.log(`server listening on http://${readFlag('hostname') ?? '127.0.0.1'}:${port}`);
 });

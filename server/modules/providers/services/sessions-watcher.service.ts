@@ -25,7 +25,7 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   },
   {
     provider: 'opencode',
-    rootPath: path.join(os.homedir(), '.local', 'share', 'opencode'),
+    rootPath: path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode'),
   },
 ];
 
@@ -107,7 +107,7 @@ let watcherRescheduleAfterRefresh = false;
  */
 function isWatcherTargetFile(provider: LLMProvider, filePath: string): boolean {
   if (provider === 'opencode') {
-    return path.basename(filePath) === 'opencode.db';
+    return /^opencode\.db(?:-wal)?$/.test(path.basename(filePath));
   }
 
   return filePath.endsWith('.jsonl');

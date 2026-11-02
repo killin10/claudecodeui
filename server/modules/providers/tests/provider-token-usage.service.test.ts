@@ -124,7 +124,7 @@ test('OpenCode token usage resolves its provider-native id from the session row'
 
   try {
     database.exec(`
-      CREATE TABLE session (
+      CREATE TABLE session_v2 (
         id TEXT PRIMARY KEY,
         tokens_input INTEGER,
         tokens_output INTEGER,
@@ -134,7 +134,7 @@ test('OpenCode token usage resolves its provider-native id from the session row'
       )
     `);
     database.prepare(`
-      INSERT INTO session (
+      INSERT INTO session_v2 (
         id,
         tokens_input,
         tokens_output,

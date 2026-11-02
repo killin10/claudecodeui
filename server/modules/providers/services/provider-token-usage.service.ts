@@ -334,7 +334,7 @@ function claudeEntriesHaveUsage(entries: AnyRecord[]): boolean {
 function readOpenCodeTokenUsage(databasePath: string, providerSessionId: string): TokenUsageResult {
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
-    const columns = database.prepare('PRAGMA table_info(session)').all() as Array<{ name: string }>;
+    const columns = database.prepare('PRAGMA table_info(session_v2)').all() as Array<{ name: string }>;
     const columnNames = new Set(columns.map((column) => column.name));
     const requiredColumns = [
       'tokens_input',
@@ -362,7 +362,7 @@ function readOpenCodeTokenUsage(databasePath: string, providerSessionId: string)
         tokens_reasoning AS reasoningTokens,
         tokens_cache_read AS cacheReadTokens,
         tokens_cache_write AS cacheWriteTokens
-      FROM session
+      FROM session_v2
       WHERE id = ?
     `).get(providerSessionId) as OpenCodeTokenRow | undefined;
 

@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import spawn from 'cross-spawn';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { readOpenCodeConnectedIntegrations } from '@/shared/index.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -14,6 +15,8 @@ import type {
 import {
   buildDefaultProviderCurrentActiveModel,
   getOpenCodeDatabasePath,
+  stripJsonComments,
+  stripTrailingCommas,
   readObjectRecord,
   readOptionalString,
 } from '@/shared/utils.js';
@@ -373,7 +376,7 @@ const readInstalledOpenCodeModels = async (): Promise<string[]> => new Promise((
 
 const readOpenCodeJsonFile = async (filePath: string): Promise<Record<string, unknown> | null> => {
   try {
-    return readObjectRecord(JSON.parse(await readFile(filePath, 'utf8')));
+    return readObjectRecord(JSON.parse(stripTrailingCommas(stripJsonComments(await readFile(filePath, 'utf8')))));
   } catch {
     // Missing, unreadable, or comment-bearing (.jsonc) files simply contribute
     // nothing; the auth store is the authoritative source below.
@@ -400,7 +403,7 @@ const readOpenCodeJsonFile = async (filePath: string): Promise<Record<string, un
  * unfiltered catalog in that case.
  */
 const readConnectedOpenCodeProviderIds = async (): Promise<Set<string> | null> => {
-  const providerIds = new Set<string>();
+  const providerIds = new Set<string>(readOpenCodeConnectedIntegrations());
   const configDir = path.join(os.homedir(), '.config', 'opencode');
 
   const auth = await readOpenCodeJsonFile(
@@ -432,7 +435,7 @@ const readConnectedOpenCodeProviderIds = async (): Promise<Set<string> | null> =
   }
 
   for (const config of configs) {
-    for (const providerId of Object.keys(readObjectRecord(config?.provider) ?? {})) {
+    for (const providerId of Object.keys(readObjectRecord(config?.providers) ?? readObjectRecord(config?.provider) ?? {})) {
       providerIds.add(providerId);
     }
   }
@@ -629,7 +632,7 @@ export class OpenCodeProviderModels implements IProviderModels {
             s.directory AS directory,
             s.time_updated AS timeUpdated,
             s.time_created AS timeCreated
-          FROM session s
+          FROM session_v2 s
           WHERE s.id = ?
           ORDER BY COALESCE(s.time_updated, s.time_created, 0) DESC
           LIMIT 1
