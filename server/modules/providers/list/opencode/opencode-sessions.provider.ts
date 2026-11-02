@@ -1,8 +1,10 @@
 import fsSync from 'node:fs';
 
 import Database from 'better-sqlite3';
+import { isSessionNotFoundError } from '@opencode/client';
 
 import { isOpenCodeSessionActive } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
+import { startOpenCodeServer } from '@/modules/providers/list/opencode/opencode-server.provider.js';
 import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type {
@@ -56,6 +58,11 @@ function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
   const created = message.time?.created ?? 0;
   const messageInfo = JSON.stringify({ role: message.type, error: message.error });
   const base = { message_id: message.id, message_time_created: created, message_data: messageInfo };
+  if (message.type === 'idle') {
+    return message.outcome === 'failed' && message.error
+      ? [{ ...base, message_data: JSON.stringify({ role: 'assistant', error: message.error }), part_id: null, part_time_created: created, part_data: null }]
+      : [];
+  }
   if (message.type === 'user') {
     return [{ ...base, part_id: '0', part_time_created: created, part_data: JSON.stringify({ type: 'text', text: message.text }) }];
   }
@@ -86,7 +93,18 @@ function readHistoryRows(db: Database.Database, sessionId: string): OpenCodeHist
   const rows = db.prepare(
     'SELECT id, type, data FROM session_message WHERE session_id = ? ORDER BY seq',
   ).all(sessionId) as Array<{ id: string; type: string; data: string }>;
-  return rows.flatMap((row) => messageRows({ ...JSON.parse(row.data), id: row.id, type: row.type }));
+  // Execution failures may repeat the last assistant error in an idle record.
+  // Deduplicate only within one turn; the same error on a later turn must remain visible.
+  const turnErrors = new Set<string>();
+  return rows.flatMap((row) => {
+    const message = { ...JSON.parse(row.data), id: row.id, type: row.type };
+    if (row.type === 'user') turnErrors.clear();
+    const error = message.error ? readEventError(message.error) ?? formatToolContent(message.error) : undefined;
+    if (row.type === 'idle' && error && turnErrors.has(error)) delete message.error;
+    if (row.type === 'assistant' && error) turnErrors.add(error);
+    if (row.type === 'idle') turnErrors.clear();
+    return messageRows(message);
+  });
 }
 
 const openOpenCodeDatabase = (): Database.Database | null => {
@@ -399,6 +417,21 @@ const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
 
 /** Used by the OpenCode provider to render V2 messages consistently in live chat and history. */
 export class OpenCodeSessionsProvider implements IProviderSessions {
+  /** Used by Providers deletion to remove the native session, including children. */
+  async deleteSessionData(providerSessionId: string): Promise<boolean> {
+    const signal = AbortSignal.timeout(90_000);
+    const { client, server } = await startOpenCodeServer(signal);
+    try {
+      await client.session.remove({ sessionID: providerSessionId }, { signal });
+      return true;
+    } catch (error) {
+      if (isSessionNotFoundError(error)) return false;
+      throw error;
+    } finally {
+      server.close();
+    }
+  }
+
   /** Normalizes a V2 message fetched after a content event, using the same ids as history. */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);

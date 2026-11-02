@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
 import { providerRuntimeService } from '@/modules/providers/index.js';
 import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
@@ -116,11 +116,13 @@ async function withOpenCodeGateway(runTest: (socket: ReturnType<typeof createFak
   await initializeDatabase();
 
   try {
+    // Permission notifications persist preferences for the authenticated user.
+    const user = userDb.createUser('opencode-abort-test', 'unused-test-password-hash');
     sessionsDb.createAppSession(SESSION_ID, 'opencode', projectDir);
     const socket = createFakeSocket();
     // The real runtime service and provider registry, so the abort travels
     // through the same layers as in production.
-    handleChatConnection(socket as never, { user: { id: 1 } } as never, { runtime: providerRuntimeService });
+    handleChatConnection(socket as never, { user: { id: Number(user.id) } } as never, { runtime: providerRuntimeService });
     await runTest(socket);
   } finally {
     // A test that failed half-way leaves its turn and fake server running.

@@ -209,6 +209,16 @@ export interface IProviderSessions {
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
 
   /**
+   * Permanently removes a provider-native session and its dependent data.
+   * Used by Providers deletion before removing the CloudCLI index. Providers
+   * with shared stores implement this instead of unlinking a transcript file.
+   * Returns false only when the session is already absent; other failures
+   * must reject so the index remains available for retry. The id is native,
+   * never the app-facing id. Project files and unrelated sessions are retained.
+   */
+  deleteSessionData?(providerSessionId: string): Promise<boolean>;
+
+  /**
    * Resolves where a conversation must resume from so that the turn identified
    * by `anchorId`, and everything after it, is replaced.
    *

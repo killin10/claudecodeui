@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import http from 'node:http';
 
+import type { FormInfo } from '@opencode/client';
+
 type PermissionRule = { permission: string; pattern: string; action: string };
 
 type Step =
@@ -10,11 +12,14 @@ type Step =
     type: 'permission';
     id: string;
     permission: string;
+    sessionID?: string;
     patterns: string[];
     always: string[];
     metadata?: Record<string, unknown>;
   }
-  | { type: 'question'; id: string; questions: unknown[] }
+  | { type: 'question'; id: string; sessionID?: string; questions: unknown[] }
+  | { type: 'form'; form: FormInfo; directory: string }
+  | { type: 'interrupt' }
   /** Several requests asked at once; a reject of one rejects the rest, as OpenCode does. */
   | { type: 'parallel-permissions'; requests: Array<{ id: string; permission: string; patterns: string[]; always: string[] }> }
   | { type: 'error'; name: string; message: string }
@@ -25,7 +30,8 @@ type Scenario = {
   /** Id given to a session created through POST /session. */
   newSessionId?: string;
   /** Sessions GET /session/:id knows; any other id answers 404. */
-  sessions?: Record<string, { permission?: PermissionRule[] }>;
+  sessions?: Record<string, { permission?: PermissionRule[]; parentID?: string }>;
+  events?: Array<{ type: string; data: Record<string, unknown>; location?: { directory: string } }>;
   agents?: Array<{ name: string; permission: PermissionRule[] }>;
   defaultAgent?: string;
   /** Answered with a status instead of 204, as OpenCode does for a bad prompt. */
@@ -71,12 +77,15 @@ let partCounter = 0;
 let turnAborted: (() => void) | null = null;
 
 const forms = new Map<string, any>();
+const formDirectories = new Map<string, string>();
 const messages = new Map<string, any>();
-const emit = (type: string, properties: Record<string, any>) => {
+const emit = (type: string, properties: Record<string, any>, location?: { directory: string }) => {
   if (type === 'message.updated') return;
   if (type === 'session.error') {
     type = properties.error.name === 'MessageAbortedError' ? 'session.execution.interrupted' : 'session.execution.failed';
-    properties = { sessionID: properties.sessionID, error: { type: properties.error.name, message: properties.error.data.message } };
+    properties = type === 'session.execution.interrupted'
+      ? { sessionID: properties.sessionID, reason: 'user' }
+      : { sessionID: properties.sessionID, error: { type: properties.error.name, message: properties.error.data.message } };
   }
   if (type === 'permission.asked') {
     properties = { id: properties.id, sessionID: properties.sessionID, action: properties.permission,
@@ -85,7 +94,7 @@ const emit = (type: string, properties: Record<string, any>) => {
   if (type === 'question.asked') {
     const form = { id: properties.id, sessionID: properties.sessionID, title: 'Question',
       fields: properties.questions.map((q: any, index: number) => ({
-        key: String(index), title: q.question, type: q.multiple ? 'multiselect' : 'string',
+        key: `q${index}`, title: q.header, description: q.question, type: q.multiple ? 'multiselect' : 'string',
         options: q.options.map((option: any) => ({ ...option, value: option.label })),
         custom: q.custom,
       })) };
@@ -93,7 +102,7 @@ const emit = (type: string, properties: Record<string, any>) => {
     type = 'form.created';
     properties = { form };
   }
-  const data = JSON.stringify({ id: `evt_${++eventCounter}`, created: Date.now(), type, data: properties });
+  const data = JSON.stringify({ id: `evt_${++eventCounter}`, created: Date.now(), type, data: properties, ...(location ? { location } : {}) });
   for (const stream of streams) {
     stream.write(`data: ${data}\n\n`);
   }
@@ -153,10 +162,23 @@ async function runTurn(sessionID: string): Promise<void> {
     }
   }
 
-  emit('session.status', { sessionID, status: { type: 'busy' } });
+  emit('session.execution.started', { sessionID });
+  for (const event of scenario.events ?? []) emit(event.type, event.data, event.location);
   emit('message.updated', { sessionID, info: { id: 'msg_assistant', sessionID, role: 'assistant' } });
 
   for (const step of scenario.steps) {
+    if (step.type === 'interrupt') {
+      emit('session.execution.interrupted', { sessionID, reason: 'user' });
+      return;
+    }
+    if (step.type === 'form') {
+      const answer = new Promise((resolve) => waiting.set(step.form.id, resolve));
+      forms.set(step.form.id, step.form);
+      formDirectories.set(step.form.id, step.directory);
+      emit('form.created', { form: step.form }, { directory: step.directory });
+      await Promise.race([answer, aborted]);
+      continue;
+    }
     if (step.type === 'crash') {
       process.exit(1);
     }
@@ -164,7 +186,7 @@ async function runTurn(sessionID: string): Promise<void> {
     if (step.type === 'hang') {
       await aborted;
       emit('session.error', { sessionID, error: { name: 'MessageAbortedError', data: { message: 'Aborted' } } });
-      emit('session.status', { sessionID, status: { type: 'idle' } });
+      emit('session.execution.succeeded', { sessionID });
       return;
     }
 
@@ -177,7 +199,7 @@ async function runTurn(sessionID: string): Promise<void> {
       const answer = new Promise<{ kind: string; value: unknown }>((resolve) => waiting.set(step.id, resolve));
       emit('permission.asked', {
         id: step.id,
-        sessionID,
+        sessionID: step.sessionID ?? sessionID,
         permission: step.permission,
         patterns: step.patterns,
         always: step.always,
@@ -186,7 +208,7 @@ async function runTurn(sessionID: string): Promise<void> {
       const outcome = await Promise.race([answer, aborted]);
       if (outcome === 'aborted') {
         emit('session.error', { sessionID, error: { name: 'MessageAbortedError', data: { message: 'Aborted' } } });
-        emit('session.status', { sessionID, status: { type: 'idle' } });
+        emit('session.execution.succeeded', { sessionID });
         return;
       }
       const rejected = outcome.value === 'reject';
@@ -212,7 +234,7 @@ async function runTurn(sessionID: string): Promise<void> {
       });
       const first = await Promise.race([Promise.race(answers), aborted]);
       if (first === 'aborted') {
-        emit('session.status', { sessionID, status: { type: 'idle' } });
+        emit('session.execution.succeeded', { sessionID });
         return;
       }
       if (first.value === 'reject') {
@@ -233,10 +255,10 @@ async function runTurn(sessionID: string): Promise<void> {
 
     if (step.type === 'question') {
       const answer = new Promise<{ kind: string; value: unknown }>((resolve) => waiting.set(step.id, resolve));
-      emit('question.asked', { id: step.id, sessionID, questions: step.questions });
+      emit('question.asked', { id: step.id, sessionID: step.sessionID ?? sessionID, questions: step.questions });
       const outcome = await Promise.race([answer, aborted]);
       if (outcome === 'aborted') {
-        emit('session.status', { sessionID, status: { type: 'idle' } });
+        emit('session.execution.succeeded', { sessionID });
         return;
       }
       const dismissed = outcome.value === null;
@@ -255,7 +277,7 @@ async function runTurn(sessionID: string): Promise<void> {
   }
 
   emitPart(sessionID, { type: 'step-finish', reason: 'stop', cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } });
-  emit('session.status', { sessionID, status: { type: 'idle' } });
+  emit('session.execution.succeeded', { sessionID });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -308,7 +330,7 @@ const server = http.createServer(async (req, res) => {
       const added = (body as { permission?: PermissionRule[] } | undefined)?.permission ?? [];
       session.permission = [...(session.permission ?? []), ...added];
     }
-    sendJson(res, 200, { id: match[1], title: 'Session', permission: session.permission });
+    sendJson(res, 200, { data: { id: match[1], title: 'Session', ...session } });
     return;
   }
 
@@ -359,6 +381,10 @@ const server = http.createServer(async (req, res) => {
   if ((match = /^\/session\/([^/]+)\/(permission|form)\/([^/]+)(?:\/(reply))?$/.exec(path))) {
     const [, sessionID, kind, requestID] = match;
     const resolve = waiting.get(requestID);
+    if (sessionID === 'global' && decodeURIComponent(String(directoryHeader ?? '')) !== formDirectories.get(requestID)) {
+      sendJson(res, 404, { _tag: 'NotFoundError', message: 'Wrong form location' });
+      return;
+    }
     if (!resolve || scenario.replyNotFound?.includes(requestID)) {
       resolve?.({ kind: 'permission', value: 'reject' });
       sendJson(res, 404, { _tag: 'NotFoundError', message: 'Request not found' });

@@ -64,6 +64,29 @@ const opencodeQuestion: PendingPermissionRequest = {
   context: { answerFormat: 'label-lists' },
 };
 
+test('an external MCP form exposes its link and requires an explicit acknowledgement', () => {
+  const { getByRole, getByText, decisions } = renderBanner([{
+    ...opencodeQuestion,
+    input: { questions: [{ question: 'Finish signing in, then continue.', header: 'Sign in',
+      externalUrl: 'https://example.com/auth', options: [{ label: 'Continue' }], custom: false }] },
+  }], 'OpenCode');
+  const link = getByRole('link');
+  assert.equal(link.getAttribute('href'), 'https://example.com/auth');
+  assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(decisions.length, 0);
+  fireEvent.click(getByText('Continue'));
+  fireEvent.click(getByRole('button', { name: /submit/i }));
+  assert.deepEqual(decisions[0]?.decision.updatedInput, { answers: [['Continue']] });
+});
+
+test('external form links cannot use executable URL schemes', () => {
+  const { queryByRole } = renderBanner([{
+    ...opencodeQuestion,
+    input: { questions: [{ question: 'Sign in', externalUrl: 'javascript:alert(1)', options: [] }] },
+  }], 'OpenCode');
+  assert.equal(queryByRole('link'), null);
+});
+
 test('an OpenCode permission shows what Always allow covers and answers with OpenCode\'s always', () => {
   const { getByText, queryByText, decisions, grants } = renderBanner([opencodePermission], 'OpenCode');
 

@@ -7,6 +7,16 @@ import type { PermissionPanelProps,Question } from '@/shared/types';
  *  render by a fresh `[]` literal when a request carries no questions. */
 const NO_QUESTIONS: Question[] = [];
 
+function externalActionUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Whether a request wants its answers as one list of picked labels per
  * question (OpenCode's question tool) instead of Claude's answer strings keyed
@@ -176,6 +186,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
   const isSingle = total === 1;
   const q = questions[currentStep];
   const multi = q.multiSelect || false;
+  const externalUrl = externalActionUrl(q.externalUrl);
   const selected = selections.get(currentStep) || new Set<string>();
   const isOtherOn = otherActive.get(currentStep) || false;
   const isLast = currentStep === total - 1;
@@ -254,6 +265,11 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
           <p className="text-[14px] font-medium leading-snug text-gray-900 dark:text-gray-100">
             {q.question}
           </p>
+          {externalUrl && (
+            <a href={externalUrl} target="_blank" rel="noopener noreferrer" className="block break-all text-sm text-blue-600 underline dark:text-blue-400">
+              {externalUrl}
+            </a>
+          )}
           {multi && (
             <span className="text-[10px] text-gray-400 dark:text-gray-500">Select all that apply</span>
           )}

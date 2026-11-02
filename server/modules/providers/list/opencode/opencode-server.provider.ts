@@ -86,7 +86,7 @@ async function awaitReady(running: ReturnType<typeof spawnTurnServer>, signal: A
   throw new Error('OpenCode V2 server did not become ready within 60000ms. Check opencode serve and its logs.');
 }
 
-/** Used by the OpenCode runtime to own an authenticated V2 server for a single turn. */
+/** Used by the OpenCode runtime and sessions adapter to own an authenticated V2 server. */
 export async function startOpenCodeServer(signal: AbortSignal) {
   signal.throwIfAborted();
   const port = await reservePort();

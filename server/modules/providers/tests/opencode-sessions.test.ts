@@ -319,6 +319,47 @@ const QUESTION_TOOL_STATE = {
   time: { start: 0, end: 1 },
 };
 
+test('idle failures survive history reload without duplicating an assistant error from the same turn', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-idle-errors-'));
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await createOpenCodeDatabase(tempRoot, tempRoot);
+    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
+    try {
+      db.prepare('DELETE FROM session_message').run();
+      const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+      const error = { type: 'APIError', message: 'Provider unavailable' };
+      const messages = [
+        { type: 'user', text: 'first' },
+        { type: 'idle', outcome: 'failed', error },
+        { type: 'user', text: 'retry' },
+        { type: 'assistant', content: [], error },
+        { type: 'idle', outcome: 'failed', error },
+        { type: 'user', text: 'different failure' },
+        { type: 'assistant', content: [], error },
+        { type: 'idle', outcome: 'failed', error: { type: 'UnknownError', message: 'Execution cleanup failed' } },
+        { type: 'idle', outcome: 'interrupted' },
+        { type: 'idle', outcome: 'succeeded' },
+      ];
+      messages.forEach((message, index) => insert.run(`message-${index}`, 'open-session-1', message.type, index,
+        JSON.stringify({ ...message, time: { created: 1700000000000 + index } })));
+    } finally {
+      db.close();
+    }
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('open-session-1');
+    const errors = history.messages.filter((message) => message.kind === 'error');
+    assert.deepEqual(errors.map((message) => message.content), [
+      'Provider unavailable', 'Provider unavailable', 'Provider unavailable', 'Execution cleanup failed',
+    ]);
+    const lastPage = await provider.fetchHistory('open-session-1', { limit: 1 });
+    assert.equal(lastPage.messages[0]?.id, errors.at(-1)?.id);
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('OpenCode sessions provider shows a live question call as the question card with its answers', () => {
   const [message] = normalizeLiveMessage({
     id: 'msg_question', type: 'assistant', content: [

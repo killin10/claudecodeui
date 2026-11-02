@@ -116,6 +116,30 @@ async function removeFileIfExists(filePath: string): Promise<boolean> {
   }
 }
 
+/** Removes only this session's artifacts; native stores own their cleanup semantics. */
+async function deleteSessionArtifacts(session: NonNullable<ReturnType<typeof sessionsDb.getSessionById>>): Promise<boolean> {
+  const adapter = providerRegistry.resolveProvider(session.provider).sessions;
+  if (adapter.deleteSessionData) {
+    // A draft has no native session yet. Never substitute its app id or unlink
+    // a path for a provider whose sessions live in a shared database.
+    return session.provider_session_id
+      ? adapter.deleteSessionData(session.provider_session_id)
+      : false;
+  }
+
+  // Editing can leave earlier transcripts behind, so remove every recorded
+  // transcript belonging to this conversation, not just the current one.
+  const transcripts = [
+    ...(session.jsonl_path ? [session.jsonl_path] : []),
+    ...sessionsDb.getSupersededTranscriptPaths(session.session_id),
+  ];
+  let removed = false;
+  for (const transcript of transcripts) {
+    removed = (await removeFileIfExists(transcript)) || removed;
+  }
+  return removed;
+}
+
 /**
  * Archive rows need a stable project label even when the owning project is not
  * part of the active sidebar payload. This lightweight resolver keeps the
@@ -671,7 +695,8 @@ export const sessionsService = {
    *
    * Soft-delete mirrors the project behavior by toggling `isArchived` so the
    * row disappears from active lists but remains restorable. Force-delete
-   * optionally removes the transcript file before deleting the database row.
+   * optionally removes provider-native data or transcript files before
+   * deleting the database row. Native failures preserve the row for retry.
    */
   async deleteOrArchiveSessionById(
     sessionId: string,
@@ -697,22 +722,20 @@ export const sessionsService = {
       };
     }
 
-    let removedFromDisk = false;
-    if (options.deletedFromDisk) {
-      // Every file the conversation has lived in, not just the one the row
-      // points at now: editing a message on a provider that rewinds by
-      // branching moves the session onto a copy and leaves the earlier
-      // transcript behind. Deleting only the current one would leave the
-      // replaced turns on disk, and unreachable through the app.
-      const transcripts = [
-        ...(session.jsonl_path ? [session.jsonl_path] : []),
-        ...sessionsDb.getSupersededTranscriptPaths(sessionId),
-      ];
-      for (const transcript of transcripts) {
-        removedFromDisk = (await removeFileIfExists(transcript)) || removedFromDisk;
-      }
+    if (chatRunRegistry.isProcessing(sessionId)) {
+      throw new AppError('Stop the running session before permanently deleting it.', {
+        code: 'SESSION_BUSY',
+        statusCode: 409,
+      });
     }
 
+    const removedFromDisk = options.deletedFromDisk
+      ? await deleteSessionArtifacts(session)
+      : false;
+
+    // OpenCode scans read and index rows synchronously. Any scan during the
+    // native request finishes before this cleanup; later scans see no native
+    // row. Keep cleanup after the awaited deletion and without an async gap.
     sessionsDb.clearSupersededProviderSessions(sessionId);
     const deleted = sessionsDb.deleteSessionById(sessionId);
     if (!deleted) {
@@ -721,6 +744,8 @@ export const sessionsService = {
         statusCode: 404,
       });
     }
+
+    sessionHistoryCache.invalidate(sessionId);
 
     return {
       sessionId,

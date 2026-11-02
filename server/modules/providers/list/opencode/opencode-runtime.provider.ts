@@ -296,13 +296,15 @@ function rememberApprovals(chatKey: string, permission: string, patterns: string
 function toAskUserQuestionInput(request: FormInfo): AnyRecord {
   return {
     questions: request.fields.map((field) => ({
-      question: field.title || field.key,
-      header: request.title,
+      question: field.description || field.title || field.key,
+      header: field.title || request.title,
+      ...(field.type === 'external' ? { externalUrl: field.url } : {}),
       options: 'options' in field ? (field.options ?? []).map((option) => ({
         label: option.label ?? String(option.value), description: option.description ?? '',
-      })) : field.type === 'boolean' ? [{ label: 'true' }, { label: 'false' }] : [],
+      })) : field.type === 'boolean' ? [{ label: 'true' }, { label: 'false' }]
+        : field.type === 'external' ? [{ label: 'Continue' }] : [],
       multiSelect: field.type === 'multiselect',
-      custom: 'custom' in field ? field.custom !== false : true,
+      custom: field.type === 'external' ? false : 'custom' in field ? field.custom !== false : true,
     })),
   };
 }
@@ -635,12 +637,36 @@ async function runOpenCodeTurn(
   const turnPromptIds = new Set<string>();
   const emittedParts = new Set<string>();
   const forms = new Map<string, FormInfo>();
+  const formDirectories = new Map<string, string>();
   const ownedSessions = new Set(resumeSessionId ? [resumeSessionId] : []);
   const promptSessions = new Map<string, string>();
   let messageQueue = Promise.resolve();
   let sawBusy = false;
   let turnEnded = false;
   let turnError: string | null = null;
+
+  // A resumed child emits no session.created event. Verify its ancestry before
+  // routing requests; never accept an unrelated session just because it shares a server.
+  const ownsSession = async (sessionID: string): Promise<boolean> => {
+    const ancestors = new Set<string>();
+    let current: string | undefined = sessionID;
+    while (current && !ownedSessions.has(current)) {
+      if (ancestors.has(current)) return false;
+      ancestors.add(current);
+      try {
+        const session = await turn.client!.session.get({ sessionID: current }, {
+          signal: AbortSignal.any([turn.abortController.signal, AbortSignal.timeout(5000)]),
+        });
+        current = session.parentID;
+      } catch (error) {
+        if (isNotFoundError(error)) return false;
+        throw error;
+      }
+    }
+    if (!current) return false;
+    for (const ancestor of ancestors) ownedSessions.add(ancestor);
+    return true;
+  };
 
   const failTurn = (message: string) => {
     sendError(message);
@@ -687,21 +713,27 @@ async function runOpenCodeTurn(
   const replyToQuestion = async (requestId: string, answers: string[][] | null) => {
     try {
       const form = forms.get(requestId);
+      const requestOptions = {
+        signal: turn.abortController.signal,
+        headers: { 'x-opencode-directory': encodeURIComponent(formDirectories.get(requestId) ?? workingDir) },
+      };
       if (answers && form) {
         const answer: FormAnswer = {};
         form.fields.forEach((field, index) => {
           const selected = answers[index] ?? [];
+          if (selected.length === 0) return;
           const values = selected.map((label) => 'options' in field
             ? field.options?.find((option) => (option.label ?? String(option.value)) === label)?.value ?? label
             : label);
-          if (field.type === 'multiselect') answer[field.key] = values.map(String);
+          if (field.type === 'external') answer[field.key] = true;
+          else if (field.type === 'multiselect') answer[field.key] = values.map(String);
           else if (field.type === 'boolean') answer[field.key] = values[0] === 'true';
           else if (field.type === 'number' || field.type === 'integer') answer[field.key] = Number(values[0]);
           else answer[field.key] = String(values[0] ?? '');
         });
-        await turn.client!.session.form.reply({ sessionID: form.sessionID, formID: requestId, answer }, { signal: turn.abortController.signal });
+        await turn.client!.session.form.reply({ sessionID: form.sessionID, formID: requestId, answer }, requestOptions);
       } else {
-        await turn.client!.session.form.cancel({ sessionID: form?.sessionID ?? turn.providerSessionId!, formID: requestId }, { signal: turn.abortController.signal });
+        await turn.client!.session.form.cancel({ sessionID: form?.sessionID ?? turn.providerSessionId!, formID: requestId }, requestOptions);
       }
     } catch (error) {
       if (isNotFoundError(error) || turn.aborted || turnEnded) {
@@ -840,7 +872,7 @@ async function runOpenCodeTurn(
       onAnswer: (decision) => {
         void replyToQuestion(
           request.id,
-          decision.allow ? readQuestionAnswers(decision.updatedInput, request.fields.map((field) => ({ question: field.title || field.key }))) : null,
+          decision.allow ? readQuestionAnswers(decision.updatedInput, request.fields.map((field) => ({ question: field.description || field.title || field.key }))) : null,
         );
       },
       onTimeout: () => void replyToQuestion(request.id, null),
@@ -875,27 +907,37 @@ async function runOpenCodeTurn(
     });
   };
 
-  const handleEvent = (event: OpenCodeEvent) => {
-    if (event.type === 'session.created' && event.data.parentID && ownedSessions.has(event.data.parentID)) {
-      ownedSessions.add(event.data.sessionID);
+  const handleEvent = async (event: OpenCodeEvent) => {
+    if (turnEnded || turn.aborted) return;
+    if (event.type === 'session.created') {
+      if (event.data.parentID && await ownsSession(event.data.parentID)) ownedSessions.add(event.data.sessionID);
       return;
     }
     if (event.type === 'form.created') {
-      if (ownedSessions.has(event.data.form.sessionID)) handleQuestionAsked(event.data.form);
+      const form = event.data.form;
+      const directory = event.location?.directory;
+      const belongs = form.sessionID === 'global'
+        ? directory && path.resolve(directory) === path.resolve(workingDir) && form.metadata?.kind === 'mcp-elicitation'
+        : await ownsSession(form.sessionID);
+      if (belongs) {
+        formDirectories.set(form.id, directory ?? workingDir);
+        handleQuestionAsked(form);
+      }
+      return;
+    }
+    if (event.type === 'form.replied' || event.type === 'form.cancelled') {
+      if (forms.get(event.data.id)?.sessionID === event.data.sessionID) pendingPrompts.get(event.data.id)?.settle();
       return;
     }
     const data = event.data as AnyRecord;
+    if (event.type === 'permission.asked' && await ownsSession(event.data.sessionID)) {
+      handlePermissionAsked(event.data);
+      return;
+    }
     if (!ownedSessions.has(data.sessionID) || turnEnded) return;
     switch (event.type) {
-      case 'permission.asked':
-        handlePermissionAsked(event.data);
-        return;
       case 'permission.replied':
         pendingPrompts.get(event.data.requestID)?.settle();
-        return;
-      case 'form.replied':
-      case 'form.cancelled':
-        pendingPrompts.get(event.data.id)?.settle();
         return;
       case 'session.text.ended':
       case 'session.reasoning.ended':
@@ -909,6 +951,12 @@ async function runOpenCodeTurn(
         return;
       case 'session.execution.started':
         if (data.sessionID === turn.providerSessionId) sawBusy = true;
+        return;
+      case 'session.execution.succeeded':
+        if (data.sessionID === turn.providerSessionId) turnDone();
+        return;
+      case 'session.execution.interrupted':
+        if (data.sessionID === turn.providerSessionId) failTurn(`OpenCode execution interrupted: ${event.data.reason}`);
         return;
       case 'session.idle':
         if (data.sessionID === turn.providerSessionId && sawBusy) turnDone();
@@ -980,10 +1028,10 @@ async function runOpenCodeTurn(
             continue;
           }
           try {
-            handleEvent(event);
+            await handleEvent(event);
           } catch (error) {
-            // One event that cannot be handled must not end the turn.
             console.error('[OpenCode] Failed to handle an event:', event.type, readErrorMessage(error));
+            if (!turn.aborted) failTurn(`Cannot handle OpenCode event ${event.type}: ${readErrorMessage(error)}`);
           }
         }
       } catch (error) {

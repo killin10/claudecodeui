@@ -462,6 +462,8 @@ export type Question = {
   options: QuestionOption[];
   multiSelect?: boolean;
   custom?: boolean;
+  /** External form action the user completes before acknowledging the question. */
+  externalUrl?: string;
 };
 
 /** Options for a programmatic session navigation, currently only whether the route change should replace the current history entry instead of pushing a new one. */

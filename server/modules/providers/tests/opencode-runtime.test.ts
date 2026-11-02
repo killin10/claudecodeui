@@ -226,6 +226,89 @@ const questionStep = {
   ],
 };
 
+test('requests from an existing nested child are routed without a session.created event', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_parent',
+    scenario: {
+      sessions: { ses_parent: {}, ses_child: { parentID: 'ses_parent' }, ses_grandchild: { parentID: 'ses_child' } },
+      steps: [
+        { ...permissionStep(['pwd'], []), sessionID: 'ses_grandchild' },
+        { ...questionStep, sessionID: 'ses_child' },
+      ],
+    },
+    onFrame: (frame) => frame.kind === 'permission_request'
+      ? { allow: true, updatedInput: { answers: [['Red'], ['Small']] } }
+      : undefined,
+  });
+  assert.equal(turn.error, null);
+  assert.equal(turn.frames.filter((frame) => frame.kind === 'permission_request').length, 2);
+  assert.ok(findRequest(turn.requests, 'POST', /\/session\/ses_grandchild\/permission\/per_1\/reply$/));
+  assert.ok(findRequest(turn.requests, 'POST', /\/session\/ses_child\/form\/que_1\/reply$/));
+});
+
+test('foreign sessions and global forms from another directory are not offered to this chat', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_parent',
+    scenario: {
+      sessions: { ses_parent: {}, ses_foreign: {} },
+      events: [
+        { type: 'permission.asked', data: { ...permissionStep(['pwd'], []), sessionID: 'ses_foreign' } },
+        { type: 'form.created', location: { directory: '/unrelated' }, data: {
+          form: { id: 'frm_foreign', sessionID: 'global', title: 'Foreign', metadata: { kind: 'mcp-elicitation' }, fields: [] },
+        } },
+      ],
+      steps: [],
+    },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(turn.frames.some((frame) => frame.kind === 'permission_request'), false);
+});
+
+test('MCP global forms retain their location, question text and external acknowledgement', async () => {
+  const turn = await runTurn({
+    scenario: { steps: [{ type: 'form', directory: projectDir, form: {
+      id: 'frm_mcp', sessionID: 'global', title: 'MCP input', metadata: { kind: 'mcp-elicitation' },
+      fields: [
+        { key: 'scope', type: 'string', title: 'Scope', description: 'Review staged changes or the whole repository?',
+          options: [{ label: 'Staged', value: 'staged' }] },
+        { key: 'auth', type: 'external', title: 'Sign in', url: 'https://example.com/auth' },
+      ],
+    } }] },
+    onFrame: (frame) => frame.kind === 'permission_request'
+      ? { allow: true, updatedInput: { answers: [['Staged'], ['Continue']] } }
+      : undefined,
+  });
+  assert.equal(turn.error, null);
+  const request = turn.frames.find((frame) => frame.kind === 'permission_request');
+  assert.equal(request?.input.questions[0].question, 'Review staged changes or the whole repository?');
+  assert.equal(request?.input.questions[0].header, 'Scope');
+  assert.equal(request?.input.questions[1].externalUrl, 'https://example.com/auth');
+  const reply = findRequest(turn.requests, 'POST', /\/session\/global\/form\/frm_mcp\/reply$/);
+  assert.deepEqual(reply?.body.answer, { scope: 'staged', auth: true });
+  assert.equal(reply?.directory, projectDir);
+  assert.equal(opencodeRuntime.permissions.listPending('app-session').length, 0);
+});
+
+test('headless runs cancel global MCP forms in their owning directory', async () => {
+  const turn = await runTurn({
+    permissionMode: 'bypassPermissions',
+    scenario: { steps: [{ type: 'form', directory: projectDir, form: {
+      id: 'frm_headless', sessionID: 'global', title: 'Input', metadata: { kind: 'mcp-elicitation' },
+      fields: [{ key: 'value', type: 'string' }],
+    } }] },
+  });
+  assert.equal(turn.error, null);
+  assert.ok(findRequest(turn.requests, 'DELETE', /\/session\/global\/form\/frm_headless$/));
+  assert.equal(turn.frames.some((frame) => frame.kind === 'permission_request'), false);
+});
+
+test('an external V2 interruption terminates the run instead of waiting for session.idle', async () => {
+  const turn = await runTurn({ scenario: { steps: [{ type: 'interrupt' }] } });
+  assert.match(String(turn.error), /execution interrupted/);
+  assert.equal(turn.frames.at(-1)?.kind, 'complete');
+  assert.equal(turn.frames.at(-1)?.exitCode, 1);
+});
+
 test('a new session runs on a private, authenticated server that stops with the turn', async () => {
   const turn = await runTurn({
     scenario: { newSessionId: 'ses_new', steps: [{ type: 'reasoning', text: 'thinking it over' }, { type: 'text', text: 'assistant response' }] },
@@ -426,9 +509,11 @@ test('a question is answered with one label list per question and shown as a que
   assert.equal(request?.toolName, 'AskUserQuestion');
   assert.deepEqual(request?.context, { answerFormat: 'label-lists' });
   assert.equal(request?.input.questions[1].multiSelect, true);
+  assert.equal(request?.input.questions[0].question, 'Which color?');
+  assert.equal(request?.input.questions[0].header, 'Color');
   assert.deepEqual(
     findRequest(turn.requests, 'POST', /\/form\/que_1\/reply$/)?.body,
-    { answer: { '0': 'Red', '1': ['Small', 'Large, wide'] } },
+    { answer: { q0: 'Red', q1: ['Small', 'Large, wide'] } },
   );
 
   const card = turn.frames.find((frame) => frame.kind === 'tool_use');
