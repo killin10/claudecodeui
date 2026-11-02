@@ -134,3 +134,20 @@ test('a synchronizeSessions call after the shared scan settles starts a new scan
     }
   });
 });
+
+
+test('artifact synchronization preserves all shared-store changes and ignores empty results', async (t) => {
+  let changed: string | string[] | null = null;
+  t.mock.method(providerRegistry, 'resolveProvider', () => ({
+    sessionSynchronizer: { synchronizeFile: async () => changed },
+  }));
+  for (const [nativeResult, expected] of [
+    [null, []], [[], []], ['single-session', ['single-session']],
+    [['session-a', 'session-b'], ['session-a', 'session-b']],
+  ] as const) {
+    changed = Array.isArray(nativeResult) ? [...nativeResult] : nativeResult as string | null;
+    const result = await sessionSynchronizerService.synchronizeProviderFile('opencode', 'opencode.db-wal');
+    assert.deepEqual(result.sessionIds, expected);
+    assert.equal(result.indexed, expected.length > 0);
+  }
+});

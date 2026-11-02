@@ -143,7 +143,7 @@ function schedulePendingWatcherFlush(): void {
 function queuePendingWatcherUpdate(
   eventType: WatcherEventType,
   provider: LLMProvider,
-  updatedSessionId: string | null
+  updatedSessionIds: string[]
 ): void {
   if (!pendingWatcherUpdate) {
     pendingWatcherUpdate = {
@@ -155,8 +155,8 @@ function queuePendingWatcherUpdate(
 
   pendingWatcherUpdate.providers.add(provider);
   pendingWatcherUpdate.changeTypes.add(eventType);
-  if (updatedSessionId) {
-    pendingWatcherUpdate.updatedSessionIds.add(updatedSessionId);
+  for (const sessionId of updatedSessionIds) {
+    pendingWatcherUpdate.updatedSessionIds.add(sessionId);
   }
 
   schedulePendingWatcherFlush();
@@ -217,9 +217,9 @@ async function onUpdate(
 
     console.log(`Session synchronization triggered by ${eventType} event for provider "${provider}"`, {
       filePath,
-      sessionId: result.sessionId,
+      sessionIds: result.sessionIds,
     });
-    queuePendingWatcherUpdate(eventType, provider, result.sessionId);
+    queuePendingWatcherUpdate(eventType, provider, result.sessionIds);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Session watcher sync failed for provider "${provider}"`, {

@@ -28,6 +28,7 @@ async function withStore(run: (fixture: {
   const native = new Database(path.join(root, 'opencode', 'opencode.db'));
   native.exec(`
     CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+    CREATE TABLE session_message (session_id TEXT, time_updated INTEGER);
     CREATE TABLE session_v2 (
       id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT,
       title TEXT, metadata TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER

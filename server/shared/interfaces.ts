@@ -289,7 +289,9 @@ export interface IProviderSessionSynchronizer {
   synchronize(since?: Date): Promise<number>;
 
   /**
-   * Parses and upserts one provider artifact file without running a full scan.
+   * Parses and upserts one provider artifact. File-backed providers return one
+   * session id; shared stores return every changed session id. Null or an empty
+   * array means no session changed and must not trigger an activity broadcast.
    */
-  synchronizeFile(filePath: string): Promise<string | null>;
+  synchronizeFile(filePath: string): Promise<string | string[] | null>;
 }

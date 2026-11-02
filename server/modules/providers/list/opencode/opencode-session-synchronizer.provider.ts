@@ -22,11 +22,13 @@ type OpenCodeSessionRow = {
   time_updated: number | null;
   worktree: string | null;
   metadata: string | null;
+  message_count: number;
+  message_updated: number | null;
 };
 
 type SynchronizeRowsResult = {
   processed: number;
-  firstSessionId: string | null;
+  sessionIds: string[];
 };
 
 type OpenCodeChildSessionRow = {
@@ -39,36 +41,58 @@ type OpenCodeChildSessionRow = {
 export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'opencode' as const;
   private childSessionsReconciled = false;
+  // Only startup and watcher scans advance this baseline. An API-triggered
+  // index refresh must not consume changes before the watcher broadcasts them.
+  private fingerprints = new Map<string, string>();
+  private baselineReady = false;
 
   /**
    * Scans OpenCode's shared opencode.db and upserts active sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
     // The first provider-wide scan also reconciles child rows indexed by older versions.
-    const result = this.synchronizeRows(since, undefined, !this.childSessionsReconciled);
+    const result = this.synchronizeRows(
+      this.baselineReady ? since : undefined,
+      !this.childSessionsReconciled,
+      !this.baselineReady,
+    );
     return result.processed;
   }
 
   /**
    * Handles watcher changes for opencode.db.
    */
-  async synchronizeFile(filePath: string): Promise<string | null> {
+  async synchronizeFile(filePath: string): Promise<string[]> {
     if (!/^opencode\.db(?:-wal)?$/.test(path.basename(filePath))) {
-      return null;
+      return [];
     }
 
-    const result = this.synchronizeRows();
-    return result.firstSessionId;
+    return this.synchronizeRows(undefined, false, true).sessionIds;
+  }
+
+  private readRows(db: Database.Database, since?: Date): OpenCodeSessionRow[] {
+    const sinceMillis = since?.getTime() ?? null;
+    return db.prepare(`
+      SELECT s.id, s.directory, s.title, s.time_created, s.time_updated,
+        s.metadata, p.worktree,
+        (SELECT COUNT(*) FROM session_message m WHERE m.session_id = s.id) AS message_count,
+        (SELECT MAX(m.time_updated) FROM session_message m WHERE m.session_id = s.id) AS message_updated
+      FROM session_v2 s
+      LEFT JOIN project p ON p.id = s.project_id
+      WHERE s.time_archived IS NULL AND s.parent_id IS NULL
+        AND (? IS NULL OR COALESCE(s.time_updated, s.time_created, 0) >= ?)
+      ORDER BY COALESCE(s.time_updated, s.time_created, 0) DESC, s.id DESC
+    `).all(sinceMillis, sinceMillis) as OpenCodeSessionRow[];
   }
 
   private synchronizeRows(
     since?: Date,
-    limit?: number,
     pruneChildSessions = false,
+    trackChanges = false,
   ): SynchronizeRowsResult {
     const dbPath = getOpenCodeDatabasePath();
     if (!fsSync.existsSync(dbPath)) {
-      return { processed: 0, firstSessionId: null };
+      return { processed: 0, sessionIds: [] };
     }
 
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -77,50 +101,30 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
         this.pruneChildSessions(db);
         this.childSessionsReconciled = true;
       }
-
-      const sinceMillis = since?.getTime() ?? null;
-      const limitClause = limit ? 'LIMIT ?' : '';
-      const params = limit ? [sinceMillis, sinceMillis, limit] : [sinceMillis, sinceMillis];
-      const rows = db.prepare(`
-        SELECT
-          s.id AS id,
-          s.directory AS directory,
-          s.title AS title,
-          s.time_created AS time_created,
-          s.time_updated AS time_updated,
-          s.metadata AS metadata,
-          p.worktree AS worktree
-        FROM session_v2 s
-        LEFT JOIN project p ON p.id = s.project_id
-        WHERE s.time_archived IS NULL
-          AND s.parent_id IS NULL
-          AND (? IS NULL OR COALESCE(s.time_updated, s.time_created, 0) >= ?)
-        ORDER BY COALESCE(s.time_updated, s.time_created, 0) DESC, s.id DESC
-        ${limitClause}
-      `).all(...params) as OpenCodeSessionRow[];
-
-      let processed = 0;
-      let firstSessionId: string | null = null;
-      for (const row of rows) {
-        const indexedSessionId = this.upsertSession(db, row);
-        if (!indexedSessionId) {
-          continue;
-        }
-
-        if (!firstSessionId) {
-          firstSessionId = indexedSessionId;
-        }
-        processed += 1;
-      }
-
-      return { processed, firstSessionId };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn('[OpenCodeProvider] Failed to synchronize sessions:', message);
-      return { processed: 0, firstSessionId: null };
+      return this.indexRows(db, this.readRows(db, since), trackChanges);
     } finally {
       db.close();
     }
+  }
+
+  private indexRows(db: Database.Database, rows: OpenCodeSessionRow[], trackChanges: boolean): SynchronizeRowsResult {
+    const nextFingerprints = new Map<string, string>();
+    const sessionIds: string[] = [];
+    for (const row of rows) {
+      // SQLite file/WAL changes alone are not session activity. Include message
+      // revisions because native shell/tool updates may leave s.time_updated unchanged.
+      const fingerprint = JSON.stringify(row);
+      nextFingerprints.set(row.id, fingerprint);
+      if (trackChanges && this.fingerprints.get(row.id) === fingerprint) continue;
+      const sessionId = this.upsertSession(db, row);
+      if (sessionId) sessionIds.push(sessionId);
+    }
+    if (trackChanges) {
+      // Replace only after a successful full scan; also evicts deleted/archived rows.
+      this.fingerprints = nextFingerprints;
+      this.baselineReady = true;
+    }
+    return { processed: sessionIds.length, sessionIds };
   }
 
   private pruneChildSessions(db: Database.Database): void {

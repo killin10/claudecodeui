@@ -149,13 +149,14 @@ export const sessionSynchronizerService = {
   async synchronizeProviderFile(
     provider: LLMProvider,
     filePath: string
-  ): Promise<{ provider: LLMProvider; indexed: boolean; sessionId: string | null }> {
+  ): Promise<{ provider: LLMProvider; indexed: boolean; sessionIds: string[] }> {
     const resolvedProvider = providerRegistry.resolveProvider(provider);
-    const sessionId = await resolvedProvider.sessionSynchronizer.synchronizeFile(filePath);
+    const changed = await resolvedProvider.sessionSynchronizer.synchronizeFile(filePath);
+    const sessionIds = typeof changed === 'string' ? [changed] : changed ?? [];
     return {
       provider,
-      indexed: Boolean(sessionId),
-      sessionId,
+      indexed: sessionIds.length > 0,
+      sessionIds,
     };
   },
 };

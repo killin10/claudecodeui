@@ -55,13 +55,14 @@ const createOpenCodeDatabase = async (homeDir: string, workspacePath: string): P
         tokens_input INTEGER DEFAULT 10, tokens_output INTEGER DEFAULT 20,
         tokens_reasoning INTEGER DEFAULT 7, tokens_cache_read INTEGER DEFAULT 3, tokens_cache_write INTEGER DEFAULT 2
       );
-      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT);
+      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT, time_updated INTEGER DEFAULT 0);
+      CREATE INDEX session_message_session_seq_idx ON session_message (session_id, seq);
     `);
     db.prepare('INSERT INTO project VALUES (?, ?)').run('project-1', workspacePath);
     const session = db.prepare('INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)');
     session.run('open-session-1', 'project-1', null, workspacePath, 'OpenCode indexed title', 1700000000000, 1700000004000);
     session.run('open-child-session-1', 'project-1', 'open-session-1', workspacePath, 'Child', 1700000002000, 1700000005000);
-    const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+    const insert = db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)');
     insert.run('message-user', 'open-session-1', 'user', 1, JSON.stringify({
       time: { created: 1700000001000 }, text: 'Build the OpenCode integration.',
     }));
@@ -100,7 +101,7 @@ test('V2 tools use the same command, checklist and file diff shapes in live and 
   try {
     await createOpenCodeDatabase(root, root);
     const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
-    db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)').run(message.id, 'open-session-1', 'assistant', 3, JSON.stringify(message));
+    db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)').run(message.id, 'open-session-1', 'assistant', 3, JSON.stringify(message));
     db.close();
     const provider = new OpenCodeSessionsProvider();
     const live = provider.normalizeMessage({ type: 'session.message', message }, 'open-session-1');
@@ -176,7 +177,7 @@ test('OpenCode session synchronizer returns the app session id once provider map
 
       const synchronizer = new OpenCodeSessionSynchronizer();
       return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db')).then((sessionId) => {
-        assert.equal(sessionId, 'app-session-1');
+        assert.deepEqual(sessionId, ['app-session-1']);
         assert.equal(sessionsDb.getAllSessions().length, 1);
         assert.equal(sessionsDb.getSessionById('app-session-1')?.provider_session_id, 'open-session-1');
         assert.equal(sessionsDb.getSessionById('open-child-session-1'), null);
@@ -205,7 +206,7 @@ test('OpenCode session synchronizer adopts the pending app session before watche
 
       const synchronizer = new OpenCodeSessionSynchronizer();
       return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db-wal')).then((sessionId) => {
-        assert.equal(sessionId, 'app-session-race');
+        assert.deepEqual(sessionId, ['app-session-race']);
         assert.equal(sessionsDb.getAllSessions().length, 1);
         assert.equal(sessionsDb.getSessionById('app-session-race')?.provider_session_id, 'open-session-1');
       });
@@ -213,6 +214,68 @@ test('OpenCode session synchronizer adopts the pending app session before watche
   } finally {
     restoreHomeDir();
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode watcher ignores shared-store writes and reports every changed session after an index refresh', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-watch-changes-'));
+  const restoreHome = patchHomeDir(root);
+  try {
+    await createOpenCodeDatabase(root, root);
+    await withIsolatedDatabase(async () => {
+      const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+      try {
+        db.prepare(`INSERT INTO session_v2 (id, project_id, directory, time_created, time_updated)
+          VALUES ('older-session', 'project-1', ?, 1700000000000, 1700000000001)`).run(root);
+        sessionsDb.createAppSession('app-session-1', 'opencode', root);
+        sessionsDb.assignProviderSessionId('app-session-1', 'open-session-1');
+        const sync = new OpenCodeSessionSynchronizer();
+        // Startup must seed all rows even when the global scan cursor is newer.
+        await sync.synchronize(new Date(1800000000000));
+        assert.deepEqual(await sync.synchronizeFile('opencode.db-wal'), []);
+        db.exec("CREATE TABLE unrelated_settings (value TEXT); INSERT INTO unrelated_settings VALUES ('changed')");
+        assert.deepEqual(await sync.synchronizeFile('opencode.db'), []);
+        db.prepare('UPDATE session_v2 SET time_updated = time_updated + 1 WHERE id = ?').run('older-session');
+        // An API index refresh must not hide this change from the watcher.
+        await sync.synchronize();
+        assert.deepEqual(await sync.synchronizeFile('opencode.db-wal'), ['older-session']);
+        db.exec('UPDATE session_v2 SET time_updated = time_updated + 1 WHERE parent_id IS NULL');
+        assert.deepEqual(new Set(await sync.synchronizeFile('opencode.db')), new Set(['app-session-1', 'older-session']));
+        assert.deepEqual(await sync.synchronizeFile('opencode.db-wal'), []);
+      } finally {
+        db.close();
+      }
+    });
+  } finally {
+    restoreHome();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode watcher detects message edits and deletions without a session timestamp change', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-watch-messages-'));
+  const restoreHome = patchHomeDir(root);
+  try {
+    await createOpenCodeDatabase(root, root);
+    await withIsolatedDatabase(async () => {
+      const sync = new OpenCodeSessionSynchronizer();
+      await sync.synchronize();
+      const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+      try {
+        db.prepare('UPDATE session_message SET data = ?, time_updated = ? WHERE id = ?')
+          .run(JSON.stringify({ content: [{ type: 'text', text: 'new output' }] }), 1700000006000, 'message-assistant');
+        assert.deepEqual(await sync.synchronizeFile('opencode.db-wal'), ['open-session-1']);
+        assert.deepEqual(await sync.synchronizeFile('opencode.db'), []);
+        db.exec("DELETE FROM session_message WHERE id = 'message-user'");
+        assert.deepEqual(await sync.synchronizeFile('opencode.db-wal'), ['open-session-1']);
+        assert.deepEqual(await sync.synchronizeFile('opencode.db-shm'), []);
+      } finally {
+        db.close();
+      }
+    });
+  } finally {
+    restoreHome();
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -367,7 +430,7 @@ test('idle failures survive history reload without duplicating an assistant erro
     const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
     try {
       db.prepare('DELETE FROM session_message').run();
-      const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+      const insert = db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)');
       const error = { type: 'APIError', message: 'Provider unavailable' };
       const messages = [
         { type: 'user', text: 'first' },
@@ -425,7 +488,7 @@ test('OpenCode history hides the error of a stopped turn and shows question call
     await createOpenCodeDatabase(tempRoot, workspacePath);
     const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
     try {
-      const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
+      const insert = db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)');
       insert.run('message-stopped', 'open-session-1', 'idle', 3, JSON.stringify({
         outcome: 'interrupted', time: { created: 1700000005000 },
       }));
@@ -470,7 +533,7 @@ const seedOpenCodeSession = async (
     db.prepare('DELETE FROM session_message').run();
     db.prepare('INSERT INTO session_v2 (id, project_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?)')
       .run(options.sessionId, 'project-1', workspacePath, options.title, 1700000000000, 1700000001000);
-    db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)')
+    db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)')
       .run('user-1', options.sessionId, 'user', 1, JSON.stringify({ text: options.firstUserText }));
   } finally {
     db.close();
@@ -563,7 +626,7 @@ test('V2 edit anchors exclude the selected prompt, preserve the source, and supp
   try {
     await createOpenCodeDatabase(root, root);
     const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
-    db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)').run('second-user', 'open-session-1', 'user', 3, JSON.stringify({ text: 'second' }));
+    db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)').run('second-user', 'open-session-1', 'user', 3, JSON.stringify({ text: 'second' }));
     db.close();
     await withIsolatedDatabase(async () => {
       sessionsDb.createAppSession('app-edit', 'opencode', root);
