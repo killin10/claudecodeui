@@ -249,7 +249,6 @@ const sessionsProps = (
   onSessionSelect: noop,
   onDeleteSession: noop,
   onLoadMoreSessions: noop,
-  onNewSession: noop,
   selectedSessionIds,
   onSetSessionSelection: noop,
   onToggleSessionSelected: noop,

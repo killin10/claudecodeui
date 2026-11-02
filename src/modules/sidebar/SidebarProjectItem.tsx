@@ -1,13 +1,13 @@
 import { memo, useEffect, useRef } from 'react';
-import { Check, ChevronDown, ChevronRight, Edit3, Star, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Star, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
-import { Button } from '@/shared/ui';
 import { cn } from '@/shared/utils';
 import type { LLMProvider, MCPServerStatus, Project, ProjectSession, SessionWithProvider, SidebarSessionSelection } from '@/shared/types';
 import { getTaskIndicatorStatus } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import TaskIndicator from '@/modules/sidebar/TaskIndicator';
 import SidebarProjectSessions from '@/modules/sidebar/SidebarProjectSessions';
+import { SidebarProjectActions } from '@/modules/sidebar/SidebarProjectActions';
 import { useCompactSidebar } from '@/modules/sidebar/hooks/useCompactSidebar';
 
 type SidebarProjectItemProps = {
@@ -154,6 +154,33 @@ function SidebarProjectItem({
     toggleProject();
   };
 
+  const isSelecting = selectedSessionIds !== null;
+  const canSelect = isExpanded && initialSessionsLoaded
+    && sessions.some((session) => !activeSessions.has(session.id) || backgroundSessionIds.has(session.id));
+  const projectActions = (
+    <SidebarProjectActions
+      compact={isCompact}
+      canSelect={canSelect}
+      isSelecting={isSelecting}
+      onNewSession={() => {
+        if (isCompact) {
+          onProjectSelect(project);
+        }
+        onNewSession(project);
+      }}
+      onToggleSelection={() => {
+        if (isSelecting) {
+          onCancelSessionSelection();
+        } else {
+          onSetSessionSelection({ projectId: project.projectId, sessionIds: new Set() });
+        }
+      }}
+      onRename={() => onStartEditingProject(project)}
+      onDelete={() => onDeleteProject(project)}
+      t={t}
+    />
+  );
+
   return (
     <div className={cn('md:space-y-1', isDeleting && 'opacity-50 pointer-events-none')}>
       <div className="sticky top-0 z-10 md:group group">
@@ -224,7 +251,12 @@ function SidebarProjectItem({
                       }}
                     />
                   ) : (
-                    <>
+                    <button type="button" className="w-full min-w-0 text-left" aria-expanded={isExpanded}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleProject();
+                      }}
+                    >
                       <div className="flex min-w-0 flex-1 items-center justify-between">
                         <h3 className="truncate text-sm font-normal text-foreground">{project.displayName}</h3>
                         {tasksEnabled && (
@@ -236,12 +268,12 @@ function SidebarProjectItem({
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">{sessionCountLabel}</p>
-                    </>
+                    </button>
                   )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-1">
+              <div className="flex shrink-0 items-center gap-1">
                 {isEditing ? (
                   <>
                     <button
@@ -265,25 +297,7 @@ function SidebarProjectItem({
                   </>
                 ) : (
                   <>
-                    <button
-                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 bg-red-500/10 active:scale-90 dark:border-red-800 dark:bg-red-900/30"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDeleteProject(project);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 text-red-600 dark:text-red-400" />
-                    </button>
-
-                    <button
-                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 active:scale-90 dark:border-primary/30 dark:bg-primary/20"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onStartEditingProject(project);
-                      }}
-                    >
-                      <Edit3 className="h-4 w-4 text-primary" />
-                    </button>
+                    {projectActions}
 
                     <div className="flex h-6 w-6 items-center justify-center rounded-md bg-muted/30">
                       {isExpanded ? (
@@ -301,10 +315,9 @@ function SidebarProjectItem({
         )}
 
         {!isCompact && (
-        <Button
-          variant="ghost"
+        <div
           className={cn(
-            'sticky top-0 z-10 flex w-full justify-between p-2 h-auto font-normal hover:bg-accent/50',
+            'sticky top-0 z-10 flex w-full items-start justify-between rounded-md p-2 h-auto font-normal hover:bg-accent/50',
             isSelected
               ? 'bg-accent text-accent-foreground'
               : isStarred
@@ -317,9 +330,11 @@ function SidebarProjectItem({
           onClick={selectAndToggleProject}
         >
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div
+            <button
+              type="button"
+              aria-label={isStarred ? t('tooltips.removeFromFavorites') : t('tooltips.addToFavorites')}
               className={cn(
-                'w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all duration-200',
+                'shrink-0 w-6 h-6 flex items-center justify-center rounded cursor-pointer transition-all duration-200',
                 isStarred
                   ? 'hover:bg-yellow-50 dark:hover:bg-yellow-900/20'
                   : 'opacity-40 hover:opacity-100 hover:bg-accent',
@@ -338,7 +353,7 @@ function SidebarProjectItem({
                     : 'text-muted-foreground',
                 )}
               />
-            </div>
+            </button>
             <div className="min-w-0 flex-1 text-left">
               {isEditing ? (
                 <div className="space-y-1">
@@ -349,6 +364,7 @@ function SidebarProjectItem({
                     className="w-full rounded border border-border bg-background px-2 py-1 text-sm text-foreground focus:ring-2 focus:ring-primary/20"
                     placeholder={t('projects.projectNamePlaceholder')}
                     autoFocus
+                    onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
                         saveProjectName();
@@ -365,11 +381,16 @@ function SidebarProjectItem({
                   </div>
                 </div>
               ) : (
-                <div>
+                <button type="button" className="w-full min-w-0 text-left" aria-expanded={isExpanded}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    selectAndToggleProject();
+                  }}
+                >
                   <div className="truncate text-sm font-normal text-foreground" title={project.displayName}>
                     {project.displayName}
                   </div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="truncate text-xs text-muted-foreground">
                     {sessionCountDisplay}
                     {project.fullPath !== project.displayName && (
                       <span className="ml-1 opacity-60" title={project.fullPath}>
@@ -378,7 +399,7 @@ function SidebarProjectItem({
                       </span>
                     )}
                   </div>
-                </div>
+                </button>
               )}
             </div>
           </div>
@@ -386,7 +407,7 @@ function SidebarProjectItem({
           <div className="flex flex-shrink-0 items-center gap-1">
             {isEditing ? (
               <>
-                <div
+                <button type="button" aria-label={t('actions.save')}
                   className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-green-600 transition-colors hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -394,8 +415,8 @@ function SidebarProjectItem({
                   }}
                 >
                   <Check className="h-3 w-3" />
-                </div>
-                <div
+                </button>
+                <button type="button" aria-label={t('actions.cancel')}
                   className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700 dark:hover:bg-gray-800"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -403,30 +424,11 @@ function SidebarProjectItem({
                   }}
                 >
                   <X className="h-3 w-3" />
-                </div>
+                </button>
               </>
             ) : (
               <>
-                <div
-                  className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-accent group-hover:opacity-100"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onStartEditingProject(project);
-                  }}
-                  title={t('tooltips.renameProject')}
-                >
-                  <Edit3 className="h-3 w-3" />
-                </div>
-                <div
-                  className="touch:opacity-100 flex h-6 w-6 cursor-pointer items-center justify-center rounded opacity-0 transition-all duration-200 hover:bg-red-50 group-hover:opacity-100 dark:hover:bg-red-900/20"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDeleteProject(project);
-                  }}
-                  title={t('tooltips.deleteProject')}
-                >
-                  <Trash2 className="h-3 w-3 text-red-600 dark:text-red-400" />
-                </div>
+                {projectActions}
                 {isExpanded ? (
                   <ChevronDown className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-foreground" />
                 ) : (
@@ -435,7 +437,7 @@ function SidebarProjectItem({
               </>
             )}
           </div>
-        </Button>
+        </div>
         )}
       </div>
 
@@ -462,7 +464,6 @@ function SidebarProjectItem({
         onDeleteSession={onDeleteSession}
         onForkSession={onForkSession}
         onLoadMoreSessions={onLoadMoreSessions}
-        onNewSession={onNewSession}
         selectedSessionIds={selectedSessionIds}
         onSetSessionSelection={onSetSessionSelection}
         onToggleSessionSelected={onToggleSessionSelected}

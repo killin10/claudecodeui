@@ -34,6 +34,8 @@
     "loading": "Loading...",
     "showMore": "Show more sessions",
     "select": "Select",
+    "selectConversations": "Select conversations",
+    "exitSelection": "Exit selection",
     "selectAll": "Select all",
     "selectAllLoaded": "Select all loaded",
     "clearSelection": "Clear",

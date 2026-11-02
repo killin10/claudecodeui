@@ -34,6 +34,8 @@
     "loading": "加载中...",
     "showMore": "显示更多会话",
     "select": "选择",
+    "selectConversations": "选择会话",
+    "exitSelection": "退出选择",
     "selectAll": "全选",
     "selectAllLoaded": "全选已加载",
     "clearSelection": "清除选择",
