@@ -5,7 +5,7 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import '@/modules/i18n';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
-import type { PermissionMode, Project, ProjectSession } from '@/shared/types';
+import type { LLMProvider, PermissionMode, Project, ProjectSession } from '@/shared/types';
 
 /**
  * The first message of a brand-new chat allocates its session id with
@@ -47,7 +47,7 @@ const releaseCreates = async (status = 201) => {
 const createRequests = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls
   .filter(([url, init]) => String(url) === '/api/providers/sessions' && (init as RequestInit | undefined)?.method === 'POST');
 
-const renderComposer = (initialSession: ProjectSession | null) => {
+const renderComposer = (initialSession: ProjectSession | null, provider: LLMProvider = 'claude', mode: PermissionMode = 'default', explicit = false) => {
   const sent: Array<{ type: string; sessionId?: string; content?: string }> = [];
   const established: string[] = [];
   const view = renderHook(({ session }: { session: ProjectSession | null }) =>
@@ -55,10 +55,11 @@ const renderComposer = (initialSession: ProjectSession | null) => {
       selectedProject: PROJECT,
       selectedSession: session,
       currentSessionId: session?.id ?? null,
-      provider: 'claude',
-      permissionMode: 'default',
+      provider,
+      permissionMode: mode,
+      permissionModeExplicit: explicit,
       cyclePermissionMode: () => undefined,
-      resolvePermissionModeForProvider: () => 'default' as PermissionMode,
+      resolvePermissionModeForProvider: () => mode,
       currentProviderModel: 'test-model',
       currentProviderEffort: 'medium',
       isLoading: false,
@@ -197,4 +198,23 @@ test('a pending new chat does not hold up a submit in another session', async ()
     [['session-other', 'elsewhere']],
   );
   await releaseCreates();
+});
+
+
+test('a new Codex session keeps its draft policy before navigation', async () => {
+  const { view, established } = renderComposer(null, 'codex', 'bypassPermissions', true);
+  await act(async () => { view.result.current.setInput('hello'); });
+  await act(async () => { void view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+  await releaseCreates();
+  assert.deepEqual(established, ['session-1']);
+  assert.equal(localStorage.getItem('permissionMode-session-1'), 'bypassPermissions');
+});
+
+
+test('an inherited Codex default is not saved as an explicit session override', async () => {
+  const { view } = renderComposer(null, 'codex', 'bypassPermissions');
+  await act(async () => { view.result.current.setInput('hello'); });
+  await act(async () => { void view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+  await releaseCreates();
+  assert.equal(localStorage.getItem('permissionMode-session-1'), null);
 });

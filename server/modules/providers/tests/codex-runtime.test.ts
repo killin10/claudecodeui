@@ -61,6 +61,10 @@ for (const resumed of [false, true]) {
       assert.equal(start.params.sandbox, permissionMode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write');
       assert.equal(start.params.approvalPolicy, permissionMode === 'bypassPermissions' ? 'never' : 'on-request');
       assert.equal(start.params.approvalsReviewer, permissionMode === 'auto' ? 'auto_review' : 'user');
+      const turn = rpc.calls[1].params;
+      assert.equal(turn.approvalPolicy, start.params.approvalPolicy);
+      assert.equal(turn.approvalsReviewer, start.params.approvalsReviewer);
+      assert.equal(turn.sandboxPolicy.type, permissionMode === 'bypassPermissions' ? 'dangerFullAccess' : 'workspaceWrite');
       assert.equal(rpc.calls[1].params.collaborationMode.mode, permissionMode === 'plan' ? 'plan' : 'default');
       assert.ok(messages.some(message => message.kind === 'complete' && message.exitCode === 0));
       assert.equal(rpc.closed, true);
@@ -192,14 +196,22 @@ test('a new user turn reuses the owned server while a child is still running', a
   assert.equal(rpc.closed, false);
   context.resolveProviderSessionId = () => 'native-thread';
   const nextMessages: AnyRecord[] = [];
-  const next = codexRuntime.run('Follow up', { sessionId: 'app-session' }, { send: message => nextMessages.push(message as AnyRecord) }, context);
+  const next = codexRuntime.run('Follow up', { sessionId: 'app-session', permissionMode: 'bypassPermissions' }, { send: message => nextMessages.push(message as AnyRecord) }, context);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(rpc.calls.filter(call => call.method === 'thread/start').length, 1);
   assert.equal(rpc.calls.filter(call => call.method === 'turn/start').length, 2);
+  assert.equal(rpc.calls.filter(call => call.method === 'turn/start')[1].params.approvalPolicy, 'never');
+  assert.deepEqual(rpc.calls.filter(call => call.method === 'turn/start')[1].params.sandboxPolicy, { type: 'dangerFullAccess' });
   assert.ok(nextMessages.some(message => message.kind === 'complete'));
   assert.equal(codexRuntime.listBackgroundWork()[0].tasks.length, 1);
+  const restricted = codexRuntime.run('Use the sandbox again', { sessionId: 'app-session', permissionMode: 'default' }, { send: () => {} }, context);
+  await new Promise(resolve => setImmediate(resolve));
+  const restrictedTurn = rpc.calls.filter(call => call.method === 'turn/start')[2].params;
+  assert.equal(restrictedTurn.approvalPolicy, 'on-request');
+  assert.equal(restrictedTurn.sandboxPolicy.type, 'workspaceWrite');
+  assert.equal(restrictedTurn.sandboxPolicy.networkAccess, false);
   await codexRuntime.abort('app-session');
-  await Promise.all([first, next]);
+  await Promise.all([first, next, restricted]);
 });
 
 test('native background commands stay visible after the reply and stop through their native process id', async t => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -42,7 +42,7 @@ test('native Codex runs, resumes and forks a persisted thread through app-server
     connection = await codexAppServer.connect();
     const started = await connection.call('thread/start', { cwd: directory, approvalPolicy: 'on-request', sandbox: 'workspace-write', approvalsReviewer: 'user' });
     const threadId = started.thread.id;
-    const turn = async () => {
+    const turn = async (overrides = {}) => {
       let finish!: (value: any) => void;
       const completed = new Promise<any>(resolve => { finish = resolve; });
       const remove = connection!.onMessage(message => {
@@ -52,7 +52,7 @@ test('native Codex runs, resumes and forks a persisted thread through app-server
       const timeout = setTimeout(() => connection!.close(new Error('Fixture turn timed out')), 15000);
       const onClose = connection!.onClose(error => finish({ status: 'failed', error }));
       try {
-        await connection!.call('turn/start', { threadId, input: [{ type: 'text', text: 'Reply briefly.', text_elements: [] }] });
+        await connection!.call('turn/start', { threadId, ...overrides, input: [{ type: 'text', text: 'Reply briefly.', text_elements: [] }] });
         const result = await completed;
         assert.equal(result.status, 'completed', JSON.stringify(result.error));
         return result.id;
@@ -61,6 +61,17 @@ test('native Codex runs, resumes and forks a persisted thread through app-server
     const turnId = await turn();
     const terminals = await connection.call('thread/backgroundTerminals/list', { threadId, limit: 100 });
     assert.deepEqual(terminals.data, []);
+    // A loaded thread ignores resume overrides. Per-turn policies must work
+    // in both directions before the server is replaced, as with background work.
+    await connection.call('thread/resume', { threadId, excludeTurns: true, approvalPolicy: 'never', sandbox: 'danger-full-access' });
+    await turn({ approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' } });
+    await connection.call('thread/resume', { threadId, excludeTurns: true, approvalPolicy: 'on-request', sandbox: 'workspace-write' });
+    await turn({ approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: started.sandbox });
+    const contexts = (await readFile(started.thread.path, 'utf8')).split('\n').filter(Boolean)
+      .map(line => JSON.parse(line)).filter(row => row.type === 'turn_context');
+    assert.deepEqual(contexts.map(row => [row.payload.approval_policy, row.payload.sandbox_policy.type]), [
+      ['on-request', 'workspace-write'], ['never', 'danger-full-access'], ['on-request', 'workspace-write'],
+    ]);
     await connection.dispose();
     connection = await codexAppServer.connect();
     const resumed = await connection.call('thread/resume', { threadId, excludeTurns: true });
@@ -69,7 +80,7 @@ test('native Codex runs, resumes and forks a persisted thread through app-server
     const fork = await codexAppServer.forkThread({ threadId, lastTurnId: turnId, cwd: directory });
     assert.notEqual(fork.threadId, threadId);
     assert.ok((await realpath(fork.path)).startsWith(await realpath(home)));
-    assert.equal(sequence, 2);
+    assert.equal(sequence, 4);
   } finally {
     await connection?.dispose();
     server.closeAllConnections();

@@ -1026,6 +1026,14 @@ export function useChatComposerState({
           return;
         }
 
+        // Bind the draft's policy before navigation/hydration reads the new
+        // session, so the first reply cannot reset it to the global default.
+        if (provider === 'codex' && (queuedSubmission?.options?.permissionModeExplicit ?? permissionModeExplicit)) {
+          const mode = queuedSubmission?.options?.permissionMode ?? buildSendOptions(currentInput).permissionMode;
+          if (typeof mode === 'string') {
+            localStorage.setItem(`permissionMode-${targetSessionId}`, mode);
+          }
+        }
         onSessionEstablished?.(targetSessionId, {
           provider,
           project: selectedProject,
@@ -1137,6 +1145,7 @@ export function useChatComposerState({
       isLoading,
       onSessionProcessing,
       onSessionEstablished,
+      permissionModeExplicit,
       provider,
       queueMessage,
       recordSentMessage,

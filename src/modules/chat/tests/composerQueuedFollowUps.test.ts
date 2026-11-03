@@ -6,7 +6,7 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 import { i18n } from '@/modules/i18n';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
 import { readDraftText, resetChatDrafts, writeDraftText } from '@/shared/chatDrafts';
-import type { BackgroundSendChoice, ChatMessage, PermissionMode, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
+import type { BackgroundSendChoice, ChatMessage, LLMProvider, PermissionMode, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
 
 /**
  * #1587: follow-ups submitted while a turn runs used to replace each other in
@@ -144,21 +144,23 @@ type Props = {
   isLoading: boolean;
   model: string;
   permissionModeExplicit?: boolean;
+  mode?: PermissionMode;
+  provider?: LLMProvider;
   processingSessions?: SessionActivityMap;
 };
 
 const render = (initialProps: Partial<Props> = {}) => {
   const errors: ChatMessage[] = [];
   const view = renderHook(
-    ({ session, isLoading, model, processingSessions, permissionModeExplicit }: Props) => useChatComposerState({
+    ({ session, isLoading, model, processingSessions, permissionModeExplicit, mode = 'default', provider = 'claude' }: Props) => useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: session,
       currentSessionId: session.id ?? null,
-      provider: 'claude',
-      permissionMode: 'default',
+      provider,
+      permissionMode: mode,
       permissionModeExplicit,
       cyclePermissionMode: () => undefined,
-      resolvePermissionModeForProvider: () => 'default' as PermissionMode,
+      resolvePermissionModeForProvider: () => mode,
       currentProviderModel: model,
       currentProviderEffort: 'medium',
       isLoading,
@@ -708,4 +710,14 @@ test('a session switch during the upload keeps a draft that changed in the sessi
 
   assert.equal(queuedOnServer('session-1')?.content, 'follow-up B');
   assert.equal(readDraftText('session-1'), 'written on the laptop');
+});
+
+
+test('a Codex follow-up queued after switching mode keeps that policy until dispatch', async () => {
+  const { view } = render({ provider: 'codex', mode: 'default' });
+  view.rerender({ session: SESSION_1, isLoading: true, model: 'model-1', provider: 'codex', mode: 'bypassPermissions', permissionModeExplicit: true });
+  await submit(view, 'continue with full access');
+  assert.equal(queuedOnServer()?.options?.permissionMode, 'bypassPermissions');
+  view.rerender({ session: SESSION_1, isLoading: true, model: 'model-1', provider: 'codex', mode: 'default' });
+  assert.equal(dispatcherClaims('session-1')?.options?.permissionMode, 'bypassPermissions');
 });

@@ -161,13 +161,14 @@ class CodexRun {
     const mode = this.options.permissionMode ?? 'default';
     const sandbox = mode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write';
     const approvalPolicy = mode === 'bypassPermissions' ? 'never' : 'on-request';
+    const approvalsReviewer = mode === 'auto' ? 'auto_review' : 'user';
     const catalog = await this.context.getProviderModels();
     const selectedModel = resolvedModel || catalog.DEFAULT;
     const allowedEfforts = catalog.OPTIONS.find(option => option.value === selectedModel)?.effort?.values.map(value => value.value) ?? [];
     const resolvedEffort = allowedEfforts.includes(effort) ? effort : null;
     const result = await this.connection!.call(providerSessionId ? 'thread/resume' : 'thread/start', {
       ...(providerSessionId ? { threadId: providerSessionId, excludeTurns: true } : {}),
-      model: selectedModel, cwd, sandbox, approvalPolicy, approvalsReviewer: mode === 'auto' ? 'auto_review' : 'user',
+      model: selectedModel, cwd, sandbox, approvalPolicy, approvalsReviewer,
     });
     if (!result.thread?.id) {
       throw new Error('Codex returned no thread id');
@@ -182,8 +183,16 @@ class CodexRun {
     const text = appendFilesInputTag(command, files) || (normalizedImages.length ? 'Please analyze the attached image(s).' : command);
     const input = buildCodexInputItems(text.trim() ? text : 'Please analyze the attached image(s).', normalizedImages, cwd)
       .map(item => item.type === 'text' ? { ...item, text_elements: [] } : { ...item, type: 'localImage' });
+    // Resume of an already-loaded thread retains its old settings. Apply the
+    // requested policy at turn/start as well, including when tightening access.
+    const sandboxPolicy = mode === 'bypassPermissions'
+      ? { type: 'dangerFullAccess' }
+      : result.sandbox?.type === 'workspaceWrite'
+        ? result.sandbox
+        : { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     return {
       threadId: this.threadId, input, model: selectedModel, effort: resolvedEffort,
+      approvalPolicy, approvalsReviewer, sandboxPolicy,
       collaborationMode: { mode: mode === 'plan' ? 'plan' : 'default', settings: { model: selectedModel, reasoning_effort: resolvedEffort, developer_instructions: null } },
     };
   }
