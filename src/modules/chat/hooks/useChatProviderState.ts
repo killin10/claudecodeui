@@ -221,7 +221,11 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     }
   }, [workspacePath]);
 
+  // Global model mutations can finish after navigation. Refresh the current
+  // project then, instead of applying the old project's response.
+  const refreshProviderModelsRef = useRef(loadProviderModels);
   useEffect(() => {
+    refreshProviderModelsRef.current = loadProviderModels;
     void loadProviderModels();
   }, [loadProviderModels]);
 
@@ -484,6 +488,9 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
 
   /** Model and reasoning effort recorded for the open session by the backend. */
   const [sessionSelection, setSessionSelection] = useState<SessionProviderSelection | null>(null);
+  // Global model edits can update the current session's DB row even when the
+  // request started in another project; reload that row after each mutation.
+  const [sessionSelectionRevision, setSessionSelectionRevision] = useState(0);
   const selectedSessionId = selectedSession?.id?.trim() || null;
   const selectedSessionProvider = selectedSession?.__provider ?? provider;
   const selectedSessionKey = selectedSessionId
@@ -554,7 +561,7 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, selectedSessionProvider]);
+  }, [selectedSessionId, selectedSessionProvider, sessionSelectionRevision]);
 
   /**
    * Applies a model choice.
@@ -710,11 +717,18 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
   const applyProviderCatalog = useCallback((
     targetProvider: LLMProvider,
     models: ProviderModelsDefinition,
+    requestId: number,
   ) => {
+    setSessionSelectionRevision((revision) => revision + 1);
+    if (providerModelsRequestIdRef.current !== requestId) {
+      void refreshProviderModelsRef.current();
+      return false;
+    }
     setProviderModelCatalog((previous) => ({
       ...previous,
       [targetProvider]: models,
     }));
+    return true;
   }, []);
 
   const readModelMutationResponse = useCallback(async (
@@ -735,9 +749,10 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     targetProvider: LLMProvider,
     input: CustomProviderModelInput,
   ) => {
+    const requestId = providerModelsRequestIdRef.current;
     const response = await api.providers.createModel(targetProvider, input, workspacePath);
     const result = await readModelMutationResponse(response);
-    applyProviderCatalog(targetProvider, result.models);
+    applyProviderCatalog(targetProvider, result.models, requestId);
   }, [applyProviderCatalog, readModelMutationResponse, workspacePath]);
 
   const updateCustomModel = useCallback(async (
@@ -749,14 +764,16 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
       throw new Error('This model cannot be edited.');
     }
 
+    const requestId = providerModelsRequestIdRef.current;
+    const sessionKey = selectedSessionKey;
     const response = await api.providers.updateModel(targetProvider, existing.recordId, input, workspacePath);
     const result = await readModelMutationResponse(response);
-    applyProviderCatalog(targetProvider, result.models);
+    if (!applyProviderCatalog(targetProvider, result.models, requestId)) return;
 
     if (providerModels[targetProvider] === existing.value) {
       setStoredProviderModel(targetProvider, result.model.value);
     }
-    if (provider === targetProvider && sessionModel === existing.value) {
+    if (selectedSessionKeyRef.current === sessionKey && provider === targetProvider && sessionModel === existing.value) {
       setSessionSelection((current) => current ? {
         ...current,
         model: result.model.value,
@@ -769,6 +786,7 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     providerModels,
     readModelMutationResponse,
     sessionModel,
+    selectedSessionKey,
     setStoredProviderModel,
   ]);
 
@@ -780,14 +798,16 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
       throw new Error('This model cannot be deleted.');
     }
 
+    const requestId = providerModelsRequestIdRef.current;
+    const sessionKey = selectedSessionKey;
     const response = await api.providers.deleteModel(targetProvider, existing.recordId, workspacePath);
     const result = await readModelMutationResponse(response);
-    applyProviderCatalog(targetProvider, result.models);
+    if (!applyProviderCatalog(targetProvider, result.models, requestId)) return;
 
     if (providerModels[targetProvider] === existing.value) {
       setStoredProviderModel(targetProvider, result.models.DEFAULT);
     }
-    if (provider === targetProvider && sessionModel === existing.value) {
+    if (selectedSessionKeyRef.current === sessionKey && provider === targetProvider && sessionModel === existing.value) {
       setSessionSelection((current) => current ? {
         ...current,
         model: result.models.DEFAULT,
@@ -800,6 +820,7 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     providerModels,
     readModelMutationResponse,
     sessionModel,
+    selectedSessionKey,
     setStoredProviderModel,
   ]);
 
@@ -812,13 +833,14 @@ export function useChatProviderState({ selectedSession, selectedProject }: UseCh
     targetProvider: LLMProvider,
     enabled: boolean,
   ) => {
+    const requestId = providerModelsRequestIdRef.current;
     const response = await api.providers.setCustomModelsOnly(targetProvider, enabled, workspacePath);
     const body = (await response.json()) as ProviderModelMutationApiResponse;
     if (!response.ok || !body.success || !body.data?.models) {
       throw new Error(body.error?.message || 'Unable to change this setting.');
     }
 
-    applyProviderCatalog(targetProvider, body.data.models);
+    applyProviderCatalog(targetProvider, body.data.models, requestId);
   }, [applyProviderCatalog, workspacePath]);
 
   const providerModelActions = useMemo<ProviderModelActions>(() => ({

@@ -95,6 +95,7 @@ export default function ModelLibraryPanel({
   // providers this machine has connected (OpenCode). Empty for providers
   // without effort support, which hides the section entirely.
   const providerEffortLevels = providerModelCatalog[selectedProvider]?.EFFORT_LEVELS ?? [];
+  const nativeEffort = editing?.effortReadOnly === true && modelId.trim() === editing.value;
   const selectedProviderLabel = PROVIDERS.find((entry) => entry.id === selectedProvider)?.label;
   const customModelsOnly = providerModelCatalog[selectedProvider]?.CUSTOM_MODELS_ONLY === true;
   // The server only hides the built-ins while a custom model exists.
@@ -156,7 +157,7 @@ export default function ModelLibraryPanel({
    * level stays ticked.
    */
   const buildEffortInput = (): CustomProviderModelInput['effort'] => {
-    if (providerEffortLevels.length === 0) {
+    if (nativeEffort || providerEffortLevels.length === 0) {
       return undefined;
     }
 
@@ -338,7 +339,12 @@ export default function ModelLibraryPanel({
             Use the exact identifier accepted by the provider CLI. IDs cannot contain spaces.
           </p>
 
-          {providerEffortLevels.length > 0 && (
+          {nativeEffort && (
+            <p className="mt-4 text-xs text-muted-foreground">
+              Reasoning levels follow this project's OpenCode configuration.
+            </p>
+          )}
+          {!nativeEffort && providerEffortLevels.length > 0 && (
             <fieldset className="mt-4">
               <legend className="text-xs font-semibold text-foreground">
                 {t('chat:modelLibrary.effortLevels')}

@@ -130,6 +130,8 @@ const createTestService = (options: {
   sessions?: ReturnType<typeof createSessionStore>;
   settings?: ReturnType<typeof createSettingsStore>;
   activeModel?: (provider: LLMProvider, sessionId?: string) => string;
+  nativeSelection?: ProviderCurrentActiveModel;
+  nativeReadError?: Error;
   onCatalogRead?: (provider: LLMProvider, workspacePath?: string) => void;
   defaultModel?: (workspacePath?: string) => string;
 } = {}) => {
@@ -146,15 +148,72 @@ const createTestService = (options: {
           options.onCatalogRead?.(provider, workspacePath);
           return createModels(options.defaultModel?.(workspacePath) ?? `${provider}-default`);
         },
-        getCurrentActiveModel: async (sessionId) => createCurrentActiveModel(
-          options.activeModel?.(provider, sessionId) ?? `${provider}-default`,
-        ),
+        getCurrentActiveModel: async (sessionId) => {
+          if (options.nativeReadError) throw options.nativeReadError;
+          return options.nativeSelection ?? createCurrentActiveModel(
+            options.activeModel?.(provider, sessionId) ?? `${provider}-default`,
+          );
+        },
       },
     }),
   });
 
   return { service, catalog, sessions, settings };
 };
+
+test('native session variants survive even when the model is the catalog default', async () => {
+  const { service } = createTestService({ nativeSelection: { model: 'opencode-default', effort: 'deep', source: 'session' } });
+  assert.deepEqual(await service.resolveSessionModel('opencode', { sessionId: 'native' }), {
+    provider: 'opencode', sessionId: 'native', model: 'opencode-default', effort: 'deep', source: 'provider',
+  });
+});
+
+test('native discovery retains one editable custom label and native variants', async () => {
+  const catalog = createCatalogStore();
+  const record = catalog.createCustomProviderModel('opencode', {
+    id: 'gateway/model', model: 'My label', effort: { values: ['high'] },
+  });
+  const service = createProviderModelsService({
+    catalog, sessions: createSessionStore(), settings: createSettingsStore(),
+    resolveProvider: () => ({ models: {
+      getSupportedModels: async () => ({ DEFAULT: 'gateway/model', OPTIONS: [{
+        value: 'gateway/model', label: 'Native label', effort: { values: [{ value: 'deep' }] },
+      }] }),
+      getCurrentActiveModel: async () => ({ model: 'gateway/model' }),
+    } }),
+  });
+  for (const customOnly of [false, true]) {
+    const merged = await service.setCustomModelsOnly('opencode', customOnly);
+    assert.equal(merged.OPTIONS.length, 1);
+    assert.equal(merged.OPTIONS[0].label, 'My label');
+    assert.equal(merged.OPTIONS[0].recordId, record.recordId);
+    assert.deepEqual(merged.OPTIONS[0].effort?.values, [{ value: 'deep' }]);
+  }
+  const renamed = await service.updateCustomModel('opencode', record.recordId, { id: 'gateway/model', model: 'Renamed' });
+  assert.equal(renamed.models.OPTIONS[0].label, 'Renamed');
+  assert.deepEqual(catalog.getCustomProviderModel('opencode', record.recordId)?.effort, { values: ['high'] });
+  await assert.rejects(service.createCustomModel('opencode', { id: 'gateway/model', model: 'Duplicate' }));
+  catalog.sessionDirectories.push('/project');
+  const removed = await service.deleteCustomModel('opencode', record.recordId);
+  assert.equal(removed.models.OPTIONS[0].label, 'Native label');
+  assert.deepEqual(catalog.deleteFallbacks, [new Map([['/project', 'gateway/model']])]);
+});
+
+test('recorded effort wins, while a missing effort is restored only for the same native model', async () => {
+  const sessions = createSessionStore({ same: 'native/model', reset: 'native/model', changed: 'other/model' }, { reset: 'default' });
+  const { service } = createTestService({ sessions, nativeSelection: { model: 'native/model', effort: 'deep', source: 'session' } });
+  assert.equal((await service.resolveSessionModel('opencode', { sessionId: 'same' })).effort, 'deep');
+  assert.equal((await service.resolveSessionModel('opencode', { sessionId: 'reset' })).effort, 'default');
+  assert.equal((await service.resolveSessionModel('opencode', { sessionId: 'changed' })).effort, null);
+});
+
+test('unavailable native effort does not prevent reading an app-recorded model', async () => {
+  const sessions = createSessionStore({ recorded: 'native/model' });
+  const { service } = createTestService({ sessions, nativeReadError: new Error('native unavailable') });
+  assert.deepEqual(await service.resolveSessionModel('opencode', { sessionId: 'recorded' }), {
+    provider: 'opencode', sessionId: 'recorded', model: 'native/model', effort: null, source: 'session',
+  });
+});
 
 test('model catalog reads and mutations keep the requested workspace', async () => {
   const directories: Array<string | undefined> = [];

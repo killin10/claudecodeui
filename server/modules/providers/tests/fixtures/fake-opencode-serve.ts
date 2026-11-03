@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import http from 'node:http';
 
-import type { FormInfo } from '@opencode/client';
+import type { FormInfo, ModelRef, SessionInfo } from '@opencode/client';
 
 type PermissionRule = { permission: string; pattern: string; action: string };
+type StoredSession = Partial<Pick<SessionInfo, 'agent' | 'model' | 'metadata' | 'parentID'>> & { permission?: PermissionRule[] };
 
 type Step =
   | { type: 'text'; text: string }
@@ -33,7 +34,7 @@ type Scenario = {
   /** Id given to a session created through POST /session. */
   newSessionId?: string;
   /** Sessions GET /session/:id knows; any other id answers 404. */
-  sessions?: Record<string, { permission?: PermissionRule[]; parentID?: string; agent?: string }>;
+  sessions?: Record<string, StoredSession>;
   events?: Array<{ type: string; data: Record<string, unknown>; location?: { directory: string } }>;
   agents?: Array<{ name: string; permission: PermissionRule[] }>;
   defaultAgent?: string;
@@ -45,6 +46,10 @@ type Scenario = {
   promptStatus?: number;
   /** Native validation can reject a reply without settling the form. */
   formReplyFailures?: number;
+  /** Fail before applying a native mutation, allowing retry/state assertions on the same host. */
+  agentSwitchFailures?: number;
+  modelSwitchFailures?: number;
+  metadataUpdateFailures?: number;
   /** Version /global/health reports; null makes the route missing, as before OpenCode 1.0.224. */
   version?: string | null;
   /** How long POST /session/:id/abort takes to answer. */
@@ -373,8 +378,9 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && path === '/session') {
     const id = scenario.newSessionId ?? 'ses_fake_new';
-    sessions.set(id, { permission: (body as { permission?: PermissionRule[] } | undefined)?.permission });
-    sendJson(res, 200, { data: { id, projectID: 'prj_test', title: 'New session' } });
+    const session = { ...body as StoredSession };
+    sessions.set(id, session);
+    sendJson(res, 200, { data: { id, projectID: 'prj_test', title: 'New session', ...session } });
     return;
   }
 
@@ -385,6 +391,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'PATCH') {
+      if (scenario.metadataUpdateFailures && 'metadata' in (body as object)) {
+        scenario.metadataUpdateFailures -= 1;
+        sendJson(res, 500, { name: 'InternalError', data: { message: 'Injected metadata update failure' } });
+        return;
+      }
       const added = (body as { permission?: PermissionRule[] } | undefined)?.permission ?? [];
       session.permission = [...(session.permission ?? []), ...added];
       Object.assign(session, body);
@@ -507,7 +518,30 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 200, { data: messages.get(match[2]) });
     return;
   }
-  if ((match = /^\/session\/([^/]+)\/(agent|model)$/.exec(path))) {
+  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/(agent|model)$/.exec(path))) {
+    const session = sessions.get(match[1]);
+    if (!session) {
+      sendJson(res, 404, { name: 'NotFoundError', data: { message: 'Session not found' } });
+      return;
+    }
+    const failureKey = match[2] === 'agent' ? 'agentSwitchFailures' : 'modelSwitchFailures';
+    if (scenario[failureKey]) {
+      scenario[failureKey] -= 1;
+      sendJson(res, 500, { name: 'InternalError', data: { message: `Injected ${match[2]} switch failure` } });
+      return;
+    }
+    if (match[2] === 'agent') {
+      const previous = session.agent;
+      session.agent = (body as { agent: string }).agent;
+      emit('session.agent.selected', { sessionID: match[1], agent: session.agent, previous });
+    } else {
+      const previous = session.model;
+      session.model = (body as { model: ModelRef }).model;
+      if (previous?.id !== session.model.id || previous.providerID !== session.model.providerID
+        || (previous.variant ?? 'default') !== (session.model.variant ?? 'default')) {
+        emit('session.model.selected', { sessionID: match[1], model: session.model, previous });
+      }
+    }
     res.writeHead(204);
     res.end();
     return;

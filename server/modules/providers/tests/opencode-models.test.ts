@@ -159,6 +159,10 @@ test('OpenCode composes the provider prefix into session model ids', async () =>
     await withOpenCodeHome(
       (homeDir) => writeOpenCodeSessionDatabase(homeDir, [
         {
+          id: 'ses_variant',
+          model: JSON.stringify({ id: 'reasoner', providerID: 'custom', variant: 'deep' }),
+        },
+        {
           id: 'ses_openrouter',
           model: JSON.stringify({
             id: 'z-ai/glm-5.3-flash',
@@ -187,6 +191,12 @@ test('OpenCode composes the provider prefix into session model ids', async () =>
         },
       ]),
       async (adapter) => {
+        assert.deepEqual(await adapter.getCurrentActiveModel('ses_variant'), {
+          model: 'custom/reasoner', effort: 'deep', source: 'session',
+        });
+        assert.deepEqual(await adapter.getCurrentActiveModel('ses_github_copilot'), {
+          model: 'github-copilot/gpt-5.6-terra', effort: 'default', source: 'session',
+        });
         assert.equal(
           (await adapter.getCurrentActiveModel('ses_openrouter')).model,
           'openrouter/z-ai/glm-5.3-flash',

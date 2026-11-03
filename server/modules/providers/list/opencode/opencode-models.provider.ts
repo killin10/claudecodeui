@@ -54,7 +54,7 @@ function projectNativeCatalog(catalog: NativeCatalog): ProviderModelsDefinition 
   };
 }
 
-const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
+const parseOpenCodeSessionModelValue = (rawModel: unknown): ProviderCurrentActiveModel | null => {
   if (typeof rawModel === 'string') {
     const trimmed = rawModel.trim();
     if (!trimmed) {
@@ -64,7 +64,7 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
     try {
       return parseOpenCodeSessionModelValue(JSON.parse(trimmed));
     } catch {
-      return trimmed;
+      return { model: trimmed, effort: 'default', source: 'session' };
     }
   }
 
@@ -88,11 +88,11 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   // instead of failing with an unknown-model error.
   const providerId = readOptionalString(record.providerID)
     ?? readOptionalString(record.providerId);
-  if (providerId && !modelId.startsWith(`${providerId}/`)) {
-    return `${providerId}/${modelId}`;
-  }
-
-  return modelId;
+  return {
+    model: providerId && !modelId.startsWith(`${providerId}/`) ? `${providerId}/${modelId}` : modelId,
+    effort: readOptionalString(record.variant) ?? 'default',
+    source: 'session',
+  };
 };
 
 /** Provider registry model adapter for OpenCode native project models and session metadata. */
@@ -125,7 +125,7 @@ export class OpenCodeProviderModels implements IProviderModels {
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
     if (!sessionId?.trim()) {
-      return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+      return { ...buildDefaultProviderCurrentActiveModel(await this.getSupportedModels()), source: 'default' };
     }
 
     // OpenCode's `session` table is keyed by its own session id, so the stable
@@ -160,12 +160,8 @@ export class OpenCodeProviderModels implements IProviderModels {
           timeCreated?: number | null;
         } | undefined;
 
-        const model = parseOpenCodeSessionModelValue(row?.model);
-        if (model) {
-          return {
-            model,
-          };
-        }
+        const selection = parseOpenCodeSessionModelValue(row?.model);
+        if (selection) return selection;
       } finally {
         db.close();
       }
@@ -173,6 +169,9 @@ export class OpenCodeProviderModels implements IProviderModels {
       // Fall through to the project's native default when session lookup fails.
     }
 
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels(appSession?.project_path ?? undefined));
+    return {
+      ...buildDefaultProviderCurrentActiveModel(await this.getSupportedModels(appSession?.project_path ?? undefined)),
+      source: 'default',
+    };
   }
 }

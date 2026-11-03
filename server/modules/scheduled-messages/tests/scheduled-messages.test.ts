@@ -284,7 +284,7 @@ test('the composer settings it was scheduled with travel with it', async () => {
       userId,
       sessionId: SESSION_ID,
       content: 'with options',
-      options: { model: 'claude-opus-5', permissionMode: 'plan' },
+      options: { model: 'claude-opus-5', permissionMode: 'plan', permissionModeExplicit: true },
       scheduledFor: new Date(Date.now() - 1_000).toISOString(),
     });
 
@@ -293,6 +293,7 @@ test('the composer settings it was scheduled with travel with it', async () => {
 
     assert.equal(runs[0].options.model, 'claude-opus-5');
     assert.equal(runs[0].options.permissionMode, 'plan');
+    assert.equal(runs[0].options.permissionModeExplicit, true);
   });
 });
 

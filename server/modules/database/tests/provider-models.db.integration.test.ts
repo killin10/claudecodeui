@@ -99,6 +99,12 @@ test('provider model repository stores custom rows only and maintains session re
     assert.equal(sessionsDb.getSessionById('native-one')?.model, 'one/default');
     assert.equal(sessionsDb.getSessionById('native-two')?.model, 'two/default');
     assert.equal(sessionsDb.getSessionById('native-two')?.effort, null);
+
+    const nativeLabel = providerModelsDb.createCustomProviderModel('opencode', { model: 'Native label', id: 'native/model' });
+    insert.run('native-kept', 'opencode', '/tmp/project-1', 'native/model', 'deep');
+    providerModelsDb.deleteCustomProviderModel('opencode', nativeLabel.recordId, new Map([['/tmp/project-1', 'native/model']]));
+    assert.equal(sessionsDb.getSessionById('native-kept')?.model, 'native/model');
+    assert.equal(sessionsDb.getSessionById('native-kept')?.effort, 'deep');
   } finally {
     closeConnection();
     if (previousDatabasePath === undefined) {

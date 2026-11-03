@@ -189,6 +189,7 @@ function ChatInterface({
 
   const {
     input,
+    buildSendOptions,
     setInput,
     textareaRef,
     inputHighlightRef,
@@ -388,12 +389,12 @@ function ChatInterface({
     const scheduled = await scheduleMessage({
       content,
       scheduledFor,
-      options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode },
+      options: buildSendOptions(content),
     });
     if (scheduled) {
       setInput('');
     }
-  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
+  }, [buildSendOptions, input, scheduleMessage, setInput]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,

@@ -165,6 +165,20 @@ test('editing a custom model keeps its default level and can clear its levels', 
   assert.equal(updated[1]?.input.effort, null);
 });
 
+test('editing a native-discovered custom label preserves its stored effort metadata', async () => {
+  const { actions, updated } = createActions();
+  const option = { ...CUSTOM_CLAUDE_MODEL, effortReadOnly: true, effort: { values: [{ value: 'deep' }] } };
+  render(<ModelLibraryPanel initialProvider="opencode" providerModelCatalog={{ opencode: {
+    OPTIONS: [option], DEFAULT: option.value, EFFORT_LEVELS: ['low', 'high'],
+  } }} actions={actions} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Edit My Custom Model' }));
+  screen.getByText("Reasoning levels follow this project's OpenCode configuration.");
+  assert.equal(screen.queryByRole('button', { name: 'high' }), null);
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+  await waitFor(() => assert.equal(updated.length, 1));
+  assert.equal(Object.prototype.hasOwnProperty.call(updated[0].input, 'effort'), false);
+});
+
 test('OpenCode offers its effort levels even when no visible built-in model declares any', async () => {
   const { actions, created } = createActions();
   render(<ModelLibraryPanel initialProvider="opencode" providerModelCatalog={CATALOG} actions={actions} />);

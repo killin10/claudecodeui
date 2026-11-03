@@ -103,13 +103,22 @@ const mergeProviderModels = (
   custom: CustomProviderModelRecord[],
   customModelsOnly: boolean,
 ): ProviderModelsDefinition => {
-  const customOptions = custom.map(toCustomProviderModelOption);
+  const nativeById = new Map(predefined.OPTIONS.map((option) => [option.value, option]));
+  const customOptions = custom.map((record) => {
+    const option = toCustomProviderModelOption(record);
+    const native = provider === 'opencode' ? nativeById.get(option.value) : undefined;
+    // Custom labels/record identity survive native discovery. Native variants
+    // remain authoritative for a model the current project can actually run.
+    return native ? { ...native, ...option, effort: native.effort, effortReadOnly: true } : option;
+  });
+  const customIds = new Set(customOptions.map((option) => option.value));
   const listOnlyCustomModels = customModelsOnly && customOptions.length > 0;
   return {
     OPTIONS: listOnlyCustomModels
       ? customOptions
       : [
-        ...predefined.OPTIONS.map((option) => ({ ...option, isCustom: false })),
+        ...predefined.OPTIONS.filter((option) => !customIds.has(option.value))
+          .map((option) => ({ ...option, isCustom: false })),
         ...customOptions,
       ],
     DEFAULT: listOnlyCustomModels ? customOptions[0].value : predefined.DEFAULT,
@@ -237,7 +246,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     modelId: string,
     currentRecordId?: number,
   ): void => {
-    if (predefined.OPTIONS.some((option) => option.value === modelId)) {
+    const existing = currentRecordId === undefined ? null : catalog.getCustomProviderModel(provider, currentRecordId);
+    const retainedNativeId = provider === 'opencode' && existing?.modelId === modelId;
+    if (!retainedNativeId && predefined.OPTIONS.some((option) => option.value === modelId)) {
       throw new AppError(`A ${provider} model with this ID already exists.`, {
         code: 'MODEL_ID_ALREADY_EXISTS',
         statusCode: 409,
@@ -327,12 +338,12 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     // behind: the first remaining custom model (the new DEFAULT) while only
     // custom models are listed, or the built-in default once none remain.
     const remaining = catalog.listCustomProviderModels(provider).filter((record) => record.recordId !== recordId);
-    const fallbackFor = (definition: ProviderModelsDefinition) => mergeProviderModels(
-      provider,
-      definition,
-      remaining,
-      isCustomModelsOnly(provider),
-    ).DEFAULT;
+    const fallbackFor = (definition: ProviderModelsDefinition) => {
+      if (provider === 'opencode' && definition.OPTIONS.some((option) => option.value === existing.modelId)) {
+        return existing.modelId;
+      }
+      return mergeProviderModels(provider, definition, remaining, isCustomModelsOnly(provider)).DEFAULT;
+    };
     let fallback: string | Map<string, string> = fallbackFor(predefined);
     if (provider === 'opencode') {
       fallback = new Map();
@@ -367,6 +378,14 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       model: session.model?.trim() || null,
       effort: session.effort?.trim() || null,
     };
+  };
+
+  const readNativeEffort = async (provider: LLMProvider, sessionId: string, model: string): Promise<string | null> => {
+    if (provider !== 'opencode') return null;
+    // Optional enrichment must not hide an already recorded model when the
+    // native database or host is unavailable, or borrow another model's variant.
+    const native = await getCurrentActiveModel(provider, sessionId).catch(() => null);
+    return native?.source === 'session' && native.model === model ? native.effort ?? null : null;
   };
 
   /**
@@ -460,7 +479,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
           provider,
           sessionId: normalizedSessionId,
           model: recordedSelection.model,
-          effort: recordedSelection.effort,
+          effort: recordedSelection.effort ?? await readNativeEffort(provider, normalizedSessionId, recordedSelection.model),
           source: 'session',
         };
       }
@@ -470,15 +489,16 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       const providerCatalog = readMergedCatalog(provider, predefined);
       const providerModel = await getCurrentActiveModel(provider, normalizedSessionId);
       const resolvedProviderModel = providerModel.model?.trim();
-      // Adapters answer with their own built-in default when they know nothing
-      // about the session. That value, not the merged default (a custom model
-      // while only custom models are listed), is what means "no answer".
-      if (resolvedProviderModel && resolvedProviderModel !== predefined.DEFAULT) {
+      // Prefer explicit provenance. Older adapters use the catalog default as
+      // their "no native answer" sentinel and keep that compatibility path.
+      const nativeSelection = providerModel.source === 'session'
+        || (providerModel.source === undefined && resolvedProviderModel !== predefined.DEFAULT);
+      if (resolvedProviderModel && nativeSelection) {
         return {
           provider,
           sessionId: normalizedSessionId,
           model: resolvedProviderModel,
-          effort: recordedSelection?.effort ?? null,
+          effort: recordedSelection?.effort ?? providerModel.effort ?? null,
           source: 'provider',
         };
       }

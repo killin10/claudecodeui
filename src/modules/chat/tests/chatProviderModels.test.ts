@@ -18,7 +18,8 @@ const okJson = (data: unknown) => Promise.resolve({
   ok: true,
   json: async () => data,
 });
-const mocks = vi.hoisted(() => ({ models: vi.fn(), capabilities: vi.fn(), agent: vi.fn() }));
+const mocks = vi.hoisted(() => ({ models: vi.fn(), capabilities: vi.fn(), agent: vi.fn(),
+  mutation: vi.fn(), session: vi.fn() }));
 
 vi.mock('@/shared/api', () => ({
   api: {
@@ -32,12 +33,13 @@ vi.mock('@/shared/api', () => ({
       models: mocks.models,
       capabilities: mocks.capabilities,
       opencodeSessionAgent: mocks.agent,
-      sessionActiveModel: () => okJson({ success: true, data: null }),
+      sessionActiveModel: mocks.session,
       setSessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveEffort: () => okJson({ success: true, data: null }),
-      createModel: () => okJson({ success: true, data: null }),
-      updateModel: () => okJson({ success: true, data: null }),
-      removeModel: () => okJson({ success: true, data: null }),
+      createModel: mocks.mutation,
+      updateModel: mocks.mutation,
+      deleteModel: mocks.mutation,
+      setCustomModelsOnly: mocks.mutation,
     },
   },
 }));
@@ -55,6 +57,8 @@ beforeEach(() => {
   mocks.models.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   mocks.capabilities.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   mocks.agent.mockReset().mockImplementation(() => okJson({ success: true, data: { agent: 'plan' } }));
+  mocks.mutation.mockReset();
+  mocks.session.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
   localStorage.clear();
   // The preference store is a module-level singleton, so its in-memory copy
   // outlives localStorage.clear() and would leak one test's writes into the next.
@@ -198,4 +202,104 @@ test('late capability hydration preserves native plan state and explicit mode ch
   act(() => view.result.current.selectPermissionMode('default'));
   assert.equal(view.result.current.permissionMode, 'default');
   assert.equal(view.result.current.permissionModeExplicit, true);
+});
+
+for (const operation of ['create', 'update', 'remove', 'setCustomModelsOnly'] as const) {
+  test(`a late ${operation} response refreshes the current project instead of replacing it`, async () => {
+    writeUserPreference('selectedProvider', 'opencode');
+    let changed = false;
+    const catalog = (directory: string) => ({ DEFAULT: `${directory}/native`, OPTIONS: [
+      { value: `${directory}/native`, label: directory },
+      ...(changed ? [{ value: 'custom/model', label: 'Custom' }] : []),
+    ] });
+    mocks.models.mockImplementation((provider: string, directory: string) => okJson({ success: true, data: {
+      models: catalog(provider === 'opencode' ? directory : provider),
+    } }));
+    let finish!: (response: Awaited<ReturnType<typeof okJson>>) => void;
+    mocks.mutation.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const { useChatProviderState } = await import('@/modules/chat/hooks/useChatProviderState');
+    const view = renderHook(({ directory }) => useChatProviderState({ selectedSession: null, selectedProject: {
+      projectId: directory, displayName: directory, fullPath: directory,
+    } }), { initialProps: { directory: '/project-a' } });
+    await waitFor(() => assert.equal(view.result.current.currentProviderModel, '/project-a/native'));
+    let pending!: Promise<void>;
+    const existing = { value: 'custom/model', label: 'Custom', recordId: 1 };
+    act(() => {
+      const actions = view.result.current.providerModelActions;
+      if (operation === 'create') pending = actions.create('opencode', { id: 'custom/model', model: 'Custom' });
+      if (operation === 'update') pending = actions.update('opencode', existing, { id: 'custom/model', model: 'Renamed' });
+      if (operation === 'remove') pending = actions.remove('opencode', existing);
+      if (operation === 'setCustomModelsOnly') pending = actions.setCustomModelsOnly('opencode', false);
+    });
+    view.rerender({ directory: '/project-b' });
+    await waitFor(() => assert.equal(view.result.current.currentProviderModel, '/project-b/native'));
+    await act(async () => {
+      changed = true;
+      finish(await okJson({ success: true, data: { model: existing, models: catalog('/project-a') } }));
+      await pending;
+    });
+    await waitFor(() => assert.equal(view.result.current.currentProviderModelOptions.length, 2));
+    assert.equal(view.result.current.currentProviderModelOptions[0]?.value, '/project-b/native');
+    assert.equal(view.result.current.currentProviderModel, '/project-b/native');
+  });
+}
+
+test('a delayed model rename does not overwrite a different session in the same project', async () => {
+  writeUserPreference('selectedProvider', 'opencode');
+  mocks.session.mockImplementation((_provider: string, id: string) => okJson({ success: true, data: {
+    model: id === 'one' ? 'custom/model' : 'other/model', source: 'session',
+  } }));
+  let finish!: (response: Awaited<ReturnType<typeof okJson>>) => void;
+  mocks.mutation.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const { useChatProviderState } = await import('@/modules/chat/hooks/useChatProviderState');
+  const view = renderHook(({ id }) => useChatProviderState({ selectedSession: { id, __provider: 'opencode' },
+    selectedProject: { projectId: 'project', displayName: 'Project', fullPath: '/project' },
+  }), { initialProps: { id: 'one' } });
+  await waitFor(() => assert.equal(view.result.current.currentProviderModel, 'custom/model'));
+  let pending!: Promise<void>;
+  act(() => { pending = view.result.current.providerModelActions.update('opencode', {
+    recordId: 1, value: 'custom/model', label: 'Custom',
+  }, { id: 'custom/renamed', model: 'Renamed' }); });
+  view.rerender({ id: 'two' });
+  await waitFor(() => assert.equal(view.result.current.currentProviderModel, 'other/model'));
+  await act(async () => {
+    finish(await okJson({ success: true, data: { model: { value: 'custom/renamed', label: 'Renamed' },
+      models: { DEFAULT: 'custom/renamed', OPTIONS: [{ value: 'custom/renamed', label: 'Renamed' }] },
+    } }));
+    await pending;
+  });
+  assert.equal(view.result.current.currentProviderModel, 'other/model');
+});
+
+test('a late global model deletion reloads the affected session in the new project', async () => {
+  writeUserPreference('selectedProvider', 'opencode');
+  let deleted = false;
+  mocks.models.mockImplementation((_provider: string, directory: string) => okJson({ success: true, data: { models: {
+    DEFAULT: `${directory}/native`, OPTIONS: [{ value: `${directory}/native`, label: directory }],
+  } } }));
+  mocks.session.mockImplementation((_provider: string, id: string) => okJson({ success: true, data: {
+    model: deleted ? `/project-${id}/native` : 'custom/shared', source: 'session',
+  } }));
+  let finish!: (response: Awaited<ReturnType<typeof okJson>>) => void;
+  mocks.mutation.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const { useChatProviderState } = await import('@/modules/chat/hooks/useChatProviderState');
+  const view = renderHook(({ id }) => useChatProviderState({ selectedSession: { id, __provider: 'opencode' },
+    selectedProject: { projectId: id, displayName: id, fullPath: `/project-${id}` },
+  }), { initialProps: { id: 'a' } });
+  await waitFor(() => assert.equal(view.result.current.currentProviderModel, 'custom/shared'));
+  let pending!: Promise<void>;
+  act(() => { pending = view.result.current.providerModelActions.remove('opencode', {
+    recordId: 1, value: 'custom/shared', label: 'Shared',
+  }); });
+  view.rerender({ id: 'b' });
+  await waitFor(() => assert.ok(mocks.session.mock.calls.some(([, id]) => id === 'b')));
+  await act(async () => {
+    deleted = true;
+    finish(await okJson({ success: true, data: { model: { value: 'custom/shared', label: 'Shared' },
+      models: { DEFAULT: '/project-a/native', OPTIONS: [{ value: '/project-a/native', label: 'A' }] },
+    } }));
+    await pending;
+  });
+  await waitFor(() => assert.equal(view.result.current.currentProviderModel, '/project-b/native'));
+  assert.equal(view.result.current.currentProviderModelOptions[0]?.value, '/project-b/native');
 });

@@ -15,9 +15,9 @@ import { createCommandsRouter } from '../commands.routes.js';
  */
 function createModelsService(sessionModels: Record<string, string> = {}) {
   return {
-    getProviderModels: async () => ({
-      OPTIONS: [{ value: 'default', label: 'Default' }],
-      DEFAULT: 'default',
+    getProviderModels: async (_provider: string, directory?: string) => ({
+      OPTIONS: [{ value: directory ? `${directory}/model` : 'default', label: 'Default' }],
+      DEFAULT: directory ? `${directory}/model` : 'default',
     }),
     getCurrentActiveModel: async () => ({ model: 'default' }),
     setSessionModel: () => null,
@@ -76,6 +76,11 @@ test('models command returns models only for the active provider using injected 
   const result = await executeCommand('/models', { provider: 'codex' });
   const data = result.data as Record<string, unknown>;
   assert.deepEqual(Object.keys(data.available as object), ['codex']);
+});
+
+test('models command uses the active project catalog', async () => {
+  const result = await executeCommand('/models', { provider: 'opencode', projectPath: '/project' });
+  assert.deepEqual((result.data as { availableModels: string[] }).availableModels, ['/project/model']);
 });
 
 test('models command falls back to claude for unsupported providers', async () => {

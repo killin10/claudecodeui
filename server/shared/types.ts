@@ -79,6 +79,8 @@ export type ProviderModelOption = {
   recordId?: number;
   /** True for user-created rows; false for immutable CloudCLI defaults. */
   isCustom?: boolean;
+  /** Native project configuration owns these levels; model-library edits must leave them alone. */
+  effortReadOnly?: boolean;
   effort?: {
     default?: string;
     values: {
@@ -173,6 +175,10 @@ export type CustomProviderModelInput = {
  */
 export type ProviderCurrentActiveModel = {
   model: string;
+  /** Native reasoning selection; `default` is an explicit native default, not an unknown value. */
+  effort?: string;
+  /** Adapters with reliable native state identify it even when its model equals the catalog default. */
+  source?: 'session' | 'default';
 };
 
 /**

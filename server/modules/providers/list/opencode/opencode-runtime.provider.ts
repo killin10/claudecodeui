@@ -368,7 +368,8 @@ class OpenCodeRun {
   private async selectModel(client: OpencodeClient) {
     const model = await this.context.resolveResumeModel(this.appSessionId ?? undefined, this.options.model);
     const reference = parseOpenCodeModel(model);
-    if (!reference || !this.options.effort || this.options.effort === 'default') return reference;
+    if (!reference || !this.options.effort) return reference;
+    if (this.options.effort === 'default') return { ...reference, variant: 'default' };
     const catalog = await client.model.list({ location: { directory: this.directory } }, {
       signal: AbortSignal.any([this.turn.abortController.signal, AbortSignal.timeout(60_000)]),
     });

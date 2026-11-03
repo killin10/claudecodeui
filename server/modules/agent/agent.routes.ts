@@ -1028,7 +1028,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       // Only the four runnable providers have a catalog: a continued legacy
       // session whose provider is no longer registered must not fail here.
       const providerModels = AGENT_RUN_PROVIDERS.includes(provider)
-        ? await providerModelsService.getProviderModels(provider)
+        ? await providerModelsService.getProviderModels(provider, finalProjectPath)
         : null;
       // Cursor otherwise leaves the choice to its CLI, so it only takes the
       // catalog DEFAULT when that is one of the user's own models.

@@ -395,6 +395,11 @@ are cached per directory for 60 seconds. Failed reads remain errors rather than
 falling back to a static model list. Reasoning choices come from each native
 model's variant IDs, and the runtime validates the selected variant against its
 own host before sending the message.
+Native session lookup restores both the model and its variant, including when
+the model equals the catalog default. Passive resume keeps an existing variant;
+an explicit `default` effort resets it. Model-editor responses arriving after
+project navigation refresh the current project's catalog rather than applying
+the previous project's options.
 Deleting a shared custom model resolves a fallback separately for each affected
 project before updating session references in one transaction.
 
@@ -409,11 +414,15 @@ Attachments use `session.prompt.files` with file URIs. History accepts both
 native base64 attachments and the path tags written by earlier CloudCLI
 versions. Opening a conversation reads its native agent to display plan mode.
 Normal resume preserves the native agent, regardless of stale browser settings.
-An explicit mode selection is captured with the message, including queued sends.
+An explicit mode selection is captured with the message, including queued and
+scheduled sends, which share the composer's send-option builder.
 Entering plan records the previous agent in session metadata; leaving restores
 it. For native plan sessions without that metadata, leaving uses the configured
 default agent, or `build` if the configured default is also `plan`. Selecting a
 normal permission mode preserves an existing custom agent.
+For new sessions, an explicit normal mode also overrides a configured `plan`
+default with `build`. Leaving plan clears the saved agent only after the native
+switch succeeds, so a failed request can be retried without losing it.
 
 OpenCode implements the optional `fork` facet with
 `requiresTranscriptFile: false`; its `jsonlPath` remains `null`. The native
@@ -430,6 +439,23 @@ follow-up activity before releasing the server, with a 30-minute ceiling for
 background work. Normal abort interrupts both the foreground and its tracked
 children. This lifecycle applies to work started by CloudCLI, not unrelated
 OpenCode processes.
+
+The Running Sessions poll also observes the registered local V2 service through
+`Service.discover()` and `session.active()`. It never starts or stops that service.
+Health/PID verification excludes stale registrations, and unavailable probes
+clear previous busy indicators. External entries use first-observed time because
+the active endpoint does not report a start time. App-owned entries take priority;
+external entries cannot be interrupted from the UI. This covers the default
+shared service used by the CLI, not unregistered standalone `--server` endpoints
+or ACP processes. See the [native client service API](https://opencode.ai/v2/docs/build/client).
+
+Agent API runs and `/models` look up the catalog for the requested project.
+When native discovery finds an existing custom model ID, the catalog keeps one
+entry with the custom label and record ID and the native reasoning variants.
+The model-library editor leaves these native variants read-only; changing a
+label preserves stored custom effort settings for projects without that native
+model. Removing the custom entry keeps sessions on the same model wherever the
+project's native catalog still supplies it.
 
 Runtime responsibilities are split between `opencode-runtime.provider.ts`
 (host lifetime and completion), `opencode-agent.provider.ts` (session and agent
@@ -453,3 +479,7 @@ Protocol references for upgrades: [event publisher](https://github.com/anomalyco
 and [model availability](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/model.ts).
 Regression tests live in `tests/opencode-*.test.ts`, `tests/mcp.test.ts` and
 `tests/session-fork.test.ts`.
+The fake V2 host persists agent/model/metadata changes and can fail each mutation
+before applying it. Retry tests read the resulting native session state through
+the real client, including failures between switching an agent and clearing its
+recovery metadata.

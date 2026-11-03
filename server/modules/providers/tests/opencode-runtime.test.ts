@@ -6,6 +6,8 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import type { OpenCodeClient } from '@opencode/client';
+
 import type { ProviderPermissionDecision, ProviderRuntimeContext } from '@/shared/types.js';
 
 /**
@@ -21,6 +23,8 @@ process.env.OPENCODE_TOOL_APPROVAL_TIMEOUT_MS = '1500';
 const { opencodeRuntime, reapOrphanedOpenCodeServers } = await import('@/modules/providers/list/opencode/opencode-runtime.provider.js');
 const { isCoveredByApprovals, clearOpenCodeRememberedApprovals, readQuestionAnswers, resolveAutomaticPermissionReply, toOpenCodePermissionReply } = await import('@/modules/providers/list/opencode/opencode-permissions.provider.js');
 const { OpenCodeSessionsProvider } = await import('@/modules/providers/list/opencode/opencode-sessions.provider.js');
+const { prepareOpenCodeSession } = await import('@/modules/providers/list/opencode/opencode-agent.provider.js');
+const { startOpenCodeServer } = await import('@/modules/providers/list/opencode/opencode-server.provider.js');
 
 type Frame = Record<string, any>;
 type LogEntry = Record<string, any>;
@@ -964,6 +968,76 @@ test('a native form rejection is retryable without completing the turn or withdr
   assert.equal(turn.frames.filter((frame) => frame.kind === 'complete').length, 1);
 });
 
+
+async function withNativeClient(scenario: Record<string, unknown>, run: (client: OpenCodeClient) => Promise<void>) {
+  setEnv('FAKE_OPENCODE_SCENARIO', JSON.stringify({ steps: [], ...scenario }));
+  setEnv('FAKE_OPENCODE_LOG', path.join(tempRoot, `requests-${++logCounter}.jsonl`));
+  const { client, server } = await startOpenCodeServer(AbortSignal.timeout(20_000));
+  try {
+    await run(client);
+  } finally {
+    server.close();
+  }
+}
+
+test('new sessions distinguish explicit normal mode from the configured plan default', async () => {
+  await withNativeClient({ defaultAgent: 'plan' }, async (client) => {
+    for (const [permissionMode, explicit, expected] of [
+      ['default', true, 'build'], ['acceptEdits', true, 'build'], ['bypassPermissions', true, 'build'],
+      ['default', false, 'plan'], ['plan', true, 'plan'],
+    ] as const) {
+      const created = await prepareOpenCodeSession(client, { sessionID: null, appSessionId: null,
+        directory: projectDir, permissionMode, permissionModeExplicit: explicit,
+      }, AbortSignal.timeout(5000));
+      assert.equal((await client.session.get({ sessionID: created.id })).agent, expected);
+    }
+  });
+});
+
+for (const failure of ['agentSwitchFailures', 'metadataUpdateFailures']) {
+  test(`leaving plan preserves recovery state across ${failure} and retry`, async () => {
+    await withNativeClient({ [failure]: 1, sessions: {
+      ses_plan: { agent: 'plan', metadata: { cloudcliPreviousAgent: 'reviewer', unrelated: 'keep' } },
+    } }, async (client) => {
+      const input = { sessionID: 'ses_plan', appSessionId: 'app', directory: projectDir,
+        permissionMode: 'default', permissionModeExplicit: true };
+      await assert.rejects(prepareOpenCodeSession(client, input, AbortSignal.timeout(5000)));
+      const failed = await client.session.get({ sessionID: 'ses_plan' });
+      assert.equal(failed.agent, failure === 'agentSwitchFailures' ? 'plan' : 'reviewer');
+      assert.equal(failed.metadata?.cloudcliPreviousAgent, 'reviewer');
+      await prepareOpenCodeSession(client, input, AbortSignal.timeout(5000));
+      const resumed = await client.session.get({ sessionID: 'ses_plan' });
+      assert.equal(resumed.agent, 'reviewer');
+      assert.equal(resumed.metadata?.cloudcliPreviousAgent, null);
+      assert.equal(resumed.metadata?.unrelated, 'keep');
+    });
+  });
+}
+
+test('native model variants survive passive resume and an explicit default can reset them', async () => {
+  await withNativeClient({ modelSwitchFailures: 1, sessions: {
+    ses_model: { agent: 'reviewer', model: { providerID: 'custom', id: 'reasoner', variant: 'deep' } },
+  } }, async (client) => {
+    const input = { sessionID: 'ses_model', appSessionId: 'app', directory: projectDir,
+      permissionMode: 'default', permissionModeExplicit: false, model: { providerID: 'custom', id: 'reasoner' } };
+    await assert.rejects(prepareOpenCodeSession(client, input, AbortSignal.timeout(5000)));
+    assert.equal((await client.session.get({ sessionID: 'ses_model' })).model?.variant, 'deep');
+    await prepareOpenCodeSession(client, input, AbortSignal.timeout(5000));
+    assert.equal((await client.session.get({ sessionID: 'ses_model' })).model?.variant, 'deep');
+    await prepareOpenCodeSession(client, { ...input, model: { ...input.model, variant: 'default' } }, AbortSignal.timeout(5000));
+    assert.equal((await client.session.get({ sessionID: 'ses_model' })).model?.variant, 'default');
+    await prepareOpenCodeSession(client, { ...input, model: { providerID: 'custom', id: 'other' } }, AbortSignal.timeout(5000));
+    assert.equal((await client.session.get({ sessionID: 'ses_model' })).model?.variant, undefined);
+  });
+});
+
+test('an explicit default effort reaches the native model switch', async () => {
+  const turn = await runTurn({ resumeSessionId: 'ses_effort', effort: 'default', scenario: {
+    sessions: { ses_effort: { agent: 'build', model: { providerID: 'github-copilot', id: 'gpt-5.6-terra', variant: 'deep' } } }, steps: [],
+  } });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/model$/)?.body.model.variant, 'default');
+});
 
 test('a native plan session is preserved on passive resume', async () => {
   const turn = await runTurn({

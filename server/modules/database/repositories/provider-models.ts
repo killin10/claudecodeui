@@ -227,15 +227,15 @@ export const providerModelsDb = {
         return null;
       }
 
-      // The effort is cleared alongside the model because it was chosen for the
-      // deleted model; replaced sessions resume on the fallback model's default.
+      // Clear effort only when switching models. Removing a custom label for
+      // an available native model preserves that session's model and variant.
       const replace = db.prepare(`
         UPDATE sessions
         SET model = ?, effort = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE provider = ? AND model = ? AND (? IS NULL OR project_path = ?)
+        WHERE provider = ? AND model = ? AND (? IS NULL OR project_path = ?) AND model <> ?
       `);
       if (typeof fallbackModelId === 'string') {
-        replace.run(fallbackModelId, provider, row.model_id, null, null);
+        replace.run(fallbackModelId, provider, row.model_id, null, null, fallbackModelId);
       } else {
         const directories = this.getCustomModelSessionDirectories(provider, row.model_id);
         // A new project may have started using the model during native catalog
@@ -243,7 +243,7 @@ export const providerModelsDb = {
         for (const directory of directories) {
           const fallback = fallbackModelId.get(directory);
           if (fallback === undefined) throw new Error('Model usage changed during deletion. Please retry.');
-          replace.run(fallback, provider, row.model_id, directory, directory);
+          replace.run(fallback, provider, row.model_id, directory, directory, fallback);
         }
       }
 

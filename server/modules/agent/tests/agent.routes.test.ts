@@ -223,13 +223,17 @@ test('Agent route reuses a matching checkout without cloning or deleting it', as
 
 test('Agent route starts opencode on the catalog default when the request names no model', async () => {
   const opencodeCalls: { model?: string }[] = [];
+  const catalogDirectories: Array<string | undefined> = [];
 
   await withAgentServer(createDependencies({
     fileSystem: {
       access: async () => undefined,
     } as unknown as AgentDependencies['fileSystem'],
     models: {
-      getProviderModels: async (provider: string) => ({ OPTIONS: [], DEFAULT: `${provider}-catalog-default` }),
+      getProviderModels: async (provider: string, directory?: string) => {
+        catalogDirectories.push(directory);
+        return { OPTIONS: [], DEFAULT: directory === '/home/test/project' ? `${provider}-project-default` : 'home-default' };
+      },
     } as unknown as AgentDependencies['models'],
     queryOpenCode: (async (_prompt: string, options: { model?: string }) => {
       opencodeCalls.push(options);
@@ -248,7 +252,8 @@ test('Agent route starts opencode on the catalog default when the request names 
     assert.equal(response.status, 200);
   });
 
-  assert.deepEqual(opencodeCalls.map((call) => call.model), ['opencode-catalog-default']);
+  assert.deepEqual(catalogDirectories, ['/home/test/project']);
+  assert.deepEqual(opencodeCalls.map((call) => call.model), ['opencode-project-default']);
 });
 
 test('Agent route starts codex on the catalog default when the request names no model', async () => {

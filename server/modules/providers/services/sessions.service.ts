@@ -6,6 +6,7 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
+import { listBusyOpenCodeCliSessions } from '@/modules/providers/services/opencode-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
 import type {
   BackgroundTaskSummary,
@@ -210,16 +211,20 @@ export const sessionsService = {
           canInterrupt: false,
           tasks,
         });
+        runningById.set(sessionId, entries[entries.length - 1]);
       }
     }
 
-    // The chat-run registry only knows about turns CloudCLI drives itself, so
-    // without this a session working under the Claude CLI — including one
-    // CloudCLI spawned for its own Shell view — looks idle. A session already
-    // listed above keeps its richer entry.
-    for (const live of await listBusyClaudeCliSessions()) {
+    // External CLI turns have their own owner. Show their status, retaining
+    // richer app-owned entries and never exposing an interrupt for external work.
+    const [claude, opencode] = await Promise.all([listBusyClaudeCliSessions(), listBusyOpenCodeCliSessions()]);
+    const external = [
+      ...claude.map((live) => ({ ...live, provider: 'claude' as const, label: 'Claude' })),
+      ...opencode.map((live) => ({ ...live, provider: 'opencode' as const, label: 'OpenCode' })),
+    ];
+    for (const live of external) {
       const session = sessionsDb.getSessionByProviderSessionId(live.providerSessionId);
-      if (!session || runningById.has(session.session_id)) {
+      if (!session || session.provider !== live.provider || runningById.has(session.session_id)) {
         continue;
       }
 
@@ -231,7 +236,7 @@ export const sessionsService = {
         // There is no run here to abort: the turn belongs to a CLI process
         // CloudCLI does not own, so it can be reported but not interrupted.
         canInterrupt: false,
-        statusText: 'Running in the Claude CLI',
+        statusText: `Running in the ${live.label} CLI`,
       });
       runningById.set(session.session_id, entries[entries.length - 1]);
     }

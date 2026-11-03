@@ -14,6 +14,8 @@ export type ProviderModelOption = {
   description?: string;
   recordId?: number;
   isCustom?: boolean;
+  /** Native project configuration owns these levels; custom-label edits must not overwrite them. */
+  effortReadOnly?: boolean;
   effort?: {
     default?: string;
     values: {
