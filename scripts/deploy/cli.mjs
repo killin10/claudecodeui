@@ -49,6 +49,8 @@ async function main() {
       await fs.rm(p.plist, { force: true });
       await resolveRelease(p, 'previous');
       for (const name of ['current', 'previous']) await fs.rm(path.join(p.root, name), { force: true });
+      const cliLink = path.join(p.home, '.local/bin/cloudcli');
+      if (await exists(cliLink) && (await fs.lstat(cliLink)).isSymbolicLink() && path.resolve(path.dirname(cliLink), await fs.readlink(cliLink)) === path.join(p.bin, 'cloudcli')) await fs.rm(cliLink);
       for (const dir of [p.bin, p.releases]) await fs.rm(dir, { recursive: true, force: true });
       console.log('Service and releases removed. Configuration, logs, backups and application data retained.');
       return;

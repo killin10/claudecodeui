@@ -16,3 +16,6 @@ export { reapOrphanedOpenCodeServers } from './list/opencode/opencode-runtime.pr
 
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
+
+// Session control validates permission modes against the provider capability catalog.
+export { providerCapabilitiesService } from './services/provider-capabilities.service.js';

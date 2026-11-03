@@ -99,3 +99,27 @@ test('native smoke probe performs SQLite, bcrypt and a real PTY operation', asyn
   const root = fileURLToPath(new URL('../../..', import.meta.url));
   await runNativeChecks(root, { node: process.execPath, path: process.env.PATH });
 });
+
+test('cloudcli follows current release and preserves cwd, environment and literal arguments', async (t) => {
+  const p = await fixture(t);
+  const entry = 'dist-server/server/modules/cli/cli.js';
+  for (const name of ['old', 'new']) {
+    const release = path.join(p.releases, name);
+    await fs.mkdir(path.dirname(path.join(release, entry)), { recursive: true });
+    await fs.writeFile(path.join(release, entry), `console.log(JSON.stringify({version:'${name}',cwd:process.cwd(),args:process.argv.slice(2),key:process.env.CLOUDCLI_API_KEY}))`);
+    await selectRelease(p, 'current', release);
+    const result = JSON.parse(execFileSync(path.join(p.home, '.local/bin/cloudcli'), ['session', 'send', '--message', '$(literal) a b'], {
+      cwd: p.home, env: { PATH: '/usr/bin:/bin', CLOUDCLI_API_KEY: 'test-key' }, encoding: 'utf8',
+    }));
+    assert.equal(result.version, name); assert.equal(result.cwd, p.home); assert.equal(result.key, 'test-key');
+    assert.deepEqual(result.args, ['session', 'send', '--message', '$(literal) a b']);
+  }
+});
+
+test('installer refuses to overwrite an unrelated cloudcli executable', async (t) => {
+  const p = await fixture(t);
+  const file = path.join(p.home, '.local/bin/cloudcli');
+  await fs.unlink(file); await fs.writeFile(file, 'user owned');
+  await assert.rejects(installCommands(p, scriptDir), /Refusing to overwrite/);
+  assert.equal(await fs.readFile(file, 'utf8'), 'user owned');
+});

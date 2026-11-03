@@ -135,6 +135,7 @@ Usage:
   cloudcli [command] [options]
 
 Commands:
+  session <command>        Manage sessions via the running server (session --help)
   start            Start the CloudCLI server (default)
   sandbox          Manage Docker sandbox environments
   browser-use-mcp  Run Browser MCP stdio server

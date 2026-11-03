@@ -1676,3 +1676,20 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+/** A durable CLI/API submission. Its ID is stable across queueing and execution; terminal states are never replayed automatically. */
+export type SessionSubmission = {
+  submissionId: string;
+  sessionId: string;
+  userId: number;
+  content: string;
+  options: Record<string, unknown>;
+  state: 'queued' | 'running' | 'waiting-for-input' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+  result: NormalizedMessage[];
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Parsed named CLI options shared by the session parser, HTTP client and command executor; undefined means omitted. */
+export type SessionCliOptions = Record<string, string | boolean | undefined>;

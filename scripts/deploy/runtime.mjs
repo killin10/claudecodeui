@@ -8,6 +8,7 @@ export function shellLauncher(node, script, home) {
 }
 
 export async function installCommands(p, source) {
+  await checkCliLink(p);
   const { runtime } = await readConfig(p);
   for (const entry of await fs.readdir(source, { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith('.mjs') && entry.name !== 'deploy.mjs') {
@@ -17,11 +18,12 @@ export async function installCommands(p, source) {
       await fs.rename(temp, destination);
     }
   }
-  for (const [name, script] of [['cloudcli-service', 'cli.mjs'], ['launch.sh', 'launch.mjs']]) {
+  for (const [name, script] of [['cloudcli-service', 'cli.mjs'], ['launch.sh', 'launch.mjs'], ['cloudcli', 'cloudcli.mjs']]) {
     const temp = path.join(p.bin, `${name}.next`);
     await fs.writeFile(temp, shellLauncher(runtime.node, path.join(p.bin, script), p.home), { mode: 0o700 });
     await fs.rename(temp, path.join(p.bin, name));
   }
+  await installCliLink(p);
 }
 
 export async function launch(p) {
@@ -51,4 +53,22 @@ export async function launch(p) {
   env.PATH = runtime.path;
   process.chdir(release);
   process.execve(runtime.node, [runtime.node, path.join(release, 'dist-server/server/index.js')], env);
+}
+
+
+async function checkCliLink(p) {
+  const file = path.join(p.home, '.local/bin/cloudcli');
+  if (!await exists(file)) return;
+  const stat = await fs.lstat(file);
+  if (!stat.isSymbolicLink() || path.resolve(path.dirname(file), await fs.readlink(file)) !== path.join(p.bin, 'cloudcli')) {
+    throw new Error(`Refusing to overwrite existing command: ${file}`);
+  }
+}
+
+async function installCliLink(p) {
+  await checkCliLink(p);
+  const directory = path.join(p.home, '.local/bin');
+  await fs.mkdir(directory, { recursive: true });
+  const file = path.join(directory, 'cloudcli');
+  if (!await exists(file)) await fs.symlink(path.join(p.bin, 'cloudcli'), file);
 }

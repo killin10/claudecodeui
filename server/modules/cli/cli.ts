@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
-// The CLI can reach shared environment constants through its composition root,
-// so finish the root environment bootstrap before loading that import graph.
-// eslint-disable-next-line boundaries/no-unknown
-import '../../load-env.js';
-
 async function runCli(): Promise<number> {
+  if (process.argv[2] === 'session') {
+    const { runSessionCli } = await import('./session-cli.js');
+    return runSessionCli(process.argv.slice(3));
+  }
+  // Bootstrap the server environment only for the original server commands.
+  // eslint-disable-next-line boundaries/no-unknown
+  await import('../../load-env.js');
   const { createCliApplication } = await import('./index.js');
   return createCliApplication().run(process.argv.slice(2));
 }

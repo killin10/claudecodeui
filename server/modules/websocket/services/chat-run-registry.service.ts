@@ -58,6 +58,7 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  * path all consult it instead of asking each provider runtime individually.
  */
 const runs = new Map<string, ChatRun>();
+const blockedSessions = new Set<string>();
 
 /**
  * Answers whether a completed run must stay registered a while longer. Set by
@@ -179,6 +180,14 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * regardless of which provider runtime produced them.
  */
 export const chatRunRegistry = {
+  /** Session-control holds this reservation while archiving or removing native data. */
+  reserveMutation(sessionId: string): boolean {
+    if (blockedSessions.has(sessionId)) return false;
+    blockedSessions.add(sessionId);
+    return true;
+  },
+  releaseMutation(sessionId: string): void { blockedSessions.delete(sessionId); },
+  isMutationReserved(sessionId: string): boolean { return blockedSessions.has(sessionId); },
   /** Installs the check that keeps a completed run registered while its session still has background work. */
   setRetentionGuard(guard: (appSessionId: string) => boolean): void {
     retainCompletedRun = guard;
@@ -201,6 +210,7 @@ export const chatRunRegistry = {
     connection: RealtimeClientConnection | null;
     userId: string | number | null;
   }): ChatRun | null {
+    if (blockedSessions.has(input.appSessionId)) return null;
     const existing = runs.get(input.appSessionId);
     if (existing && existing.status === 'running') {
       return null;

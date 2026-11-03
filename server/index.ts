@@ -56,6 +56,7 @@ import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
+import { createSessionControlRouter, submissionDispatcher } from './modules/session-control/index.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
 // The server source runs from /server, while the compiled output runs from /dist-server/server.
@@ -148,6 +149,9 @@ app.get('/health', (req, res) => {
         version: RUNNING_VERSION
     });
 });
+
+// Session automation authenticates a per-user UI API key, independently of the legacy API_KEY gate.
+app.use('/api/session-control/v1', createSessionControlRouter());
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
@@ -385,6 +389,7 @@ async function startServer() {
             // Sends anything that came due while the server was not running,
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);
+            submissionDispatcher.start();
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
@@ -396,6 +401,7 @@ async function startServer() {
         closeScheduledMessageDispatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            submissionDispatcher.close();
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {
