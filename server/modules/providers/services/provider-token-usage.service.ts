@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import { readOpenCodeUsage } from '@/modules/providers/list/opencode/opencode-usage.provider.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord } from '@/shared/types.js';
-import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
+import { AppError, getOpenCodeDatabasePath, readCodexContextUsage } from '@/shared/utils.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -43,6 +43,7 @@ type TokenUsageResult = {
     input: number;
     output: number;
   };
+  contextUnavailable?: boolean;
   unsupported?: boolean;
   message?: string;
 };
@@ -188,22 +189,7 @@ function findCodexTokenUsage(fileContent: string): TokenUsageResult | null {
         continue;
       }
 
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let totalTokens = 0;
-      if (tokenInfo.total_token_usage) {
-        inputTokens = readUsageNumber(tokenInfo.total_token_usage.input_tokens);
-        outputTokens = readUsageNumber(tokenInfo.total_token_usage.output_tokens);
-        totalTokens = readUsageNumber(tokenInfo.total_token_usage.total_tokens)
-          || inputTokens + outputTokens;
-      }
-      return {
-        used: totalTokens,
-        total: readUsageNumber(tokenInfo.model_context_window) || 200_000,
-        inputTokens,
-        outputTokens,
-        breakdown: { input: inputTokens, output: outputTokens },
-      };
+      return readCodexContextUsage(tokenInfo);
     } catch {
       // A provider may be writing the last JSONL line while this read happens.
     }
@@ -215,7 +201,6 @@ function findCodexTokenUsage(fileContent: string): TokenUsageResult | null {
 function emptyCodexTokenUsage(): TokenUsageResult {
   return {
     used: 0,
-    total: 200_000,
     inputTokens: 0,
     outputTokens: 0,
     breakdown: { input: 0, output: 0 },

@@ -92,7 +92,8 @@ export default function PermissionRequestsBanner({
         const rawInput = formatToolInputForDisplay(request.input);
         const alwaysPatterns = readContextPatterns(request.context, 'always');
         const requestedPatterns = readContextPatterns(request.context, 'patterns') ?? [];
-        const permissionEntry = alwaysPatterns ? null : buildClaudeToolPermissionEntry(request.toolName, rawInput);
+        const nativePersistence = (request.context as { approvalPersistence?: string } | undefined)?.approvalPersistence;
+        const permissionEntry = alwaysPatterns || nativePersistence ? null : buildClaudeToolPermissionEntry(request.toolName, rawInput);
         const settings = getClaudeSettings();
         const alreadyAllowed = permissionEntry ? settings.allowedTools.includes(permissionEntry) : false;
         const rememberLabel = alreadyAllowed ? 'Allow (saved)' : 'Allow & remember';
@@ -156,14 +157,21 @@ export default function PermissionRequestsBanner({
               >
                 Deny
               </ConfirmationAction>
-              {alwaysPatterns ? (
+              {nativePersistence === 'session' ? (
+                <ConfirmationAction
+                  variant="outline"
+                  onClick={() => handlePermissionDecision(request.requestId, { allow: true, rememberEntry: 'session' })}
+                >
+                  {t('chat:agentPrompts.allowForSession', { defaultValue: 'Allow for this session' })}
+                </ConfirmationAction>
+              ) : alwaysPatterns ? (
                 <ConfirmationAction
                   variant="outline"
                   onClick={() => handlePermissionDecision(request.requestId, { allow: true, rememberEntry: 'always' })}
                 >
                   {t('chat:agentPrompts.alwaysAllow', { defaultValue: 'Always allow' })}
                 </ConfirmationAction>
-              ) : (
+              ) : nativePersistence === 'none' ? null : (
                 <ConfirmationAction
                   variant="outline"
                   onClick={() => {

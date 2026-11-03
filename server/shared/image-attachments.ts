@@ -412,7 +412,7 @@ type CodexInputItem =
   | { type: 'local_image'; path: string };
 
 /**
- * Builds the Codex `runStreamed` input list: prompt text plus one
+ * Builds the internal Codex input list (mapped to native app-server items by the runtime): prompt text plus one
  * `local_image` item per attachment, resolved to absolute paths so the Codex
  * runtime can read them regardless of its own working directory handling.
  */

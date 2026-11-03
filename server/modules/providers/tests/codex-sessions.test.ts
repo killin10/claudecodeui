@@ -610,3 +610,31 @@ test('Codex history restores user prompts from typed item_completed rows', { con
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+for (const [eventType, expected] of [['turn_aborted', 'stopped'], ['task_complete', 'completed'], ['turn_failed', 'failed']]) {
+  test(`Codex child ${eventType} is terminal without a delivered parent answer`, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'codex-terminal-'));
+    const restore = patchHomeDir(home);
+    try {
+      const parent = await writeCodexTranscript(home, 'terminal-parent', home);
+      await writeFile(parent, [
+        { type: 'session_meta', payload: { id: 'terminal-parent', cwd: home } },
+        { type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn', arguments: '{}' } },
+        { type: 'event_msg', payload: { type: 'sub_agent_activity', kind: 'started', event_id: 'spawn', agent_thread_id: 'terminal-child' } },
+      ].map(row => JSON.stringify(row)).join('\n'));
+      await writeFile(path.join(path.dirname(parent), 'rollout-terminal-child.jsonl'), JSON.stringify({
+        type: 'event_msg', payload: { type: eventType },
+      }));
+      await withIsolatedDatabase(async () => {
+        sessionsDb.createAppSession('terminal-app', 'codex', home);
+        sessionsDb.assignProviderSessionId('terminal-app', 'terminal-parent');
+        await new CodexSessionSynchronizer().synchronize();
+        const result = await new CodexSessionsProvider().fetchHistory('terminal-app');
+        assert.equal(result.messages.find(row => row.toolName === 'Task')?.subagent?.status, expected);
+      });
+    } finally {
+      restore();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+}

@@ -18,7 +18,7 @@ export class CodexProviderAuth implements IProviderAuth {
   /**
    * Checks whether the Codex CLI that chats run is available, and which version
    * it is. That is the `@openai/codex` package CloudCLI depends on, which
-   * `@openai/codex-sdk` resolves from node_modules, not a `codex` on PATH.
+   * the app-server client resolves from node_modules, not a `codex` on PATH.
    */
   checkInstalled(): CliVersionProbe {
     let launcherPath: string;
@@ -31,7 +31,7 @@ export class CodexProviderAuth implements IProviderAuth {
   }
 
   /**
-   * Returns Codex SDK availability and credential status.
+   * Returns Codex CLI availability and credential status.
    */
   async getStatus(): Promise<ProviderAuthStatus> {
     const { installed, version: installedVersion } = this.checkInstalled();

@@ -1,568 +1,413 @@
-/**
- * OpenAI Codex SDK Integration
- * =============================
- *
- * This module provides integration with the OpenAI Codex SDK for non-interactive
- * chat sessions. It mirrors the Claude runtime adapter for consistency.
- *
- * ## Usage
- *
- * - codexRuntime.run(command, options, writer, context) - Execute a streamed prompt
- * - codexRuntime.abort(sessionId) - Cancel an active session
- */
+import { codexAppServer, type CodexRpcConnection } from '@/modules/providers/list/codex/codex-app-server.client.js';
+import { CodexRunEvents } from '@/modules/providers/list/codex/codex-events.provider.js';
+import { codexPermissions, CodexRunPermissions } from '@/modules/providers/list/codex/codex-permissions.provider.js';
+import { notifyBackgroundWorkCompleted, notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
+import { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from '@/shared/image-attachments.js';
+import { createCompleteMessage } from '@/shared/utils.js';
+import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/types.js';
 
-import { Codex } from '@openai/codex-sdk';
-import type { ModelReasoningEffort, Thread, ThreadOptions } from '@openai/codex-sdk';
-
-import {
-  appendFilesInputTag,
-  buildCodexInputItems,
-  normalizeImageDescriptors,
-  createCompleteMessage,
-  createNormalizedMessage,
-} from '@/shared/index.js';
-import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
-
-type ActiveCodexSession = {
-  thread: Thread;
-  codex: Codex;
-  status: 'running' | 'aborted' | 'completed';
-  abortController: AbortController;
-  startedAt: string;
-};
-
-const activeCodexSessions = new Map<string, ActiveCodexSession>();
-
-// Codex CLI requires non-whitespace stdin even when --image arguments are
-// present, so attachment-only turns need a small text instruction.
-const CODEX_IMAGE_ONLY_PROMPT = 'Please analyze the attached image(s).';
-
-/**
- * Item types whose in-flight updates are worth showing. These are the ones a
- * user waits on — a shell command's output, an MCP call, and the running plan.
- */
-const PROGRESSIVE_CODEX_ITEM_TYPES = new Set(['command_execution', 'mcp_tool_call', 'todo_list']);
-
-function readUsageNumber(value: unknown) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function extractCodexTokenBudget(event: AnyRecord) {
-  const info = event?.info || event?.payload?.info || event?.usage?.info;
-  const usage = info?.total_token_usage || event?.usage?.total_token_usage || event?.usage;
-  if (!usage || typeof usage !== 'object') {
-    return null;
+const active = new Map<string, CodexRun>();
+const MAX_RUN_MS = 4 * 60 * 60 * 1000;
+// Native agents can deliver their answer in a new parent turn after becoming idle.
+const BACKGROUND_DELIVERY_GRACE_MS = 5000;
+/** One owned thread tree; kept alive through background work and its delivery turns. */
+class CodexRun {
+  connection?: CodexRpcConnection;
+  readonly events: CodexRunEvents;
+  lifetime?: Promise<void>;
+  private reportedComplete = false;
+  private generation = 0;
+  private readonly output: ProviderRuntimeWriter;
+  private permissions?: CodexRunPermissions;
+  private threadId = '';
+  private stopped = false;
+  private mainComplete = false;
+  private failure?: Error;
+  private turnOptions?: AnyRecord;
+  private awaitingPlan = false;
+  private readonly subscribedChildren = new Set<string>();
+  private reconciling = false;
+  private childTerminalProbes = 0;
+  private finish?: () => void;
+  private settleTimer?: ReturnType<typeof setTimeout>;
+  constructor(private options: AnyRecord, private writer: ProviderRuntimeWriter, private context: ProviderRuntimeContext) {
+    this.output = { send: message => this.writer.send(message), userId: writer.userId };
+    this.events = new CodexRunEvents(this.output, context, () => this.sessionId, () => this.threadId);
   }
 
-  const inputTokens = readUsageNumber(usage.input_tokens);
-  const outputTokens = readUsageNumber(usage.output_tokens);
-  const used = readUsageNumber(usage.total_tokens) || inputTokens + outputTokens;
-
-  return {
-    used,
-    total: readUsageNumber(info?.model_context_window || event?.usage?.model_context_window) || 200000,
-    inputTokens,
-    outputTokens,
-    breakdown: {
-      input: inputTokens,
-      output: outputTokens,
-    },
-  };
-}
-
-/**
- * Transform Codex SDK event to WebSocket message format
- * @param {object} event - SDK event
- * @returns {object} - Transformed event for WebSocket
- */
-function transformCodexEvent(event: AnyRecord): AnyRecord {
-  // Map SDK event types to a consistent format
-  switch (event.type) {
-    case 'item.started':
-    case 'item.updated':
-    case 'item.completed':
-      const item = event.item;
-      if (!item) {
-        return { type: event.type, item: null };
-      }
-
-      // `itemId` is the SDK's stable per-item id. Carrying it through means an
-      // in-progress row and its later completion normalize to the same message
-      // id, so the client updates one transcript entry instead of appending a
-      // new one for every progress tick.
-      switch (item.type) {
-        case 'agent_message':
-          return {
-            type: 'item',
-            itemType: 'agent_message',
-            itemId: item.id,
-            message: {
-              role: 'assistant',
-              content: item.text
-            }
-          };
-
-        case 'reasoning':
-          return {
-            type: 'item',
-            itemType: 'reasoning',
-            itemId: item.id,
-            message: {
-              role: 'assistant',
-              content: item.text,
-              isReasoning: true
-            }
-          };
-
-        case 'command_execution':
-          return {
-            type: 'item',
-            itemType: 'command_execution',
-            itemId: item.id,
-            command: item.command,
-            output: item.aggregated_output,
-            exitCode: item.exit_code,
-            status: item.status
-          };
-
-        case 'file_change':
-          return {
-            type: 'item',
-            itemType: 'file_change',
-            itemId: item.id,
-            changes: item.changes,
-            status: item.status
-          };
-
-        case 'mcp_tool_call':
-          return {
-            type: 'item',
-            itemType: 'mcp_tool_call',
-            itemId: item.id,
-            server: item.server,
-            tool: item.tool,
-            arguments: item.arguments,
-            result: item.result,
-            error: item.error,
-            status: item.status
-          };
-
-        case 'web_search':
-          return {
-            type: 'item',
-            itemType: 'web_search',
-            itemId: item.id,
-            query: item.query
-          };
-
-        case 'todo_list':
-          return {
-            type: 'item',
-            itemType: 'todo_list',
-            itemId: item.id,
-            items: item.items
-          };
-
-        case 'error':
-          return {
-            type: 'item',
-            itemType: 'error',
-            itemId: item.id,
-            message: {
-              role: 'error',
-              content: item.message
-            }
-          };
-
-        default:
-          return {
-            type: 'item',
-            itemType: item.type,
-            itemId: item.id,
-            item: item
-          };
-      }
-
-    case 'turn.started':
-      return {
-        type: 'turn_started'
-      };
-
-    case 'turn.completed':
-      return {
-        type: 'turn_complete',
-        usage: event.usage
-      };
-
-    case 'turn.failed':
-      return {
-        type: 'turn_failed',
-        error: event.error
-      };
-
-    case 'thread.started':
-      return {
-        type: 'thread_started',
-        threadId: event.thread_id || event.id
-      };
-
-    case 'error':
-      return {
-        type: 'error',
-        message: event.message
-      };
-
-    default:
-      return {
-        type: event.type,
-        data: event
-      };
+  get sessionId(): string {
+    return this.options.sessionId || this.threadId;
   }
-}
 
-/**
- * Map permission mode to Codex SDK options
- * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
- * @returns {object} - { sandboxMode, approvalPolicy }
- */
-function mapPermissionModeToCodexOptions(permissionMode: string): Pick<ThreadOptions, 'sandboxMode' | 'approvalPolicy'> {
-  switch (permissionMode) {
-    case 'acceptEdits':
-      return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'never'
-      };
-    case 'bypassPermissions':
-      return {
-        sandboxMode: 'danger-full-access',
-        approvalPolicy: 'never'
-      };
-    case 'default':
-    default:
-      return {
-        sandboxMode: 'workspace-write',
-        // Current Codex CLI versions reject the retired `untrusted` policy.
-        // Keep sandboxing enabled; exec cannot grant interactive approval requests.
-        approvalPolicy: 'on-request'
-      };
-  }
-}
-
-/**
- * Execute a Codex query with streaming
- * @param {string} command - The prompt to send
- * @param {object} options - Options including cwd, sessionId, model, permissionMode
- * @param {WebSocket|object} ws - WebSocket connection or response writer
- */
-async function queryCodex(
-  command: string,
-  options: AnyRecord = {},
-  ws: ProviderRuntimeWriter,
-  context: ProviderRuntimeContext,
-) {
-  const {
-    sessionId,
-    sessionSummary,
-    cwd,
-    projectPath,
-    model,
-    effort,
-    images,
-    files,
-    permissionMode = 'default'
-  } = options;
-
-  // Callers pass the stable app session id; the SDK resumes threads with the
-  // provider-native id recorded on the session row.
-  const providerSessionId = context.resolveProviderSessionId(sessionId);
-
-  const resolvedModel = await context.resolveResumeModel(sessionId, model);
-
-  const workingDirectory = cwd || projectPath || process.cwd();
-  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
-  const catalog = await context.getProviderModels();
-  const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
-  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
-  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort as ModelReasoningEffort
-    : undefined;
-
-  let codex: Codex;
-  let thread: Thread;
-  // Provider-native thread id (starts as the resume id, or is captured from
-  // the stream for brand-new sessions).
-  let capturedSessionId = providerSessionId;
-  let sessionCreatedSent = false;
-  let terminalFailure: { message: string } | null = null;
-  // Codex surfaces API failures as streamed error items/turn.failed events, and
-  // then the SDK also throws "Codex Exec exited with code N: <stderr>" once the
-  // process dies. Showing both means the rendered error is followed by a raw
-  // stderr dump of unrelated CLI log lines, so the thrown wrapper is dropped
-  // when the stream already reported the failure.
-  let errorSurfaced = false;
-  const abortController = new AbortController();
-  // Session-map key: the app session id when the caller supplied one, else
-  // the provider-native thread id once captured (legacy/direct API callers).
-  const sessionKey = () => sessionId || capturedSessionId || null;
-
-  try {
-    codex = new Codex();
-
-    const threadOptions: ThreadOptions = {
-      workingDirectory,
-      skipGitRepoCheck: true,
-      sandboxMode,
-      approvalPolicy,
-      model: resolvedModel,
-      modelReasoningEffort: resolvedEffort,
-    };
-
-    if (providerSessionId) {
-      thread = codex.resumeThread(providerSessionId, threadOptions);
-    } else {
-      thread = codex.startThread(threadOptions);
-    }
-
-    const registerSession = (id: string | null) => {
-      if (!id) {
+  async run(command: string): Promise<void> {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let reconciliation: ReturnType<typeof setInterval> | undefined;
+    try {
+      const completed = new Promise<void>(resolve => {
+        this.finish = resolve;
+      });
+      deadline = setTimeout(() => this.fail(new Error('Codex run exceeded its four-hour time limit')), MAX_RUN_MS);
+      this.connection = await codexAppServer.connect();
+      if (this.stopped) {
         return;
       }
-      activeCodexSessions.set(id, {
-        thread,
-        codex,
-        status: 'running',
-        abortController,
-        startedAt: new Date().toISOString()
+      this.permissions = new CodexRunPermissions(this.connection, this.output, () => this.sessionId, this.options.permissionMode ?? 'default');
+      this.connection.onClose(error => {
+        if (!this.stopped) {
+          this.fail(error);
+        }
       });
-    };
-
-    if (sessionKey()) {
-      registerSession(sessionKey());
-    }
-
-    // Execute with streaming. Turns with image attachments send structured
-    // input items so Codex reads the images from their local asset paths.
-    const promptWithFiles = appendFilesInputTag(command, files);
-    const normalizedImages = normalizeImageDescriptors(images);
-    const promptWithImageFallback = !promptWithFiles.trim() && normalizedImages.length > 0
-      ? CODEX_IMAGE_ONLY_PROMPT
-      : promptWithFiles;
-    const turnInput = normalizedImages.length > 0
-      ? buildCodexInputItems(promptWithImageFallback, normalizedImages, workingDirectory)
-      : promptWithFiles;
-    const streamedTurn = await thread.runStreamed(turnInput, {
-      signal: abortController.signal
-    });
-
-    for await (const event of streamedTurn.events) {
-      // Capture thread/session id lazily from the stream (Codex emits this asynchronously).
-      if (event.type === 'thread.started') {
-        const discoveredSessionId = event.thread_id || null;
-        if (discoveredSessionId && !capturedSessionId) {
-          capturedSessionId = discoveredSessionId;
-          registerSession(sessionKey());
-
-          if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-            ws.setSessionId(capturedSessionId);
+      this.connection.onMessage(message => {
+        try {
+          if (message.method && message.id !== undefined) {
+            this.permissions!.handle(message.id, message.method, message.params ?? {});
+          } else if (message.method) {
+            this.notification(message.method, message.params ?? {});
           }
-
-          if (!providerSessionId && !sessionCreatedSent) {
-            sessionCreatedSent = true;
-            sendMessage(ws, createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'codex' }));
-          }
+        } catch (error) {
+          this.fail(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+      const turn = await this.prepare(command);
+      this.turnOptions = turn;
+      if (this.stopped) {
+        return;
+      }
+      if (this.failure) {
+        throw this.failure;
+      }
+      reconciliation = setInterval(() => {
+        void this.reconcileChildren();
+      }, 2000);
+      await this.connection.call('turn/start', turn);
+      await completed;
+      if (this.failure) {
+        throw this.failure;
+      }
+      if (!this.stopped) {
+        this.reportComplete();
+        if (this.events.hadChildren) {
+          notifyBackgroundWorkCompleted({ userId: this.writer.userId ?? null, provider: 'codex', sessionId: this.sessionId as AnyRecord['sessionId'], sessionName: this.options.sessionSummary });
         }
       }
-
-      // Check if session was aborted
-      if (abortController.signal.aborted) {
-        break;
+    } catch (error) {
+      if (!this.stopped) {
+        this.events.emit({ kind: 'error', content: error instanceof Error ? error.message : String(error) });
+        this.writer.send(createCompleteMessage({ provider: 'codex', sessionId: this.threadId || this.sessionId, exitCode: 1 }));
+        notifyRunFailed({ userId: this.writer.userId ?? null, provider: 'codex', sessionId: this.sessionId as AnyRecord['sessionId'], sessionName: this.options.sessionSummary, error });
       }
-      if (sessionKey()) {
-        const session = activeCodexSessions.get(sessionKey() || '');
-        if (session?.status === 'aborted') {
+    } finally {
+      clearTimeout(deadline);
+      clearInterval(reconciliation);
+      clearTimeout(this.settleTimer);
+      this.permissions?.resolved();
+      this.events.stopAll();
+      this.stopped = true;
+      await this.connection?.dispose();
+      if (active.get(this.sessionId) === this) {
+        active.delete(this.sessionId);
+      }
+    }
+  }
+
+  async abort(): Promise<void> {
+    this.stopped = true;
+    this.permissions?.resolved();
+    try {
+      await Promise.all([...this.events.activeTurns].map(([threadId, turnId]) => this.connection?.call('turn/interrupt', { threadId, turnId })));
+    } catch (error) {
+      console.warn('[Codex] Interrupt failed; closing the owned server:', error);
+    } finally {
+      this.connection?.close();
+      this.finish?.();
+    }
+  }
+
+  async stopTask(taskId: string): Promise<boolean> {
+    if (!this.connection || !this.events.tasks.has(taskId)) {
+      return false;
+    }
+    const terminal = this.events.terminals.get(taskId);
+    if (terminal) {
+      const result = await this.connection.call('thread/backgroundTerminals/terminate', terminal);
+      if (!result.terminated) {
+        return false;
+      }
+      this.events.finishTerminal(taskId, 'stopped');
+      this.checkComplete();
+      return true;
+    }
+    const turnId = this.events.activeTurns.get(taskId);
+    if (!turnId) {
+      // Metadata is local to this owned server; never resume an external thread to interrupt it.
+      const result = await this.connection.call('thread/read', { threadId: taskId, includeTurns: true });
+      const running = result.thread?.turns?.findLast((turn: AnyRecord) => turn.status === 'inProgress');
+      if (!running?.id) {
+        return false;
+      }
+      await this.connection.call('turn/interrupt', { threadId: taskId, turnId: running.id });
+    } else {
+      await this.connection.call('turn/interrupt', { threadId: taskId, turnId });
+    }
+    this.events.taskState(taskId, 'stopped');
+    this.checkComplete();
+    return true;
+  }
+  private async prepare(command: string): Promise<AnyRecord> {
+    const { sessionId, model, effort, files, images } = this.options;
+    const cwd = this.options.cwd || this.options.projectPath || process.cwd();
+    const providerSessionId = this.context.resolveProviderSessionId(sessionId);
+    const resolvedModel = await this.context.resolveResumeModel(sessionId, model);
+    const mode = this.options.permissionMode ?? 'default';
+    const sandbox = mode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write';
+    const approvalPolicy = mode === 'bypassPermissions' ? 'never' : 'on-request';
+    const catalog = await this.context.getProviderModels();
+    const selectedModel = resolvedModel || catalog.DEFAULT;
+    const allowedEfforts = catalog.OPTIONS.find(option => option.value === selectedModel)?.effort?.values.map(value => value.value) ?? [];
+    const resolvedEffort = allowedEfforts.includes(effort) ? effort : null;
+    const result = await this.connection!.call(providerSessionId ? 'thread/resume' : 'thread/start', {
+      ...(providerSessionId ? { threadId: providerSessionId, excludeTurns: true } : {}),
+      model: selectedModel, cwd, sandbox, approvalPolicy, approvalsReviewer: mode === 'auto' ? 'auto_review' : 'user',
+    });
+    if (!result.thread?.id) {
+      throw new Error('Codex returned no thread id');
+    }
+    this.threadId = result.thread.id;
+    active.set(this.sessionId, this);
+    this.writer.setSessionId?.(this.threadId);
+    if (!providerSessionId) {
+      this.events.emit({ kind: 'session_created', sessionId: this.threadId, newSessionId: this.threadId });
+    }
+    const normalizedImages = normalizeImageDescriptors(images);
+    const text = appendFilesInputTag(command, files) || (normalizedImages.length ? 'Please analyze the attached image(s).' : command);
+    const input = buildCodexInputItems(text.trim() ? text : 'Please analyze the attached image(s).', normalizedImages, cwd)
+      .map(item => item.type === 'text' ? { ...item, text_elements: [] } : { ...item, type: 'localImage' });
+    return {
+      threadId: this.threadId, input, model: selectedModel, effort: resolvedEffort,
+      collaborationMode: { mode: mode === 'plan' ? 'plan' : 'default', settings: { model: selectedModel, reasoning_effort: resolvedEffort, developer_instructions: null } },
+    };
+  }
+
+  private notification(method: string, params: AnyRecord): void {
+    if (method === 'serverRequest/resolved') {
+      this.permissions?.resolved(params.requestId);
+    }
+    this.events.handle(method, params);
+    if (method === 'turn/started' && params.threadId === this.threadId) {
+      this.mainComplete = false;
+      this.generation++;
+    }
+    if (method === 'turn/completed') {
+      this.permissions?.resolved(undefined, params.threadId);
+      if (params.threadId !== this.threadId && this.events.taskCards.has(params.threadId)) {
+        void this.refreshFinishedChild(params.threadId);
+      }
+      if (params.threadId === this.threadId) {
+        if (params.turn.status === 'completed') {
+          void this.completeTurn(this.generation).catch(error => this.fail(error));
+        } else {
+          this.fail(new Error(params.turn.error?.message ?? `Codex turn ${params.turn.status}`));
+        }
+      }
+    }
+    if (method === 'error' && !params.willRetry && (!params.threadId || params.threadId === this.threadId)) {
+      this.fail(new Error(params.error?.message ?? 'Codex error'));
+    }
+    this.checkComplete();
+  }
+  private async reconcileChildren(): Promise<void> {
+    if (this.reconciling || this.stopped || !this.connection) {
+      return;
+    }
+    this.reconciling = true;
+    try {
+      for (const [threadId, task] of [...this.events.tasks]) {
+        if (task.taskType !== 'agent') {
+          continue;
+        }
+        if (this.stopped) {
           break;
         }
-      }
-
-      // Progress events used to be dropped, so a long shell command or a
-      // growing plan showed nothing until it finished. They are forwarded now;
-      // every item carries a stable id, so the client replaces the row it
-      // already has rather than stacking a new one per tick. Text items are
-      // still skipped mid-flight because assistant prose arrives through the
-      // separate streaming path.
-      if (
-        (event.type === 'item.started' || event.type === 'item.updated')
-        && !PROGRESSIVE_CODEX_ITEM_TYPES.has(event.item?.type)
-      ) {
-        continue;
-      }
-
-      const transformed = transformCodexEvent(event);
-      if (transformed.type === 'error' || transformed.itemType === 'error') {
-        errorSurfaced = true;
-      }
-
-      // Normalize the transformed event into NormalizedMessage(s) via adapter
-      const normalizedMsgs = context.normalizeMessage(transformed, capturedSessionId || sessionId || null);
-      for (const msg of normalizedMsgs) {
-        sendMessage(ws, msg);
-      }
-
-      if (event.type === 'turn.failed' && !terminalFailure) {
-        terminalFailure = event.error || new Error('Turn failed');
-        errorSurfaced = true;
-        // Notifications are app-facing, so they carry the app session id.
-        notifyRunFailed({
-          userId: ws?.userId || null,
-          provider: 'codex',
-          sessionId: sessionId || capturedSessionId || null,
-          sessionName: sessionSummary,
-          error: terminalFailure
+        const subscribe = !this.subscribedChildren.has(threadId);
+        const result = await this.connection.call(subscribe ? 'thread/resume' : 'thread/read', {
+          threadId, ...(subscribe ? { excludeTurns: true } : { includeTurns: false }),
         });
-      }
-
-      // Extract and send token usage if available (normalized to match Claude format)
-      if (event.type === 'turn.completed') {
-        const tokenBudget = extractCodexTokenBudget(event);
-        if (tokenBudget) {
-          sendMessage(ws, createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget, sessionId: capturedSessionId || sessionId || null, provider: 'codex' }));
+        this.subscribedChildren.add(threadId);
+        const status = result.thread?.status?.type;
+        if (status === 'idle') {
+          this.events.taskState(threadId, 'completed');
+        }
+        if (status === 'systemError') {
+          this.events.taskState(threadId, 'failed');
         }
       }
+      await this.refreshAllTerminals();
+      this.checkComplete();
+    } catch (error) {
+      if (!this.stopped) {
+        console.warn('[Codex] Child reconciliation failed:', error);
+      }
+    } finally {
+      this.reconciling = false;
     }
+  }
 
-    // Send the terminal completion event — skipped for aborted runs, whose
-    // terminal `complete` (aborted: true) was already sent by abort-session.
-    const runSession = activeCodexSessions.get(sessionKey() || '');
-    const runAborted = runSession?.status === 'aborted' || abortController.signal.aborted;
-    if (!runAborted) {
-      sendMessage(ws, createCompleteMessage({
-        provider: 'codex',
-        sessionId: capturedSessionId || sessionId || null,
-        actualSessionId: capturedSessionId || thread.id || sessionId || null,
-        exitCode: terminalFailure ? 1 : 0,
-      }));
-      if (!terminalFailure) {
-        notifyRunStopped({
-          userId: ws?.userId || null,
-          provider: 'codex',
-          sessionId: sessionId || capturedSessionId || null,
-          sessionName: sessionSummary,
-          stopReason: 'completed'
-        });
+  canContinue(nativeId: string | null): boolean {
+    return this.mainComplete && !this.awaitingPlan && !this.stopped && !this.failure && nativeId === this.threadId;
+  }
+
+  async continueRun(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
+    this.mainComplete = false;
+    this.generation++;
+    this.reportedComplete = false;
+    clearTimeout(this.settleTimer);
+    this.settleTimer = undefined;
+    this.options = options;
+    this.writer = writer;
+    this.context = context;
+    this.permissions = new CodexRunPermissions(this.connection!, this.output, () => this.sessionId, options.permissionMode ?? 'default');
+    try {
+      this.turnOptions = await this.prepare(command);
+      await this.connection!.call('turn/start', this.turnOptions);
+    } catch (error) {
+      this.fail(error instanceof Error ? error : new Error(String(error)));
+    }
+    await this.lifetime;
+  }
+  private async completeTurn(generation: number): Promise<void> {
+    await this.refreshAllTerminals();
+    if (generation !== this.generation || this.stopped) {
+      return;
+    }
+    this.mainComplete = true;
+    this.offerPlan();
+    if (!this.awaitingPlan) {
+      this.reportComplete();
+    }
+    this.checkComplete();
+  }
+
+  private reportComplete(): void {
+    if (this.reportedComplete) {
+      return;
+    }
+    this.reportedComplete = true;
+    this.writer.send(createCompleteMessage({ provider: 'codex', sessionId: this.threadId, actualSessionId: this.threadId, exitCode: 0 }));
+    notifyRunStopped({ userId: this.writer.userId ?? null, provider: 'codex', sessionId: this.sessionId as AnyRecord['sessionId'], sessionName: this.options.sessionSummary, stopReason: 'completed' });
+  }
+  private async refreshFinishedChild(threadId: string): Promise<void> {
+    this.childTerminalProbes++;
+    try {
+      await this.refreshTerminals(threadId);
+    } catch (error) {
+      if (!this.stopped) {
+        console.warn('[Codex] Finished child terminal lookup unavailable:', error);
+      }
+    } finally {
+      this.childTerminalProbes--;
+      this.checkComplete();
+    }
+  }
+  private async refreshAllTerminals(): Promise<void> {
+    const owners = new Set([this.threadId, ...this.events.terminals.values()].map(value => typeof value === 'string' ? value : value.threadId));
+    for (const [id, task] of this.events.tasks) {
+      if (task.taskType === 'agent') {
+        owners.add(id);
       }
     }
-
-  } catch (error) {
-    const session = activeCodexSessions.get(sessionKey() || '');
-    const runError = error instanceof Error ? error : new Error(String(error));
-    const wasAborted =
-      session?.status === 'aborted' ||
-      runError.name === 'AbortError' ||
-      runError.message.toLowerCase().includes('aborted');
-
-    if (!wasAborted) {
-      console.error('[Codex] Error:', error);
-
-      if (!errorSurfaced) {
-        // Check if Codex SDK is available for a clearer error message
-        const installed = await context.isProviderInstalled();
-        const errorContent = !installed
-          ? 'Codex CLI is not configured. Please set up authentication first.'
-          : runError.message;
-
-        sendMessage(ws, createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'codex' }));
-      }
-      sendMessage(ws, createCompleteMessage({
-        provider: 'codex',
-        sessionId: capturedSessionId || sessionId || null,
-        exitCode: 1,
-      }));
-      if (!terminalFailure) {
-        notifyRunFailed({
-          userId: ws?.userId || null,
-          provider: 'codex',
-          sessionId: sessionId || capturedSessionId || null,
-          sessionName: sessionSummary,
-          error
-        });
-      }
+    for (const id of owners) {
+      await this.refreshTerminals(id);
     }
-
-  } finally {
-    // Update session status
-    if (sessionKey()) {
-      const session = activeCodexSessions.get(sessionKey() || '');
-      if (session) {
-        session.status = session.status === 'aborted' ? 'aborted' : 'completed';
+  }
+  private async refreshTerminals(threadId: string): Promise<void> {
+    const terminals: AnyRecord[] = [];
+    let cursor: string | null = null;
+    const cursors = new Set<string>();
+    do {
+      const result = await this.connection!.call('thread/backgroundTerminals/list', { threadId, cursor, limit: 100 });
+      if (!Array.isArray(result?.data)) {
+        throw new Error('Invalid Codex background terminal list');
       }
+      terminals.push(...result.data);
+      cursor = result.nextCursor ?? null;
+      if (cursor && (cursors.has(cursor) || cursors.size >= 100)) {
+        throw new Error('Codex terminal pagination did not terminate');
+      }
+      if (cursor) {
+        cursors.add(cursor);
+      }
+    } while (cursor);
+    this.events.setTerminals(threadId, terminals);
+  }
+
+  private offerPlan(): void {
+    if (this.turnOptions?.collaborationMode.mode !== 'plan' || !this.events.proposedPlan || this.awaitingPlan) {
+      return;
     }
+    this.awaitingPlan = true;
+    this.permissions!.proposePlan(this.events.proposedPlan, decision => {
+      this.awaitingPlan = false;
+      this.mainComplete = false;
+      this.events.proposedPlan = undefined;
+      const previous = this.turnOptions!;
+      this.turnOptions = {
+        ...previous,
+        input: [{ type: 'text', text: decision.allow ? 'Implement the plan.' : decision.message || 'Please revise the plan.', text_elements: [] }],
+        collaborationMode: { ...previous.collaborationMode, mode: decision.allow ? 'default' : 'plan' },
+      };
+      void this.connection!.call('turn/start', this.turnOptions).catch(error => this.fail(error));
+    });
+  }
+
+  private checkComplete(): void {
+    if (!this.mainComplete || this.events.tasks.size || this.failure || this.awaitingPlan || this.childTerminalProbes > 0) {
+      clearTimeout(this.settleTimer);
+      this.settleTimer = undefined;
+      return;
+    }
+    if (this.settleTimer) {
+      return;
+    }
+    this.settleTimer = setTimeout(() => this.finish?.(), this.events.hadChildren ? BACKGROUND_DELIVERY_GRACE_MS : 0);
+  }
+
+  private fail(error: Error): void {
+    this.failure ??= error;
+    this.finish?.();
   }
 }
-
-/**
- * Abort an active Codex session
- * @param {string} sessionId - Session ID to abort
- * @returns {boolean} - Whether abort was successful
- */
-function abortCodexSession(sessionId: string) {
-  const session = activeCodexSessions.get(sessionId);
-
-  if (!session) {
-    return false;
-  }
-
-  session.status = 'aborted';
-  try {
-    session.abortController?.abort();
-  } catch (error) {
-    console.warn(`[Codex] Failed to abort session ${sessionId}:`, error);
-  }
-
-  return true;
-}
-
-/** Used by the providers module's CodexProvider to run and abort SDK turns. */
+/** Codex provider's main runtime and replayable approval/background-work gateways. */
 export const codexRuntime = {
-  run: queryCodex,
-  abort: abortCodexSession,
+  async run(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
+    const previous = active.get(options.sessionId);
+    if (previous?.canContinue(context.resolveProviderSessionId(options.sessionId))) {
+      await previous.continueRun(command, options, writer, context);
+      return;
+    }
+    if (previous) {
+      await previous.abort();
+      await previous.lifetime;
+    }
+    const run = new CodexRun(options, writer, context);
+    if (options.sessionId) {
+      active.set(options.sessionId, run);
+    }
+    run.lifetime = run.run(command);
+    await run.lifetime;
+  },
+  async abort(sessionId: string): Promise<boolean> {
+    const run = active.get(sessionId);
+    if (!run) {
+      return false;
+    }
+    await run.abort();
+    return true;
+  },
+  permissions: codexPermissions,
+  listBackgroundWork() {
+    return [...active].filter(([, run]) => run.events.tasks.size > 0).map(([sessionId, run]) => ({ sessionId, tasks: [...run.events.tasks.values()] }));
+  },
+  async stopBackgroundTask(sessionId: string, taskId: string): Promise<boolean> {
+    return await active.get(sessionId)?.stopTask(taskId) ?? false;
+  },
 };
-
-/**
- * Helper to send message via WebSocket or writer
- * @param {WebSocket|object} ws - WebSocket or response writer
- * @param {object} data - Data to send
- */
-function sendMessage(ws: ProviderRuntimeWriter, data: unknown) {
-  try {
-    if (ws.isWebSocketWriter) {
-      // The gateway writer handles stringification
-      ws.send(data);
-    } else if (typeof ws.send === 'function') {
-      // Raw WebSocket - stringify here
-      ws.send(JSON.stringify(data));
-    }
-  } catch (error) {
-    console.error('[Codex] Error sending message:', error);
-  }
-}
-
-// Clean up old completed sessions periodically
-const completedSessionCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  const maxAge = 30 * 60 * 1000; // 30 minutes
-
-  for (const [id, session] of activeCodexSessions.entries()) {
-    if (session.status !== 'running') {
-      const startedAt = new Date(session.startedAt).getTime();
-      if (now - startedAt > maxAge) {
-        activeCodexSessions.delete(id);
-      }
-    }
-  }
-}, 5 * 60 * 1000); // Every 5 minutes
-
-// Runtime cleanup should not keep focused tests or one-off scripts alive after
-// their provider work has completed.
-completedSessionCleanupTimer.unref?.();

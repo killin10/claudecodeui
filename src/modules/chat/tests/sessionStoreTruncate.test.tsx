@@ -236,3 +236,17 @@ it('replaces V2 snapshots in place, including a row previously loaded from histo
   assert.equal(messages.length, 4);
   assert.equal(messages[1].content, 'Complete reply');
 });
+
+describe('Codex progressive events', () => {
+  it('replaces the same native item instead of appending each text delta', async () => {
+    const { result } = await loadedStore();
+    const message = { ...row('codex-stream', 'Hello'), provider: 'codex' as const };
+    act(() => {
+      result.current.appendRealtime('session-1', message);
+      result.current.appendRealtime('session-1', { ...message, content: 'Hello world' });
+    });
+    const streamed = result.current.getMessages('session-1').filter(item => item.id === 'codex-stream');
+    assert.equal(streamed.length, 1);
+    assert.equal(streamed[0].content, 'Hello world');
+  });
+});

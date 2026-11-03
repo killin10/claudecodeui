@@ -200,3 +200,16 @@ test('a Claude question keeps Skip and its answers keyed by question text', () =
   });
   assert.equal(decisions[1].decision.allow, true);
 });
+
+
+test('Codex remembers permissions in its native session without writing Claude rules', () => {
+  const { getByText, queryByText, decisions, grants } = renderBanner([{
+    requestId: 'codex-approval', toolName: 'Bash', input: { command: 'npm test' },
+    context: { approvalPersistence: 'session' },
+  }], 'Codex');
+  assert.equal(queryByText('Allow & remember') === null, true);
+  assert.equal(queryByText(/Allow rule/) === null, true);
+  fireEvent.click(getByText('Allow for this session'));
+  assert.deepEqual(decisions, [{ ids: 'codex-approval', decision: { allow: true, rememberEntry: 'session' } }]);
+  assert.deepEqual(grants, []);
+});

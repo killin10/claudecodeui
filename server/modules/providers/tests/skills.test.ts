@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { OpenCodeSkillsProvider } from '@/modules/providers/list/opencode/opencode-skills.provider.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 
@@ -339,67 +340,29 @@ test('providerSkillsService lists claude user, project, and enabled plugin skill
  * This test covers Codex repository/user/system skill folders, including both
  * supported user roots, and verifies repository lookup across cwd, parent, and git root.
  */
-test('providerSkillsService lists codex repository, user, and system skills', { concurrency: false }, async () => {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-codex-'));
-  const repoRoot = path.join(tempRoot, 'repo');
-  const workspacePath = path.join(repoRoot, 'packages', 'app');
-  await fs.mkdir(path.join(repoRoot, '.git'), { recursive: true });
-  await fs.mkdir(workspacePath, { recursive: true });
-
-  const restoreHomeDir = patchHomeDir(tempRoot);
-  try {
-    await writeSkill(
-      path.join(workspacePath, '.agents', 'skills'),
-      'codex-cwd-dir',
-      'codex-cwd',
-      'Codex cwd skill',
-    );
-    await writeSkill(
-      path.join(repoRoot, 'packages', '.agents', 'skills'),
-      'codex-parent-dir',
-      'codex-parent',
-      'Codex parent skill',
-    );
-    await writeSkill(
-      path.join(repoRoot, '.agents', 'skills'),
-      'codex-root-dir',
-      'codex-root',
-      'Codex root skill',
-    );
-    await writeSkill(
-      path.join(tempRoot, '.agents', 'skills'),
-      'codex-user-dir',
-      'codex-user',
-      'Codex user skill',
-    );
-    await writeSkill(
-      path.join(tempRoot, '.codex', 'skills'),
-      'codex-home-user-dir',
-      'codex-home-user',
-      'Codex home user skill',
-    );
-    await writeSkill(
-      path.join(tempRoot, '.codex', 'skills', '.system'),
-      'codex-system-dir',
-      'codex-system',
-      'Codex system skill',
-    );
-
-    const skills = await providerSkillsService.listProviderSkills('codex', { workspacePath });
-    const byName = new Map(skills.map((skill) => [skill.name, skill]));
-
-    assert.equal(byName.get('codex-cwd')?.scope, 'repo');
-    assert.equal(byName.get('codex-parent')?.scope, 'repo');
-    assert.equal(byName.get('codex-root')?.scope, 'repo');
-    assert.equal(byName.get('codex-user')?.scope, 'user');
-    assert.equal(byName.get('codex-home-user')?.scope, 'user');
-    assert.equal(byName.get('codex-system')?.scope, 'system');
-    assert.equal(byName.get('codex-root')?.command, '$codex-root');
-  } finally {
-    restoreHomeDir();
-    await fs.rm(tempRoot, { recursive: true, force: true });
-  }
+test('Codex skills reflect native scopes, plugin ownership and disabled entries', async t => {
+  const scopes = ['repo', 'user', 'system', 'admin'];
+  t.mock.method(codexAppServer, 'connect', async () => ({
+    async call(method: string, params: any) {
+      assert.equal(method, 'skills/list');
+      assert.deepEqual(params.cwds, ['/project']);
+      return { data: [{ skills: [
+        ...scopes.map(scope => ({ name: `native-${scope}`, description: scope, scope, path: `/native/${scope}/SKILL.md`, enabled: true })),
+        { name: 'plugin-skill', description: 'Plugin', scope: 'user', path: '/cache/plugin/SKILL.md', enabled: true, pluginId: 'test-plugin' },
+        { name: 'disabled', scope: 'user', path: '/disabled/SKILL.md', enabled: false },
+      ], errors: [] }] };
+    },
+    async dispose() {},
+  }) as any);
+  const skills = await providerSkillsService.listProviderSkills('codex', { workspacePath: '/project' });
+  assert.equal(skills.length, 5);
+  for (const scope of scopes) assert.equal(skills.find(skill => skill.name === `native-${scope}`)?.scope, scope);
+  const plugin = skills.find(skill => skill.name === 'plugin-skill');
+  assert.equal(plugin?.scope, 'plugin');
+  assert.equal(plugin?.pluginId, 'test-plugin');
+  assert.equal(plugin?.command, '$plugin-skill');
 });
+
 
 /**
  * This test covers OpenCode skill lookup across cwd-to-git-root project folders
@@ -534,7 +497,7 @@ test('providerSkillsService lists cursor skills from its configured directories'
  * This test covers managed global skill creation for providers that own a
  * writable user skill directory.
  */
-test('providerSkillsService adds global skills for claude, codex, and cursor', { concurrency: false }, async () => {
+test('providerSkillsService adds global skills for claude, codex, and cursor', { concurrency: false }, async t => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-skills-create-'));
   const restoreHomeDir = patchHomeDir(tempRoot);
 
@@ -656,6 +619,10 @@ test('providerSkillsService adds global skills for claude, codex, and cursor', {
     const listedClaudeSkills = await providerSkillsService.listProviderSkills('claude');
     assert.equal(listedClaudeSkills.some((skill) => skill.name === 'claude-global'), true);
 
+    t.mock.method(codexAppServer, 'connect', async () => ({
+      async call() { return { data: [{ skills: [{ name: 'replacement', description: 'Replacement skill', path: createdCodexSkill.sourcePath, scope: 'user', enabled: true }], errors: [] }] }; },
+      async dispose() {},
+    }) as any);
     const listedCodexSkills = await providerSkillsService.listProviderSkills('codex');
     assert.equal(listedCodexSkills.some((skill) => skill.name === 'replacement'), true);
 

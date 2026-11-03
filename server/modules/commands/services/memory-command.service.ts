@@ -3,7 +3,7 @@ import type { access } from 'node:fs/promises';
 
 /** Commands routes use this to locate the provider's project instructions without creating files. */
 export async function readMemoryCommand(projectPath: string | undefined, provider: string, checkAccess: typeof access) {
-  const filename = provider === 'opencode' ? 'AGENTS.md' : 'CLAUDE.md';
+  const filename = ['opencode', 'codex'].includes(provider) ? 'AGENTS.md' : 'CLAUDE.md';
   if (!projectPath) {
     return { error: 'No project selected', message: `Please select a project to access its ${filename} file` };
   }

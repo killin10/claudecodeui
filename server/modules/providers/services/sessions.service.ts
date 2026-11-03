@@ -5,6 +5,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { listBusyCodexCliSessions } from '@/modules/providers/services/codex-cli-liveness.service.js';
 import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
 import { listBusyOpenCodeCliSessions } from '@/modules/providers/services/opencode-cli-liveness.service.js';
 import { sessionHistoryCache } from '@/modules/providers/services/session-history-cache.service.js';
@@ -217,8 +218,9 @@ export const sessionsService = {
 
     // External CLI turns have their own owner. Show their status, retaining
     // richer app-owned entries and never exposing an interrupt for external work.
-    const [claude, opencode] = await Promise.all([listBusyClaudeCliSessions(), listBusyOpenCodeCliSessions()]);
+    const [claude, opencode, codex] = await Promise.all([listBusyClaudeCliSessions(), listBusyOpenCodeCliSessions(), listBusyCodexCliSessions()]);
     const external = [
+      ...codex.map((live) => ({ ...live, provider: 'codex' as const, label: 'Codex' })),
       ...claude.map((live) => ({ ...live, provider: 'claude' as const, label: 'Claude' })),
       ...opencode.map((live) => ({ ...live, provider: 'opencode' as const, label: 'OpenCode' })),
     ];

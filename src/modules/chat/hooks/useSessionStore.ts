@@ -756,8 +756,8 @@ export function useSessionStore() {
       msg.sessionId === sessionId
         ? msg
         : { ...msg, sessionId };
-    // OpenCode V2 publishes evolving snapshots with stable message ids.
-    const previous = normalizedMessage.provider === 'opencode'
+    // OpenCode and Codex publish evolving snapshots with stable item ids.
+    const previous = ['opencode', 'codex'].includes(normalizedMessage.provider)
       ? slot.realtimeMessages.findIndex((message) => message.id === normalizedMessage.id)
       : -1;
     let updated = [...slot.realtimeMessages];

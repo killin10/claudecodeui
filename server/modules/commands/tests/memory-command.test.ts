@@ -20,3 +20,8 @@ test('memory reports missing project/files without masking access failures', asy
     throw Object.assign(new Error('denied'), { code: 'EACCES' });
   }), /denied/);
 });
+
+test('Codex memory opens AGENTS.md', async () => {
+  const result = await readMemoryCommand('/project', 'codex', async () => {});
+  assert.equal(result.path, '/project/AGENTS.md');
+});

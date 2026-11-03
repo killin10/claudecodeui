@@ -47,8 +47,8 @@ type ProviderCapabilities = {
 /**
  * The capability matrix mirrors what each runtime actually implements today:
  * - permission modes match the option sets accepted by each CLI/SDK.
- * - the Claude and OpenCode SDK integrations surface interactive permission
- *   requests (and the agent's questions); Cursor and Codex run without them.
+ * - the Claude, Codex and OpenCode integrations surface interactive permission
+ *   requests (and the agent's questions); Cursor runs without them.
  * - Cursor has no token usage endpoint support (its store.db has no usage rows).
  */
 const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
@@ -84,19 +84,16 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   },
   codex: {
     provider: 'codex',
-    permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
+    permissionModes: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
     defaultPermissionMode: 'default',
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,
-    supportsPermissionRequests: false,
+    supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsEffort: true,
     effortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    // Not from the Codex SDK, which only starts and resumes threads: both ride
-    // the same CLI's `app-server` protocol, whose `thread/fork` copies a
-    // thread up to a chosen turn. Editing is that fork plus a new prompt,
-    // which is how Codex's own IDE clients do it.
+    // Native thread/fork copies the transcript through the selected turn.
     supportsMessageEditing: true,
     supportsSessionForking: true,
   },

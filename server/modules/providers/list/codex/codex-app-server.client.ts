@@ -3,195 +3,186 @@ import { stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import readline from 'node:readline';
 
+import type { AnyRecord } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
-
-/**
- * Minimal JSON-RPC client for `codex app-server`.
- *
- * Codex ships two entry points and they expose different things. The
- * `@openai/codex-sdk` this app runs conversations through is a wrapper around
- * `codex exec`, and its whole surface is `startThread` and `resumeThread` —
- * there is no way to branch a thread or to resume one partway. The same
- * binary's `app-server` subcommand speaks JSON-RPC and does have that
- * primitive, `thread/fork`, which is what the Codex IDE clients build their
- * own "fork" and "edit an earlier message" on top of.
- *
- * So this is a second transport to the same CLI, opened only for the
- * operations the SDK cannot express. Everything else still goes through the
- * SDK.
- */
-
-/** How long a single request may take before the child is killed. */
-const REQUEST_TIMEOUT_MS = 30_000;
-
-type JsonRpcResponse = {
-  id?: number;
+const REQUEST_TIMEOUT_MS = 30000;
+type RpcMessage = {
+  id?: string | number;
+  method?: string;
+  params?: AnyRecord;
   result?: unknown;
-  error?: { code?: number; message?: string };
+  error?: {
+    code?: number;
+    message?: string;
+  };
 };
-
-/**
- * One fork of a Codex thread.
- *
- * `path` is returned by the server rather than reconstructed: the rollout
- * lands in today's date directory, not next to the file it was copied from,
- * so deriving it from the source path would be wrong roughly every day.
- */
-export type CodexThreadFork = {
+/** Fork service result; the native server owns the persisted transcript path. */
+type CodexThreadFork = {
   threadId: string;
   path: string;
 };
-
 /**
- * Resolves the `codex` launcher shipped in node_modules.
- *
- * Deliberately not the `codex` on PATH: a machine can have a second, older
- * install, and the protocol this speaks is only guaranteed against the
- * version this package depends on.
+ * One owned app-server process. Handles bidirectional requests and notifications;
+ * closing it rejects pending calls and notifies the run instead of hanging it.
  */
-function resolveCodexLauncher(): string {
-  const require_ = createRequire(import.meta.url);
-  try {
-    return require_.resolve('@openai/codex/bin/codex.js');
-  } catch {
-    throw new AppError('The Codex CLI package is not installed, so Codex conversations cannot be branched.', {
-      code: 'CODEX_APP_SERVER_UNAVAILABLE',
-      statusCode: 501,
+export class CodexRpcConnection {
+  private readonly child;
+  private readonly reader;
+  private nextId = 1;
+  private closed = false;
+  private diagnostic = '';
+  private readonly exited: Promise<void>;
+  private readonly pending = new Map<number, {
+    resolve(value: any): void;
+    reject(error: Error): void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private readonly listeners = new Set<(message: RpcMessage) => void>();
+  private readonly closeListeners = new Set<(error: Error) => void>();
+  private constructor() {
+    const launcher = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
+    this.child = spawn(process.execPath, [launcher, 'app-server'], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.exited = new Promise(resolve => this.child.once('close', () => resolve()));
+    this.reader = readline.createInterface({ input: this.child.stdout });
+    this.reader.on('line', line => this.receive(line));
+    this.child.on('error', error => this.close(error));
+    this.child.on('exit', (code, signal) => this.close(new Error(`Codex app-server exited (${code ?? signal}): ${this.diagnostic.trim().split('\n').at(-1) ?? ''}`)));
+    this.child.stdin.on('error', error => this.close(error));
+    this.child.stdout.on('error', error => this.close(error));
+    // Consume diagnostics without exposing credentials or unrelated CLI warnings.
+    this.child.stderr.on('data', chunk => {
+      this.diagnostic = (this.diagnostic + String(chunk)).slice(-2000);
     });
+    this.child.stderr.on('error', error => this.close(error));
   }
-}
-
-/**
- * Runs one exchange against a freshly spawned `codex app-server`.
- *
- * A process per operation rather than a pooled long-lived one: the handshake
- * costs a fraction of a second, forking happens at most once per user action,
- * and a shared child would need lifecycle handling — restarts, back-pressure,
- * a crash taking every pending fork with it — for no measurable gain next to
- * the model turn that follows.
- */
-async function withAppServer<T>(
-  run: (call: (method: string, params: unknown) => Promise<unknown>) => Promise<T>,
-): Promise<T> {
-  const launcher = resolveCodexLauncher();
-  const child = spawn(process.execPath, [launcher, 'app-server'], {
-    env: process.env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  // The server logs sandbox and skill warnings to stderr on every start. They
-  // are not failures and drowning the app log in them helps nobody, so stderr
-  // is only kept around to explain a spawn that dies.
-  let stderr = '';
-  child.stderr?.on('data', (chunk) => {
-    stderr = (stderr + String(chunk)).slice(-2000);
-  });
-
-  let nextRequestId = 1;
-  const pending = new Map<number, (response: JsonRpcResponse) => void>();
-  let exitReason: string | null = null;
-
-  const reader = readline.createInterface({ input: child.stdout });
-  reader.on('line', (line) => {
-    if (!line.trim()) {
-      return;
-    }
-    let message: JsonRpcResponse;
+  static async open(): Promise<CodexRpcConnection> {
+    const connection = new CodexRpcConnection();
     try {
-      message = JSON.parse(line) as JsonRpcResponse;
-    } catch {
-      // Server-to-client notifications and any non-JSON banner are not
-      // replies to anything this client asked for.
+      await connection.call('initialize', {
+        clientInfo: { name: 'cloudcli', title: 'CloudCLI', version: '1' },
+        capabilities: { experimentalApi: true },
+      });
+      connection.write({ method: 'initialized', params: {} });
+      return connection;
+    } catch (error) {
+      await connection.dispose();
+      throw error;
+    }
+  }
+
+  onMessage(listener: (message: RpcMessage) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  onClose(listener: (error: Error) => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  call(method: string, params: unknown): Promise<any> {
+    if (this.closed) {
+      return Promise.reject(new Error('Codex app-server is closed'));
+    }
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => this.close(new Error(`Codex app-server timed out: ${method}`)), REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+      this.write({ id, method, params: params as AnyRecord });
+    });
+  }
+
+  respond(id: string | number, result: unknown): void {
+    this.write({ id, result });
+  }
+
+  rejectRequest(id: string | number, message: string): void {
+    this.write({ id, error: { code: -32601, message } });
+  }
+
+  close(error = new Error('Codex app-server connection closed')): void {
+    if (this.closed) {
       return;
     }
-    if (typeof message.id !== 'number') {
-      return;
+    this.closed = true;
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
     }
-    pending.get(message.id)?.(message);
-    pending.delete(message.id);
-  });
-
-  const failPending = (reason: string) => {
-    exitReason = reason;
-    for (const resolve of pending.values()) {
-      resolve({ error: { message: reason } });
+    this.pending.clear();
+    this.reader.close();
+    this.child.kill();
+    for (const listener of this.closeListeners) {
+      listener(error);
     }
-    pending.clear();
-  };
+    this.listeners.clear();
+    this.closeListeners.clear();
+  }
 
-  child.on('error', (error) => failPending(error.message));
-  child.on('exit', (code, signal) => {
-    failPending(`codex app-server exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`);
-  });
-  // A child that dies mid-request leaves its pipes broken, and the next write
-  // raises EPIPE on the stream rather than at the call site. Without a
-  // listener that is an unhandled 'error' event, which takes the whole server
-  // down over one failed fork.
-  child.stdin?.on('error', (error) => failPending(error.message));
-  child.stdout?.on('error', (error) => failPending(error.message));
-  child.stderr?.on('error', () => {});
+  async dispose(): Promise<void> {
+    this.close();
+    const timer = setTimeout(() => this.child.kill('SIGKILL'), 2000);
+    try {
+      await this.exited;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-  const call = (method: string, params: unknown): Promise<unknown> =>
-    new Promise((resolve, reject) => {
-      if (exitReason) {
-        reject(new AppError(`Codex app-server is not running: ${exitReason}`, {
-          code: 'CODEX_APP_SERVER_UNAVAILABLE',
-          statusCode: 502,
-        }));
-        return;
+  private write(message: RpcMessage): void {
+    if (!this.closed) {
+      this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+    }
+  }
+
+  private receive(line: string): void {
+    let message: RpcMessage;
+    try {
+      const parsed = JSON.parse(line);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Invalid RPC envelope');
       }
-
-      const id = nextRequestId++;
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(new AppError(`Codex app-server did not answer "${method}" within ${REQUEST_TIMEOUT_MS}ms.`, {
-          code: 'CODEX_APP_SERVER_TIMEOUT',
-          statusCode: 504,
-        }));
-      }, REQUEST_TIMEOUT_MS);
-
-      pending.set(id, (response) => {
-        clearTimeout(timer);
-        if (response.error) {
-          reject(new AppError(response.error.message || `Codex app-server rejected "${method}".`, {
-            code: 'CODEX_APP_SERVER_ERROR',
-            statusCode: 502,
-            details: { method, rpcCode: response.error.code },
-          }));
-          return;
-        }
-        resolve(response.result);
-      });
-
-      child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    });
-
-  try {
-    // `capabilities` is deliberately empty. `thread/fork` with `lastTurnId` is
-    // in the stable protocol; only `beforeTurnId` and the turn-listing methods
-    // are gated behind `experimentalApi`, and neither is needed here.
-    await call('initialize', {
-      clientInfo: { name: 'cloudcli', title: 'CloudCLI', version: '1' },
-      capabilities: {},
-    });
-    child.stdin?.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} })}\n`);
-
-    return await run(call);
-  } catch (error) {
-    if (error instanceof AppError && exitReason) {
-      throw new AppError(`${error.message}${stderr ? ` — ${stderr.trim().split('\n').slice(-1)[0]}` : ''}`, {
-        code: error.code,
-        statusCode: error.statusCode,
-      });
+      message = parsed;
+    } catch {
+      this.close(new Error('Invalid JSON from Codex app-server'));
+      return;
     }
-    throw error;
-  } finally {
-    reader.close();
-    child.kill();
+    // Request ids are independent in each direction. A server request must
+    // never resolve one of our calls merely because its number happens to match.
+    if (message.method) {
+      try {
+        for (const listener of this.listeners) {
+          listener(message);
+        }
+      } catch (error) {
+        this.close(error instanceof Error ? error : new Error(String(error)));
+      }
+      return;
+    }
+    const entry = typeof message.id === 'number' ? this.pending.get(message.id) : undefined;
+    if (!entry) {
+      return;
+    }
+    this.pending.delete(message.id as number);
+    clearTimeout(entry.timer);
+    if (message.error) {
+      entry.reject(new Error(message.error.message || 'Codex request failed'));
+    } else {
+      entry.resolve(message.result);
+    }
   }
 }
-
+async function withAppServer<T>(run: (connection: CodexRpcConnection) => Promise<T>): Promise<T> {
+  const connection = await codexAppServer.connect();
+  try {
+    return await run(connection);
+  } finally {
+    await connection.dispose();
+  }
+}
+/** Native Codex transport used by runs, forks and skill discovery. */
 export const codexAppServer = {
+  connect: () => CodexRpcConnection.open(),
   /**
    * Copies a thread into a new one that ends at `lastTurnId`, or copies the
    * whole thread when it is omitted.
@@ -209,13 +200,18 @@ export const codexAppServer = {
     lastTurnId?: string;
     cwd: string;
   }): Promise<CodexThreadFork> {
-    return withAppServer(async (call) => {
+    return withAppServer(async (connection) => {
+      const call = connection.call.bind(connection);
       const result = await call('thread/fork', {
         threadId: input.threadId,
         ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
-      }) as { thread?: { id?: unknown; path?: unknown } } | undefined;
-
+      }) as {
+        thread?: {
+          id?: unknown;
+          path?: unknown;
+        };
+      } | undefined;
       const threadId = typeof result?.thread?.id === 'string' ? result.thread.id : '';
       const path = typeof result?.thread?.path === 'string' ? result.thread.path : '';
       if (!threadId || !path) {
@@ -224,7 +220,6 @@ export const codexAppServer = {
           statusCode: 502,
         });
       }
-
       // Confirmed rather than trusted: both callers are about to point a
       // database row at this file, and a row naming a transcript that is not
       // there is a session that can never be opened.
@@ -236,7 +231,6 @@ export const codexAppServer = {
           statusCode: 502,
         });
       }
-
       return { threadId, path };
     });
   },

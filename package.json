@@ -154,7 +154,6 @@
     "@iarna/toml": "^2.2.5",
     "@octokit/rest": "^22.0.0",
     "@openai/codex": "0.156.1",
-    "@openai/codex-sdk": "^0.156.0",
     "@opencode/client": "2.1.4",
     "@replit/codemirror-minimap": "^0.5.2",
     "@tailwindcss/typography": "^0.5.16",

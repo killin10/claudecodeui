@@ -4,6 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { readCodexOwnedThreadIds } from '@/modules/providers/services/codex-cli-liveness.service.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
@@ -22,6 +23,8 @@ import {
   createNormalizedMessage,
   generateMessageId,
   readObjectRecord,
+  readCodexContextUsage,
+  unifiedDiffToTexts,
   sliceTailPage,
   truncateSubagentActivity,
 } from '@/shared/utils.js';
@@ -773,47 +776,6 @@ type CodexFileChange = {
   newText: string;
 };
 
-/**
- * Rebuilds the before/after text of one unified diff.
- *
- * Only the hunks are available — never the whole file — so the reconstruction
- * keeps context lines in both sides and drops hunk headers. Feeding that pair
- * to the frontend's line differ reproduces exactly the additions, removals and
- * surrounding context the patch described, which is what Claude's `Edit` rows
- * already show.
- *
- * Exported for tests.
- */
-export function unifiedDiffToTexts(unifiedDiff: string): { oldText: string; newText: string } {
-  const oldLines: string[] = [];
-  const newLines: string[] = [];
-
-  for (const line of unifiedDiff.split('\n')) {
-    if (line.startsWith('@@') || line.startsWith('\\ No newline')) {
-      continue;
-    }
-    if (line.startsWith('+')) {
-      newLines.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith('-')) {
-      oldLines.push(line.slice(1));
-      continue;
-    }
-    const contextLine = line.startsWith(' ') ? line.slice(1) : line;
-    oldLines.push(contextLine);
-    newLines.push(contextLine);
-  }
-
-  // A unified diff ends with a newline, which would otherwise reconstruct as a
-  // phantom trailing blank line on both sides.
-  if (oldLines[oldLines.length - 1] === '' && newLines[newLines.length - 1] === '') {
-    oldLines.pop();
-    newLines.pop();
-  }
-
-  return { oldText: oldLines.join('\n'), newText: newLines.join('\n') };
-}
 
 /**
  * Splits a `*** Begin Patch` body into one change per file.
@@ -1053,6 +1015,7 @@ async function findFileWithSuffix(directory: string, suffix: string, depth: numb
 }
 
 type CodexSubagentTranscript = {
+  status?: SubagentInfo['status'];
   activity: SubagentActivity[];
   nickname?: string;
   agentPath?: string;
@@ -1108,6 +1071,15 @@ async function readCodexSubagentTranscript(filePath: string): Promise<CodexSubag
     if (entry.type === 'turn_context') {
       transcript.model = readNonEmptyString(payload.model) ?? transcript.model;
       continue;
+    }
+
+    if (entry.type === 'event_msg') {
+      const statuses: Record<string, SubagentInfo['status']> = {
+        task_started: 'running', task_complete: 'completed',
+        turn_aborted: 'stopped', turn_failed: 'failed',
+      };
+      const status = statuses[payload.type];
+      if (status) transcript.status = status;
     }
 
     if (entry.type !== 'response_item') {
@@ -1359,10 +1331,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     if (entry.type === 'event_msg') {
       if (payload.type === 'token_count' && payload.info) {
         const info = payload.info as AnyRecord;
-        if (info.total_token_usage) {
-          const usage = info.total_token_usage as AnyRecord;
-          tokenUsage = { used: usage.total_tokens || 0, total: info.model_context_window || 200000 };
-        }
+        tokenUsage = readCodexContextUsage(info);
         continue;
       }
 
@@ -1927,15 +1896,20 @@ async function attachCodexSubagentTranscripts(
         const transcript = await readCodexSubagentTranscript(rolloutPath);
         if (transcript.activity.length > 0) {
           record.message.subagentTools = transcript.activity
-            .slice(0, MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
+            .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
             .map(truncateSubagentActivity);
           subagent.activityCount = transcript.activity.length;
         }
+        subagent.status = transcript.status ?? subagent.status;
         subagent.name = transcript.nickname ?? agentName;
         subagent.model = transcript.model;
       }
     }
 
+    if (subagent.status === 'running' && record.agentThreadId) {
+      const owners = await readCodexOwnedThreadIds();
+      if (owners && !owners.has(record.agentThreadId)) subagent.status = 'stopped';
+    }
     subagent.name = subagent.name ?? agentName;
     record.message.subagent = subagent;
   }
@@ -1977,7 +1951,7 @@ export class CodexSessionsProvider implements IProviderSessions {
    * Branches the conversation at `keepThroughId` and moves the session onto
    * the branch.
    *
-   * Codex threads are append-only — the SDK resumes one at its tip and nothing
+   * Codex threads are append-only — ordinary resume continues at the tip and nothing
    * shortens it — so rewinding means copying the part being kept into a new
    * thread. The pre-edit thread stays on disk in full and is recorded as
    * superseded so the session indexer does not hand it back later.
@@ -2027,7 +2001,7 @@ export class CodexSessionsProvider implements IProviderSessions {
   /**
    * Normalizes a persisted Codex JSONL entry.
    *
-   * Live Codex SDK events are transformed before they reach normalizeMessage(),
+   * Live Codex app-server events are transformed before they reach normalizeMessage(),
    * while history entries already use the compact message/tool shape produced
    * by getCodexSessionMessages().
    */
@@ -2151,7 +2125,7 @@ export class CodexSessionsProvider implements IProviderSessions {
   }
 
   /**
-   * Normalizes either a Codex history entry or a transformed live SDK event.
+   * Normalizes either a Codex history entry or a transformed live app-server event.
    */
   normalizeMessage(rawMessage: unknown, sessionId: string | null): NormalizedMessage[] {
     const raw = readObjectRecord(rawMessage);

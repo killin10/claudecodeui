@@ -1590,3 +1590,67 @@ export function isOpenCodeNotFoundError(error: unknown): boolean {
   return cause?.status === 404 || readObjectRecord(error)?.status === 404
     || (error instanceof Error && error.name === 'NotFoundError');
 }
+
+//----------------- CODEX CONTEXT USAGE ------------
+/**
+ * Used by Codex history, live events and usage queries. Native `last` usage
+ * describes context occupancy; `total` is cumulative billing and must never
+ * be substituted. Older rollouts without a snapshot explicitly report unknown.
+ */
+export function readCodexContextUsage(value: unknown) {
+  const info = readObjectRecord(value);
+  if (!info) {
+    return null;
+  }
+  const usage = readObjectRecord(info.last_token_usage ?? info.last);
+  const number = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+  const inputTokens = number(usage?.input_tokens ?? usage?.inputTokens);
+  const outputTokens = number(usage?.output_tokens ?? usage?.outputTokens);
+  const total = number(info.model_context_window ?? info.modelContextWindow);
+  return {
+    used: number(usage?.total_tokens ?? usage?.totalTokens) || inputTokens + outputTokens,
+    ...(total > 0 ? { total } : {}),
+    inputTokens,
+    outputTokens,
+    breakdown: { input: inputTokens, output: outputTokens },
+    ...(!usage ? { contextUnavailable: true } : {}),
+  };
+}
+
+/** Reconstructs diff hunks for Codex live and historical file-change cards. */
+export function unifiedDiffToTexts(unifiedDiff: string): { oldText: string; newText: string } {
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+
+  const lines = unifiedDiff.split('\n');
+  const firstHunk = lines.findIndex(line => line.startsWith('@@'));
+  for (const [index, line] of lines.entries()) {
+    if (line.startsWith('@@') || line.startsWith('\\ No newline')) {
+      continue;
+    }
+    // Header-like text inside a hunk is file content, not diff metadata.
+    if (index < firstHunk && (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('diff --git ') || line.startsWith('index '))) {
+      continue;
+    }
+    if (line.startsWith('+')) {
+      newLines.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith('-')) {
+      oldLines.push(line.slice(1));
+      continue;
+    }
+    const contextLine = line.startsWith(' ') ? line.slice(1) : line;
+    oldLines.push(contextLine);
+    newLines.push(contextLine);
+  }
+
+  // A unified diff ends with a newline, which would otherwise reconstruct as a
+  // phantom trailing blank line on both sides.
+  if (oldLines[oldLines.length - 1] === '' && newLines[newLines.length - 1] === '') {
+    oldLines.pop();
+    newLines.pop();
+  }
+
+  return { oldText: oldLines.join('\n'), newText: newLines.join('\n') };
+}
