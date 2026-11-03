@@ -3,6 +3,7 @@ import express, { type Request, type Response } from 'express';
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
 import { claudeSettingsPermissionsService } from '@/modules/providers/services/claude-settings-permissions.service.js';
 import { opencodeSettingsPermissionsService } from '@/modules/providers/services/opencode-settings-permissions.service.js';
+import { opencodeAgentService } from '@/modules/providers/services/opencode-agent.service.js';
 import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import { providerCliService } from '@/modules/providers/services/provider-cli.service.js';
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
@@ -24,6 +25,10 @@ import type {
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 const router = express.Router();
+
+router.get('/opencode/sessions/:sessionId/agent', asyncHandler(async (req: Request, res: Response) => {
+  res.json(createApiSuccessResponse(opencodeAgentService.read(parseSessionId(req.params.sessionId))));
+}));
 
 const readPathParam = (value: unknown, name: string): string => {
   if (typeof value === 'string') {
@@ -656,7 +661,7 @@ router.get(
   '/:provider/models',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
-    const models = await providerModelsService.getProviderModels(provider);
+    const models = await providerModelsService.getProviderModels(provider, readOptionalQueryString(req.query.workspacePath));
     res.json(createApiSuccessResponse({ provider, models }));
   }),
 );
@@ -667,7 +672,7 @@ router.put(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const enabled = parseCustomModelsOnlyPayload(req.body);
-    const models = await providerModelsService.setCustomModelsOnly(provider, enabled);
+    const models = await providerModelsService.setCustomModelsOnly(provider, enabled, readOptionalQueryString(req.query.workspacePath));
     res.json(createApiSuccessResponse({ provider, models }));
   }),
 );
@@ -677,7 +682,7 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const input = parseCustomProviderModelPayload(req.body);
-    const result = await providerModelsService.createCustomModel(provider, input);
+    const result = await providerModelsService.createCustomModel(provider, input, readOptionalQueryString(req.query.workspacePath));
     res.status(201).json(createApiSuccessResponse({ provider, ...result }));
   }),
 );
@@ -688,7 +693,7 @@ router.patch(
     const provider = parseProvider(req.params.provider);
     const recordId = parseModelRecordId(req.params.recordId);
     const input = parseCustomProviderModelPayload(req.body);
-    const result = await providerModelsService.updateCustomModel(provider, recordId, input);
+    const result = await providerModelsService.updateCustomModel(provider, recordId, input, readOptionalQueryString(req.query.workspacePath));
     res.json(createApiSuccessResponse({ provider, ...result }));
   }),
 );
@@ -698,7 +703,7 @@ router.delete(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const recordId = parseModelRecordId(req.params.recordId);
-    const result = await providerModelsService.deleteCustomModel(provider, recordId);
+    const result = await providerModelsService.deleteCustomModel(provider, recordId, readOptionalQueryString(req.query.workspacePath));
     res.json(createApiSuccessResponse({ provider, ...result }));
   }),
 );

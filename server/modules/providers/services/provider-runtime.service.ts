@@ -29,7 +29,7 @@ const defaultDependencies: ProviderRuntimeServiceDependencies = {
   resolveProviderSessionId: (sessionId) => sessionsService.resolveProviderSessionId(sessionId),
   resolveResumeModel: (provider, sessionId, requestedModel) =>
     providerModelsService.resolveResumeModel(provider, sessionId, requestedModel),
-  getProviderModels: (provider) => providerModelsService.getProviderModels(provider),
+  getProviderModels: (provider, workspacePath) => providerModelsService.getProviderModels(provider, workspacePath),
 };
 
 /**
@@ -46,11 +46,12 @@ export function createProviderRuntimeService(
 
   const createRuntimeContext = (
     provider: IProvider,
+    options: AnyRecord,
   ): ProviderRuntimeContext => ({
     resolveProviderSessionId: dependencies.resolveProviderSessionId,
     resolveResumeModel: (sessionId, requestedModel) =>
       dependencies.resolveResumeModel(provider.id, sessionId, requestedModel),
-    getProviderModels: async () => dependencies.getProviderModels(provider.id),
+    getProviderModels: async () => dependencies.getProviderModels(provider.id, options.cwd || options.projectPath),
     normalizeMessage: (raw, sessionId) => provider.sessions.normalizeMessage(raw, sessionId),
     async isProviderInstalled() {
       try {
@@ -69,7 +70,7 @@ export function createProviderRuntimeService(
     writer: ProviderRuntimeWriter,
   ): Promise<unknown> => {
     const provider = dependencies.resolveProvider(providerName);
-    return provider.runtime.run(command, options, writer, createRuntimeContext(provider));
+    return provider.runtime.run(command, options, writer, createRuntimeContext(provider, options));
   };
 
   return {

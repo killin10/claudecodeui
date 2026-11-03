@@ -143,18 +143,20 @@ type Props = {
   session: ProjectSession;
   isLoading: boolean;
   model: string;
+  permissionModeExplicit?: boolean;
   processingSessions?: SessionActivityMap;
 };
 
 const render = (initialProps: Partial<Props> = {}) => {
   const errors: ChatMessage[] = [];
   const view = renderHook(
-    ({ session, isLoading, model, processingSessions }: Props) => useChatComposerState({
+    ({ session, isLoading, model, processingSessions, permissionModeExplicit }: Props) => useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: session,
       currentSessionId: session.id ?? null,
       provider: 'claude',
       permissionMode: 'default',
+      permissionModeExplicit,
       cyclePermissionMode: () => undefined,
       resolvePermissionModeForProvider: () => 'default' as PermissionMode,
       currentProviderModel: model,
@@ -222,6 +224,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
   resetChatDrafts();
   localStorage.clear();
+});
+
+test('queued sends keep explicit agent-mode intent even after the composer changes', async () => {
+  const { view } = render({ permissionModeExplicit: true });
+  await submit(view, 'Leave plan and implement');
+  view.rerender({ session: SESSION_1, isLoading: true, model: 'model-2', permissionModeExplicit: false });
+  assert.equal(queuedOnServer()?.options?.permissionModeExplicit, true);
+  assert.equal(queuedOnServer()?.options?.permissionMode, 'default');
 });
 
 test('follow-ups A, B and C queued during one turn are all kept, in order, and the card shows them all', async () => {

@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
+import type { Project } from '@/shared/types';
 
 /**
  * The four per-provider default models used to be four useState slots with four
@@ -17,6 +18,7 @@ const okJson = (data: unknown) => Promise.resolve({
   ok: true,
   json: async () => data,
 });
+const mocks = vi.hoisted(() => ({ models: vi.fn(), capabilities: vi.fn(), agent: vi.fn() }));
 
 vi.mock('@/shared/api', () => ({
   api: {
@@ -27,8 +29,9 @@ vi.mock('@/shared/api', () => ({
       savePreferences: () => okJson({ success: true, preferences: {} }),
     },
     providers: {
-      models: () => okJson({ success: true, data: null }),
-      capabilities: () => okJson({ success: true, data: null }),
+      models: mocks.models,
+      capabilities: mocks.capabilities,
+      opencodeSessionAgent: mocks.agent,
       sessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveModel: () => okJson({ success: true, data: null }),
       setSessionActiveEffort: () => okJson({ success: true, data: null }),
@@ -49,6 +52,9 @@ const renderProviderState = async () => {
 };
 
 beforeEach(() => {
+  mocks.models.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
+  mocks.capabilities.mockReset().mockImplementation(() => okJson({ success: true, data: null }));
+  mocks.agent.mockReset().mockImplementation(() => okJson({ success: true, data: { agent: 'plan' } }));
   localStorage.clear();
   // The preference store is a module-level singleton, so its in-memory copy
   // outlives localStorage.clear() and would leak one test's writes into the next.
@@ -145,4 +151,51 @@ test('the active provider’s model is what currentProviderModel reports', async
     assert.equal(result.current.provider, 'cursor');
   });
   assert.equal(result.current.currentProviderModel, 'cursor-active');
+});
+
+test('native variants survive catalog hydration and catalog requests follow the selected project', async () => {
+  writeUserPreference('selectedProvider', 'opencode');
+  localStorage.setItem('opencode-model', 'project/reasoner');
+  localStorage.setItem('opencode-effort', 'deep');
+  const gates: Array<(response: Awaited<ReturnType<typeof okJson>>) => void> = [];
+  mocks.models.mockImplementation((provider: string) => provider === 'opencode'
+    ? new Promise((resolve) => gates.push(resolve)) : okJson({ success: true, data: null }));
+  const { useChatProviderState } = await import('@/modules/chat/hooks/useChatProviderState');
+  const first: Project = { projectId: 'first', displayName: 'First', fullPath: '/tmp/project-one' };
+  const view = renderHook(({ project }) => useChatProviderState({ selectedSession: null, selectedProject: project }), {
+    initialProps: { project: first },
+  });
+  await waitFor(() => assert.equal(gates.length, 1));
+  assert.equal(view.result.current.currentProviderEffort, 'deep');
+  assert.ok(mocks.models.mock.calls.some(([provider, directory]) => provider === 'opencode' && directory === first.fullPath));
+  await act(async () => gates[0](await okJson({ success: true, data: { models: {
+    DEFAULT: 'project/reasoner', OPTIONS: [{ value: 'project/reasoner', label: 'Reasoner', effort: { values: [{ value: 'deep' }] } }],
+  } } })));
+  await waitFor(() => assert.equal(view.result.current.currentProviderEffortOptions[0]?.value, 'deep'));
+  assert.equal(view.result.current.currentProviderEffort, 'deep');
+  view.rerender({ project: { projectId: 'second', displayName: 'Second', fullPath: '/tmp/project-two' } });
+  await waitFor(() => assert.equal(gates.length, 2));
+  assert.equal(view.result.current.providerModelCatalog.opencode, undefined);
+  assert.equal(localStorage.getItem('opencode-effort'), 'deep');
+  assert.ok(mocks.models.mock.calls.some(([provider, directory]) => provider === 'opencode' && directory === '/tmp/project-two'));
+  await act(async () => gates[1](await okJson({ success: true, data: null })));
+});
+
+test('late capability hydration preserves native plan state and explicit mode choices', async () => {
+  writeUserPreference('selectedProvider', 'opencode');
+  let finishCapabilities!: (response: Awaited<ReturnType<typeof okJson>>) => void;
+  mocks.capabilities.mockImplementation(() => new Promise((resolve) => { finishCapabilities = resolve; }));
+  const { useChatProviderState } = await import('@/modules/chat/hooks/useChatProviderState');
+  const view = renderHook(() => useChatProviderState({
+    selectedSession: { id: 'ses_plan', __provider: 'opencode' }, selectedProject: null,
+  }));
+  await waitFor(() => assert.equal(view.result.current.permissionMode, 'plan'));
+  await act(async () => finishCapabilities(await okJson({ success: true, data: { providers: [{
+    provider: 'opencode', permissionModes: ['default', 'acceptEdits', 'bypassPermissions', 'plan'], defaultPermissionMode: 'default',
+  }] } })));
+  await waitFor(() => assert.equal(mocks.agent.mock.calls.length, 2));
+  assert.equal(view.result.current.permissionMode, 'plan');
+  act(() => view.result.current.selectPermissionMode('default'));
+  assert.equal(view.result.current.permissionMode, 'default');
+  assert.equal(view.result.current.permissionModeExplicit, true);
 });

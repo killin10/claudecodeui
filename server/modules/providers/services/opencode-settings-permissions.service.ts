@@ -7,7 +7,7 @@ import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser';
 import type { PermissionRule } from '@opencode/client';
 
 import { startOpenCodeServer } from '@/modules/providers/list/opencode/opencode-server.provider.js';
-import { clearOpenCodeRememberedApprovals } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
+import { clearOpenCodeRememberedApprovals } from '@/modules/providers/list/opencode/opencode-permissions.provider.js';
 import { AppError, getOpenCodeConfigDirectory, readObjectRecord } from '@/shared/utils.js';
 
 const invalid = (message: string) => new AppError(message, { code: 'INVALID_OPENCODE_PERMISSIONS', statusCode: 400 });

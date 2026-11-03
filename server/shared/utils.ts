@@ -1562,3 +1562,31 @@ export function findApplicationRoot(startDirectory: string): string {
     ? path.dirname(parentDirectory)
     : parentDirectory;
 }
+
+//----------------- OPENCODE TRANSPORT ERRORS ------------
+/** Runtime and permission gateway use the native error payload without discarding its message. */
+export function readOpenCodeErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  const record = readObjectRecord(error);
+  const data = readObjectRecord(record?.data);
+  if (typeof data?.message === 'string' && data.message) {
+    return data.message;
+  }
+  if (typeof record?.message === 'string' && record.message) {
+    return record.message;
+  }
+  if (typeof record?.name === 'string' && record.name) {
+    return record.name;
+  }
+  return String(error);
+}
+
+/** Whether an SDK call failed because OpenCode no longer knows the request (already settled). */
+export function isOpenCodeNotFoundError(error: unknown): boolean {
+  const cause = readObjectRecord(error instanceof Error ? error.cause : undefined);
+  return cause?.status === 404 || readObjectRecord(error)?.status === 404
+    || (error instanceof Error && error.name === 'NotFoundError');
+}

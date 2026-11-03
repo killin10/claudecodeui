@@ -22,6 +22,36 @@ const readJson = async (filePath: string): Promise<Record<string, unknown>> => {
   return JSON.parse(content) as Record<string, unknown>;
 };
 
+test('editing OpenCode MCP preserves native options and keeps disabled servers disabled', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-mcp-preserve-'));
+  const filename = path.join(root, 'opencode.json');
+  const remote = { type: 'remote', url: 'https://example.test/mcp', disabled: true,
+    oauth: false, timeout: { execution: 90000 }, protocol: 'legacy', codemode: false };
+  await fs.writeFile(filename, JSON.stringify({ mcp: { servers: { remote } } }));
+  try {
+    await providerMcpService.upsertProviderMcpServer('opencode', {
+      scope: 'project', workspacePath: root, name: 'remote', transport: 'http',
+      url: remote.url, headers: { 'x-test': 'new' },
+    });
+    const saved = JSON.parse(await fs.readFile(filename, 'utf8'));
+    assert.deepEqual(saved.mcp.servers.remote, { ...remote, headers: { 'x-test': 'new' } });
+    await providerMcpService.upsertProviderMcpServer('opencode', {
+      scope: 'project', workspacePath: root, name: 'remote', transport: 'stdio',
+      command: 'node', args: ['mcp.js'], cwd: root,
+    });
+    const changed = JSON.parse(await fs.readFile(filename, 'utf8')).mcp.servers.remote;
+    assert.equal(changed.disabled, true);
+    assert.equal(changed.oauth, undefined);
+    assert.equal(changed.url, undefined);
+    assert.equal(changed.cwd, root);
+    assert.deepEqual(changed.timeout, remote.timeout);
+    const listed = await providerMcpService.listProviderMcpServers('opencode', { workspacePath: root });
+    assert.equal(listed.project.find((server) => server.name === 'remote')?.cwd, root);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 /**
  * This test covers Claude MCP support for all scopes (user/local/project) and all transports (stdio/http/sse),
  * including add, update/list, and remove operations.

@@ -109,7 +109,19 @@ async function applyServerChanges(filePath: string, entries: Map<string, unknown
       continue;
     }
     const { __cloudcliSource: _source, ...stored } = readObjectRecord(value) ?? {};
-    values[name] = stored;
+    const existing = readObjectRecord(normalizeStoredServer(values[name]));
+    // The editor only owns the displayed connection fields. Preserve native
+    // options, especially disabled/OAuth, when editing the same transport.
+    const preserved = existing?.type === stored.type ? existing : {
+      ...(existing?.timeout !== undefined ? { timeout: existing.timeout } : {}),
+      ...(existing?.protocol !== undefined ? { protocol: existing.protocol } : {}),
+      ...(existing?.codemode !== undefined ? { codemode: existing.codemode } : {}),
+    };
+    values[name] = {
+      ...preserved,
+      ...stored,
+      disabled: existing?.disabled ?? stored.disabled,
+    };
   }
   config.mcp = { ...('servers' in mcp || 'timeout' in mcp ? mcp : {}), servers: values };
   await writeOpenCodeConfig(filePath, config);
@@ -172,6 +184,7 @@ export class OpenCodeMcpProvider extends McpProvider {
       return {
         type: 'local',
         command: [input.command, ...(input.args ?? [])],
+        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
         disabled: false,
         environment: input.env ?? {},
       };
@@ -219,6 +232,7 @@ export class OpenCodeMcpProvider extends McpProvider {
         transport: 'stdio',
         command,
         args: commandParts.slice(1),
+        cwd: readOptionalString(config.cwd),
         env: readStringRecord(config.environment) ?? readStringRecord(config.env),
       };
     }

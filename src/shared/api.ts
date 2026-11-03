@@ -416,6 +416,7 @@ export const api = {
 
   // Provider (coding agent) endpoints — models, capabilities, sessions, MCP, skills.
   providers: {
+    opencodeSessionAgent: (sessionId: string) => get(`/api/providers/opencode/sessions/${encodeURIComponent(sessionId)}/agent`),
     capabilities: () => get('/api/providers/capabilities'),
     authStatus: (provider: string) =>
       get(`/api/providers/${encodeURIComponent(provider)}/auth/status`),
@@ -424,19 +425,19 @@ export const api = {
     updateCli: (provider: string) =>
       post(`/api/providers/${encodeURIComponent(provider)}/cli/update`),
     claudeSettingsPermissions: () => get('/api/providers/claude/settings-permissions'),
-    opencodeSettingsPermissions: (workspacePath?: string) => get(`/api/providers/opencode/settings-permissions${workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : ''}`),
+    opencodeSettingsPermissions: (workspacePath?: string) => get(`/api/providers/opencode/settings-permissions${query({ workspacePath })}`),
     saveOpenCodeSettingsPermissions: (input: unknown) => put('/api/providers/opencode/settings-permissions', input),
     changeOpenCodeSavedPermission: (input: unknown) => put('/api/providers/opencode/settings-permissions/saved', input),
 
-    models: (provider: string) => get(`/api/providers/${provider}/models`),
-    createModel: (provider: string, input: unknown) =>
-      post(`/api/providers/${provider}/models`, input),
-    updateModel: (provider: string, recordId: string | number, input: unknown) =>
-      patch(`/api/providers/${provider}/models/${recordId}`, input),
-    deleteModel: (provider: string, recordId: string | number) =>
-      del(`/api/providers/${provider}/models/${recordId}`),
-    setCustomModelsOnly: (provider: string, enabled: boolean) =>
-      put(`/api/providers/${provider}/models/custom-only`, { enabled }),
+    models: (provider: string, workspacePath?: string) => get(`/api/providers/${provider}/models${query({ workspacePath })}`),
+    createModel: (provider: string, input: unknown, workspacePath?: string) =>
+      post(`/api/providers/${provider}/models${query({ workspacePath })}`, input),
+    updateModel: (provider: string, recordId: string | number, input: unknown, workspacePath?: string) =>
+      patch(`/api/providers/${provider}/models/${recordId}${query({ workspacePath })}`, input),
+    deleteModel: (provider: string, recordId: string | number, workspacePath?: string) =>
+      del(`/api/providers/${provider}/models/${recordId}${query({ workspacePath })}`),
+    setCustomModelsOnly: (provider: string, enabled: boolean, workspacePath?: string) =>
+      put(`/api/providers/${provider}/models/custom-only${query({ workspacePath })}`, { enabled }),
 
     createSession: (payload: {
       provider: string;

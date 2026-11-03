@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
+import Database from 'better-sqlite3';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import providerRouter from '@/modules/providers/provider.routes.js';
@@ -56,6 +57,28 @@ async function withProviderServer(
     await rm(tempDirectory, { recursive: true, force: true });
   }
 }
+
+test('OpenCode agent route reads native state and rejects another provider session', async () => {
+  const previousData = process.env.XDG_DATA_HOME;
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    process.env.XDG_DATA_HOME = path.dirname(workspacePath);
+    await mkdir(path.join(process.env.XDG_DATA_HOME, 'opencode'), { recursive: true });
+    const db = new Database(path.join(process.env.XDG_DATA_HOME, 'opencode', 'opencode.db'));
+    try {
+      db.exec("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, agent TEXT); INSERT INTO session_v2 VALUES ('ses_plan', 'plan')");
+      const id = sessionsDb.createSession('ses_plan', 'opencode', workspacePath);
+      const result = await fetch(`${baseUrl}/api/providers/opencode/sessions/${id}/agent`);
+      assert.equal(result.status, 200);
+      assert.equal((await result.json() as { data: { agent: string } }).data.agent, 'plan');
+      const other = sessionsDb.createSession('claude-session', 'claude', workspacePath);
+      assert.equal((await fetch(`${baseUrl}/api/providers/opencode/sessions/${other}/agent`)).status, 404);
+    } finally {
+      db.close();
+      if (previousData === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previousData;
+    }
+  });
+});
 
 test('session creation route names a CloudCLI session from the initial message', async () => {
   await withProviderServer(async (baseUrl, workspacePath) => {

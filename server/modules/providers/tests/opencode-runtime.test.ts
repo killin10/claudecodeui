@@ -18,15 +18,8 @@ import type { ProviderPermissionDecision, ProviderRuntimeContext } from '@/share
 // Read when the runtime module loads, so set before importing it — the
 // sessions provider imports the runtime too, so it is loaded dynamically as well.
 process.env.OPENCODE_TOOL_APPROVAL_TIMEOUT_MS = '1500';
-const {
-  isCoveredByApprovals,
-  clearOpenCodeRememberedApprovals,
-  opencodeRuntime,
-  readQuestionAnswers,
-  reapOrphanedOpenCodeServers,
-  resolveAutomaticPermissionReply,
-  toOpenCodePermissionReply,
-} = await import('@/modules/providers/list/opencode/opencode-runtime.provider.js');
+const { opencodeRuntime, reapOrphanedOpenCodeServers } = await import('@/modules/providers/list/opencode/opencode-runtime.provider.js');
+const { isCoveredByApprovals, clearOpenCodeRememberedApprovals, readQuestionAnswers, resolveAutomaticPermissionReply, toOpenCodePermissionReply } = await import('@/modules/providers/list/opencode/opencode-permissions.provider.js');
 const { OpenCodeSessionsProvider } = await import('@/modules/providers/list/opencode/opencode-sessions.provider.js');
 
 type Frame = Record<string, any>;
@@ -124,6 +117,8 @@ type TurnOptions = {
   resumeSessionId?: string | null;
   command?: string;
   permissionMode?: string;
+  permissionModeExplicit?: boolean;
+  effort?: string;
   files?: unknown[];
   installed?: boolean;
   normalizeMessage?: ProviderRuntimeContext['normalizeMessage'];
@@ -166,6 +161,8 @@ async function runTurn(options: TurnOptions) {
     cwd: projectDir,
     model: 'github-copilot/gpt-5.6-terra',
     permissionMode: options.permissionMode,
+    permissionModeExplicit: options.permissionModeExplicit,
+    effort: options.effort,
     files: options.files,
   }, writer, context).then(() => null, (caught: unknown) => caught as Error);
   // A turn that never ends fails its test instead of hanging the whole file.
@@ -201,6 +198,31 @@ async function runTurn(options: TurnOptions) {
 }
 
 const kinds = (frames: Frame[]) => frames.map((frame) => frame.kind);
+
+test('native variant IDs reach the selected model without a static effort whitelist', async () => {
+  const turn = await runTurn({ effort: 'deep', scenario: { steps: [], models: [{
+    id: 'gpt-5.6-terra', providerID: 'github-copilot', name: 'Fixture', enabled: true,
+    variants: [{ id: 'deep' }], limit: { context: 64000 },
+  }] } });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /^\/api\/session$/)?.body.model.variant, 'deep');
+});
+
+test('native model discovery reads project location and variants through the V2 client', async () => {
+  const { OpenCodeProviderModels } = await import('@/modules/providers/list/opencode/opencode-models.provider.js');
+  const logPath = path.join(tempRoot, 'native-models.jsonl');
+  setEnv('FAKE_OPENCODE_LOG', logPath);
+  setEnv('FAKE_OPENCODE_SCENARIO', JSON.stringify({ steps: [], models: [
+    { id: 'reasoner', providerID: 'project-only', name: 'Project model', enabled: true,
+      variants: [{ id: 'deep' }], limit: { context: 64000 } },
+  ] }));
+  const catalog = await new OpenCodeProviderModels().getSupportedModels(projectDir);
+  assert.equal(catalog.DEFAULT, 'project-only/reasoner');
+  assert.deepEqual(catalog.OPTIONS[0].effort?.values, [{ value: 'deep' }]);
+  const requests = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(requests.find((entry) => entry.path === '/api/model').directory, projectDir);
+  assert.ok(await waitForExit(requests.find((entry) => entry.started).pid));
+});
 
 test('native notices reach the active chat while foreign session notices are ignored', async () => {
   const turn = await runTurn({ scenario: {
@@ -943,7 +965,7 @@ test('a native form rejection is retryable without completing the turn or withdr
 });
 
 
-test('a native plan session is preserved unless CloudCLI previously switched it into plan', async () => {
+test('a native plan session is preserved on passive resume', async () => {
   const turn = await runTurn({
     resumeSessionId: 'ses_plan', permissionMode: 'default',
     scenario: { sessions: { ses_plan: { agent: 'plan' } }, steps: [] },
@@ -954,7 +976,7 @@ test('a native plan session is preserved unless CloudCLI previously switched it 
 
 test('leaving a CloudCLI plan restores the saved agent instead of the current default', async () => {
   const turn = await runTurn({
-    resumeSessionId: 'ses_plan', permissionMode: 'default',
+    resumeSessionId: 'ses_plan', permissionMode: 'default', permissionModeExplicit: true,
     scenario: {
       defaultAgent: 'build',
       sessions: { ses_plan: { agent: 'plan', metadata: { cloudcliPreviousAgent: 'reviewer' } } },
@@ -964,6 +986,47 @@ test('leaving a CloudCLI plan restores the saved agent instead of the current de
   assert.equal(turn.error, null);
   assert.equal(findRequest(turn.requests, 'POST', /\/agent$/)?.body.agent, 'reviewer');
   assert.equal(findRequest(turn.requests, 'PATCH', /\/ses_plan$/)?.body.metadata.cloudcliPreviousAgent, null);
+});
+
+test('passive resume preserves plan metadata and ignores stale local plan selections', async () => {
+  for (const agent of ['plan', 'reviewer']) {
+    const turn = await runTurn({
+      resumeSessionId: 'ses_passive', permissionMode: agent === 'plan' ? 'default' : 'plan',
+      scenario: { sessions: { ses_passive: { agent, metadata: { cloudcliPreviousAgent: 'reviewer' } } }, steps: [] },
+    });
+    assert.equal(turn.error, null);
+    assert.equal(findRequest(turn.requests, 'POST', /\/agent$/), undefined);
+  }
+});
+
+test('explicitly entering plan remembers the native custom agent', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_review', permissionMode: 'plan', permissionModeExplicit: true,
+    scenario: { sessions: { ses_review: { agent: 'reviewer' } }, steps: [] },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/agent$/)?.body.agent, 'plan');
+  assert.equal(findRequest(turn.requests, 'PATCH', /\/ses_review$/)?.body.metadata.cloudcliPreviousAgent, 'reviewer');
+});
+
+for (const configured of ['reviewer', 'plan']) {
+  test(`explicitly leaving a native plan uses a non-plan agent (default=${configured})`, async () => {
+    const turn = await runTurn({
+      resumeSessionId: 'ses_plan', permissionMode: 'default', permissionModeExplicit: true,
+      scenario: { defaultAgent: configured, sessions: { ses_plan: { agent: 'plan' } }, steps: [] },
+    });
+    assert.equal(turn.error, null);
+    assert.equal(findRequest(turn.requests, 'POST', /\/agent$/)?.body.agent, configured === 'plan' ? 'build' : configured);
+  });
+}
+
+test('explicit normal permission mode preserves a custom native agent', async () => {
+  const turn = await runTurn({
+    resumeSessionId: 'ses_custom', permissionMode: 'acceptEdits', permissionModeExplicit: true,
+    scenario: { sessions: { ses_custom: { agent: 'reviewer' } }, steps: [] },
+  });
+  assert.equal(turn.error, null);
+  assert.equal(findRequest(turn.requests, 'POST', /\/agent$/), undefined);
 });
 
 test('detached child notifications survive a delay and finish their parent followup', async () => {

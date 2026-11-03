@@ -39,6 +39,7 @@ type UseChatComposerStateArgs = {
   currentSessionId: string | null;
   provider: LLMProvider;
   permissionMode: PermissionMode | string;
+  permissionModeExplicit?: boolean;
   cyclePermissionMode: () => void;
   resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
   /**
@@ -217,6 +218,7 @@ export function useChatComposerState({
   currentSessionId,
   provider,
   permissionMode,
+  permissionModeExplicit = false,
   cyclePermissionMode,
   resolvePermissionModeForProvider,
   currentProviderModel,
@@ -697,6 +699,7 @@ export function useChatComposerState({
       model: currentProviderModel,
       effort: currentProviderEffort,
       permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
+      ...(permissionModeExplicit ? { permissionModeExplicit: true } : {}),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
@@ -705,6 +708,7 @@ export function useChatComposerState({
     currentProviderEffort,
     currentProviderModel,
     permissionMode,
+    permissionModeExplicit,
     provider,
     resolvePermissionModeForProvider,
     selectedSession,

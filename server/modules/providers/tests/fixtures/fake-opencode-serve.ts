@@ -40,6 +40,7 @@ type Scenario = {
   messages?: Record<string, any>;
   skills?: unknown[];
   commands?: unknown[];
+  models?: unknown[];
   /** Answered with a status instead of 204, as OpenCode does for a bad prompt. */
   promptStatus?: number;
   /** Native validation can reject a reply without settling the form. */
@@ -347,7 +348,7 @@ const server = http.createServer(async (req, res) => {
   log({
     method: req.method,
     path: url.pathname,
-    directory: url.searchParams.get('directory')
+    directory: url.searchParams.get('location[directory]')
       ?? (typeof directoryHeader === 'string' ? decodeURIComponent(directoryHeader) : null),
     authorization,
     body,
@@ -423,10 +424,14 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { location: { directory: directoryHeader }, data: [] });
       return;
     }
-    const data = path === '/skill' ? scenario.skills ?? [] : path === '/command' ? scenario.commands ?? [] : [
+    const data = path === '/skill' ? scenario.skills ?? [] : path === '/command' ? scenario.commands ?? [] : scenario.models ?? [
       { id: 'gpt-5.6-terra', providerID: 'github-copilot', limit: { context: 128000 } },
     ];
     sendJson(res, 200, { location: { directory: directoryHeader }, data });
+    return;
+  }
+  if (req.method === 'GET' && path === '/model/default') {
+    sendJson(res, 200, { location: { directory: directoryHeader }, data: scenario.models?.[0] ?? null });
     return;
   }
   if (req.method === 'DELETE' && path.startsWith('/shell/')) {

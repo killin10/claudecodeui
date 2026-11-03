@@ -83,6 +83,22 @@ test('provider model repository stores custom rows only and maintains session re
     // fallback, which has its own default.
     assert.equal(sessionsDb.getSessionById('session-1')?.effort, null);
     assert.equal(providerModelsDb.getCustomProviderModel('codex', custom.recordId), null);
+
+    const shared = providerModelsDb.createCustomProviderModel('opencode', { model: 'Shared', id: 'custom/shared' });
+    db.prepare("INSERT INTO projects (project_id, project_path) VALUES ('project-2', '/tmp/project-2')").run();
+    const insert = db.prepare('INSERT INTO sessions (session_id, provider, project_path, model, effort) VALUES (?, ?, ?, ?, ?)');
+    insert.run('native-one', 'opencode', '/tmp/project-1', 'custom/shared', 'high');
+    insert.run('native-two', 'opencode', '/tmp/project-2', 'custom/shared', 'high');
+    assert.deepEqual(providerModelsDb.getCustomModelSessionDirectories('opencode', 'custom/shared').sort(), ['/tmp/project-1', '/tmp/project-2']);
+    const fallbacks = new Map([['/tmp/project-1', 'one/default']]);
+    assert.throws(() => providerModelsDb.deleteCustomProviderModel('opencode', shared.recordId, fallbacks), /usage changed/);
+    assert.equal(sessionsDb.getSessionById('native-one')?.model, 'custom/shared', 'partial replacements roll back');
+    assert.ok(providerModelsDb.getCustomProviderModel('opencode', shared.recordId));
+    fallbacks.set('/tmp/project-2', 'two/default');
+    providerModelsDb.deleteCustomProviderModel('opencode', shared.recordId, fallbacks);
+    assert.equal(sessionsDb.getSessionById('native-one')?.model, 'one/default');
+    assert.equal(sessionsDb.getSessionById('native-two')?.model, 'two/default');
+    assert.equal(sessionsDb.getSessionById('native-two')?.effort, null);
   } finally {
     closeConnection();
     if (previousDatabasePath === undefined) {

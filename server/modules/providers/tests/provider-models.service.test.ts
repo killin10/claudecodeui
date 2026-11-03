@@ -49,13 +49,16 @@ const createSessionStore = (
 const createCatalogStore = () => {
   const rows = new Map<LLMProvider, CustomProviderModelRecord[]>();
   // Model ids the service asked the repository to move deleted models' sessions to.
-  const deleteFallbacks: string[] = [];
+  const deleteFallbacks: Array<string | ReadonlyMap<string, string>> = [];
+  const sessionDirectories: string[] = [];
   let nextRecordId = 1;
   const readRows = (provider: LLMProvider) => rows.get(provider) ?? [];
 
   return {
     rows,
     deleteFallbacks,
+    sessionDirectories,
+    getCustomModelSessionDirectories() { return sessionDirectories; },
     listCustomProviderModels(provider: LLMProvider) {
       return [...readRows(provider)];
     },
@@ -98,7 +101,7 @@ const createCatalogStore = () => {
       )));
       return updated;
     },
-    deleteCustomProviderModel(provider: LLMProvider, recordId: number, fallbackModelId: string) {
+    deleteCustomProviderModel(provider: LLMProvider, recordId: number, fallbackModelId: string | ReadonlyMap<string, string>) {
       const existing = readRows(provider).find((record) => record.recordId === recordId);
       if (!existing) {
         return null;
@@ -127,7 +130,8 @@ const createTestService = (options: {
   sessions?: ReturnType<typeof createSessionStore>;
   settings?: ReturnType<typeof createSettingsStore>;
   activeModel?: (provider: LLMProvider, sessionId?: string) => string;
-  onCatalogRead?: (provider: LLMProvider) => void;
+  onCatalogRead?: (provider: LLMProvider, workspacePath?: string) => void;
+  defaultModel?: (workspacePath?: string) => string;
 } = {}) => {
   const catalog = options.catalog ?? createCatalogStore();
   const sessions = options.sessions ?? createSessionStore();
@@ -138,9 +142,9 @@ const createTestService = (options: {
     settings,
     resolveProvider: (provider) => ({
       models: {
-        getSupportedModels: async () => {
-          options.onCatalogRead?.(provider);
-          return createModels(`${provider}-default`);
+        getSupportedModels: async (workspacePath) => {
+          options.onCatalogRead?.(provider, workspacePath);
+          return createModels(options.defaultModel?.(workspacePath) ?? `${provider}-default`);
         },
         getCurrentActiveModel: async (sessionId) => createCurrentActiveModel(
           options.activeModel?.(provider, sessionId) ?? `${provider}-default`,
@@ -151,6 +155,17 @@ const createTestService = (options: {
 
   return { service, catalog, sessions, settings };
 };
+
+test('model catalog reads and mutations keep the requested workspace', async () => {
+  const directories: Array<string | undefined> = [];
+  const { service } = createTestService({ onCatalogRead: (_provider, directory) => directories.push(directory) });
+  await service.getProviderModels('opencode', '/project');
+  const created = await service.createCustomModel('opencode', { id: 'custom/test', model: 'Test' }, '/project');
+  await service.updateCustomModel('opencode', created.model.recordId!, { id: 'custom/test', model: 'Renamed' }, '/project');
+  await service.setCustomModelsOnly('opencode', true, '/project');
+  await service.deleteCustomModel('opencode', created.model.recordId!, '/project');
+  assert.deepEqual(directories, Array(5).fill('/project'));
+});
 
 test('provider catalogs merge source-controlled defaults with custom persistence rows', async () => {
   const calls: LLMProvider[] = [];
@@ -306,6 +321,16 @@ test('custom models can be created, edited, and deleted', async () => {
   const removed = await service.deleteCustomModel('claude', recordId);
   assert.equal(removed.model.value, 'claude-my-model-v2');
   assert.equal(removed.models.OPTIONS.some((option) => option.recordId === recordId), false);
+});
+
+test('deleting an OpenCode custom model resolves each affected project default independently', async () => {
+  const catalog = createCatalogStore();
+  catalog.sessionDirectories.push('/one', '/two');
+  const { service } = createTestService({ catalog, defaultModel: (directory) => `${directory}/default` });
+  const created = await service.createCustomModel('opencode', { model: 'Custom', id: 'custom/model' }, '/one');
+  const deleted = await service.deleteCustomModel('opencode', created.model.recordId!, '/one');
+  assert.deepEqual(catalog.deleteFallbacks, [new Map([['/one', '/one/default'], ['/two', '/two/default']])]);
+  assert.equal(deleted.models.DEFAULT, '/one/default');
 });
 
 test('custom models carry declared effort levels into the merged catalog', async () => {

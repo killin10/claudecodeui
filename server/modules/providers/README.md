@@ -388,6 +388,16 @@ alongside the implementation.
 The adapter targets `@opencode/client` and OpenCode CLI 2.1.4 or newer within V2.
 It owns an authenticated loopback server for each run.
 
+The model picker reads the V2 model catalog and default for the selected project
+directory. OpenCode resolves credentials and configuration; CloudCLI does not
+filter the result against a second list of credential files. Successful catalogs
+are cached per directory for 60 seconds. Failed reads remain errors rather than
+falling back to a static model list. Reasoning choices come from each native
+model's variant IDs, and the runtime validates the selected variant against its
+own host before sending the message.
+Deleting a shared custom model resolves a fallback separately for each affected
+project before updating session references in one transaction.
+
 Text and reasoning deltas use separate ordinal sequences. Their display IDs
 include the message ID, content type and ordinal, matching history projection.
 The frontend replaces snapshots with the same ID. Tool progress metadata is
@@ -397,9 +407,13 @@ message ID across running, completed and failed states.
 
 Attachments use `session.prompt.files` with file URIs. History accepts both
 native base64 attachments and the path tags written by earlier CloudCLI
-versions. Normal resume preserves the native agent. When CloudCLI enters plan
-mode, it records the previous agent in session metadata and restores it when
-leaving plan mode.
+versions. Opening a conversation reads its native agent to display plan mode.
+Normal resume preserves the native agent, regardless of stale browser settings.
+An explicit mode selection is captured with the message, including queued sends.
+Entering plan records the previous agent in session metadata; leaving restores
+it. For native plan sessions without that metadata, leaving uses the configured
+default agent, or `build` if the configured default is also `plan`. Selecting a
+normal permission mode preserves an existing custom agent.
 
 OpenCode implements the optional `fork` facet with
 `requiresTranscriptFile: false`; its `jsonlPath` remains `null`. The native
@@ -417,9 +431,17 @@ background work. Normal abort interrupts both the foreground and its tracked
 children. This lifecycle applies to work started by CloudCLI, not unrelated
 OpenCode processes.
 
+Runtime responsibilities are split between `opencode-runtime.provider.ts`
+(host lifetime and completion), `opencode-agent.provider.ts` (session and agent
+selection), `opencode-turn-events.provider.ts` (event ownership and projection),
+and `opencode-permissions.provider.ts` (permission prompts and forms).
+
 The MCP editor merges local file definitions in V2 priority order and returns
 `sourcePath` for each winning definition. Edits target that file and preserve
-unrelated configuration. Removal clears the named server from all files in
+unrelated configuration and native options not exposed by the editor, including
+disabled state, OAuth, timeouts, protocol and codemode. Switching transport drops
+transport-specific fields while retaining disabled state and common options.
+Stdio definitions round-trip their working directory. Removal clears the named server from all files in
 the selected scope so a lower-priority duplicate cannot reappear. The editor
 covers XDG global files, `OPENCODE_CONFIG`, ancestor files and `.opencode`
 directories; remote, managed and inline configuration sources are not editable
@@ -427,6 +449,7 @@ through this file-based editor.
 
 Protocol references for upgrades: [event publisher](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/runner/publish-llm-event.ts),
 [native fork](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session.ts),
-and [configuration order](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/config.ts).
+[configuration order](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/config.ts),
+and [model availability](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/model.ts).
 Regression tests live in `tests/opencode-*.test.ts`, `tests/mcp.test.ts` and
 `tests/session-fork.test.ts`.

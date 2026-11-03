@@ -15,7 +15,7 @@ import { AppError } from '@/shared/utils.js';
 
 /** Session-row access the service needs, narrowed so tests can stub it. */
 type ProviderModelsSessionStore = {
-  getSessionById(sessionId: string): { model: string | null; effort: string | null } | null;
+  getSessionById(sessionId: string): { model: string | null; effort: string | null; project_path?: string | null } | null;
   setSessionModel(sessionId: string, model: string): void;
   setSessionEffort(sessionId: string, effort: string): void;
 };
@@ -29,6 +29,7 @@ type ProviderModelsCatalogStore = Pick<
   | 'createCustomProviderModel'
   | 'updateCustomProviderModel'
   | 'deleteCustomProviderModel'
+  | 'getCustomModelSessionDirectories'
 >;
 
 /** App-wide key-value settings, narrowed to what the "custom models only" flag needs. */
@@ -80,10 +81,8 @@ const toCustomProviderModelOption = (
  * the levels its runtime can pass on, from the capability matrix. Empty
  * (Cursor) means no effort support at all.
  *
- * Deliberately not derived from the predefined models: OpenCode narrows its
- * catalog to the upstream providers this machine has connected, and only its
- * OpenCode Go models declare effort, so a catalog-derived set would vanish for
- * Zen, Anthropic, or OpenAI users and change with unrelated credentials.
+ * These are the generic levels the custom-model editor can declare. Native
+ * OpenCode options carry their own variant IDs directly from the project catalog.
  */
 const readCustomModelEffortLevels = (provider: LLMProvider): string[] => (
   providerCapabilitiesService.getProviderCapabilities(provider).effortLevels
@@ -167,9 +166,8 @@ const isUniqueConstraintError = (error: unknown): boolean => (
  * Creates the provider model application service used by Providers routes,
  * Commands, and provider runtimes.
  *
- * Curated adapter definitions stay source-controlled and are merged at read
- * time with custom SQLite rows. This deliberately has no predefined-model
- * persistence, memory cache, disk cache, TTL, or provider-native discovery.
+ * Adapter catalogs are merged at read time with custom SQLite rows. Native
+ * discovery and caching remain owned by the provider adapter.
  * Tests inject a small custom-model store through the same boundary.
  */
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
@@ -193,8 +191,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     isCustomModelsOnly(provider),
   );
 
-  const getProviderModels = async (provider: LLMProvider): Promise<ProviderModelsDefinition> => {
-    const predefined = await resolveProvider(provider).models.getSupportedModels();
+  const getProviderModels = async (provider: LLMProvider, workspacePath?: string): Promise<ProviderModelsDefinition> => {
+    const predefined = await resolveProvider(provider).models.getSupportedModels(workspacePath);
     return readMergedCatalog(provider, predefined);
   };
 
@@ -206,8 +204,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const setCustomModelsOnly = async (
     provider: LLMProvider,
     enabled: boolean,
+    workspacePath?: string,
   ): Promise<ProviderModelsDefinition> => {
-    const predefined = await resolveProvider(provider).models.getSupportedModels();
+    const predefined = await resolveProvider(provider).models.getSupportedModels(workspacePath);
     settings.set(customModelsOnlyConfigKey(provider), enabled ? 'true' : 'false');
     return readMergedCatalog(provider, predefined);
   };
@@ -257,8 +256,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const createCustomModel = async (
     provider: LLMProvider,
     input: CustomProviderModelInput,
+    workspacePath?: string,
   ): Promise<{ model: ProviderModelOption; models: ProviderModelsDefinition }> => {
-    const predefined = await resolveProvider(provider).models.getSupportedModels();
+    const predefined = await resolveProvider(provider).models.getSupportedModels(workspacePath);
     const normalized = normalizeCustomModelInput(input);
     assertModelIdAvailable(provider, predefined, normalized.id);
     assertEffortLevelsSupported(provider, normalized);
@@ -284,8 +284,9 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     provider: LLMProvider,
     recordId: number,
     input: CustomProviderModelInput,
+    workspacePath?: string,
   ): Promise<{ model: ProviderModelOption; models: ProviderModelsDefinition }> => {
-    const predefined = await resolveProvider(provider).models.getSupportedModels();
+    const predefined = await resolveProvider(provider).models.getSupportedModels(workspacePath);
     readCustomModel(provider, recordId);
     const normalized = normalizeCustomModelInput(input);
     assertModelIdAvailable(provider, predefined, normalized.id, recordId);
@@ -318,19 +319,29 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const deleteCustomModel = async (
     provider: LLMProvider,
     recordId: number,
+    workspacePath?: string,
   ): Promise<{ model: ProviderModelOption; models: ProviderModelsDefinition }> => {
-    const predefined = await resolveProvider(provider).models.getSupportedModels();
-    readCustomModel(provider, recordId);
+    const predefined = await resolveProvider(provider).models.getSupportedModels(workspacePath);
+    const existing = readCustomModel(provider, recordId);
     // Sessions on the deleted model move to the default of the catalog left
     // behind: the first remaining custom model (the new DEFAULT) while only
     // custom models are listed, or the built-in default once none remain.
-    const fallbackModelId = mergeProviderModels(
+    const remaining = catalog.listCustomProviderModels(provider).filter((record) => record.recordId !== recordId);
+    const fallbackFor = (definition: ProviderModelsDefinition) => mergeProviderModels(
       provider,
-      predefined,
-      catalog.listCustomProviderModels(provider).filter((record) => record.recordId !== recordId),
+      definition,
+      remaining,
       isCustomModelsOnly(provider),
     ).DEFAULT;
-    const removed = catalog.deleteCustomProviderModel(provider, recordId, fallbackModelId);
+    let fallback: string | Map<string, string> = fallbackFor(predefined);
+    if (provider === 'opencode') {
+      fallback = new Map();
+      for (const directory of catalog.getCustomModelSessionDirectories(provider, existing.modelId)) {
+        const projectModels = await resolveProvider(provider).models.getSupportedModels(directory);
+        fallback.set(directory, fallbackFor(projectModels));
+      }
+    }
+    const removed = catalog.deleteCustomProviderModel(provider, recordId, fallback);
     if (!removed) {
       throw new AppError('Model not found.', {
         code: 'MODEL_NOT_FOUND',
@@ -431,7 +442,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
    *   1. the model recorded on the session row;
    *   2. the provider's own session state for externally-created sessions;
    *   3. `requestedModel`, the client's current default;
-   *   4. the source-controlled provider catalog default.
+   *   4. the provider catalog default for the session's project.
    */
   const resolveSessionModel = async (
     provider: LLMProvider,
@@ -454,7 +465,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
         };
       }
 
-      const predefined = await resolveProvider(provider).models.getSupportedModels();
+      const workspacePath = sessions.getSessionById(normalizedSessionId)?.project_path ?? undefined;
+      const predefined = await resolveProvider(provider).models.getSupportedModels(workspacePath);
       const providerCatalog = readMergedCatalog(provider, predefined);
       const providerModel = await getCurrentActiveModel(provider, normalizedSessionId);
       const resolvedProviderModel = providerModel.model?.trim();

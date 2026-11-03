@@ -116,9 +116,10 @@ export interface IProviderFork {
  */
 export interface IProviderModels {
   /**
-   * Returns the curated predefined catalog owned by this provider adapter.
+   * Returns this provider's catalog. Native catalogs may depend on the absolute
+   * workspace directory; omitted directories use the provider's global context.
    */
-  getSupportedModels(): Promise<ProviderModelsDefinition>;
+  getSupportedModels(workspacePath?: string): Promise<ProviderModelsDefinition>;
 
   /**
    * Reads the model the provider itself believes one session is running with.

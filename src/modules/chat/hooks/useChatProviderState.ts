@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useOpenCodeAgentMode } from '@/modules/chat/hooks/useOpenCodeAgentMode';
 import { api } from '@/shared/api';
 import type { PendingPermissionRequest, PermissionMode,
   ProjectSession,
@@ -124,7 +125,7 @@ const getSessionSelectionKey = (provider: LLMProvider, sessionId: string): strin
   `${provider}:${sessionId}`
 );
 
-export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
+export function useChatProviderState({ selectedSession, selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   // The provider the composer sends under. Held here rather than read from
@@ -187,10 +188,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     localStorage.setItem(`${targetProvider}-effort`, effort);
   }, []);
 
+  const workspacePath = selectedProject?.fullPath || selectedProject?.path;
   const loadProviderModels = useCallback(async () => {
     const requestId = providerModelsRequestIdRef.current + 1;
     providerModelsRequestIdRef.current = requestId;
     setProviderModelsLoading(true);
+    setProviderModelCatalog(({ opencode: _previousProject, ...others }) => others);
 
     try {
       // Each provider lands in the catalog as soon as it answers, so a slow
@@ -198,7 +201,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       await Promise.all(
         PROVIDERS.map(async (p) => {
           try {
-            const response = await api.providers.models(p);
+            const response = await api.providers.models(p, workspacePath);
             const body = (await response.json()) as ProviderModelsApiResponse;
             const models = body.success ? body.data?.models : undefined;
             if (!models || providerModelsRequestIdRef.current !== requestId) {
@@ -216,7 +219,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
         setProviderModelsLoading(false);
       }
     }
-  }, []);
+  }, [workspacePath]);
 
   useEffect(() => {
     void loadProviderModels();
@@ -329,6 +332,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     model: string,
     currentEffort: string,
   ): string => {
+    // Native variant IDs are open-ended. Wait for the project catalog before
+    // validating a saved value instead of discarding it against a static list.
+    if (targetProvider === 'opencode' && !providerModelCatalog.opencode) return currentEffort || DEFAULT_EFFORT_VALUE;
     const allowedValues = getAllowedEffortValues(targetProvider, model);
     if (allowedValues.length === 0) {
       return DEFAULT_EFFORT_VALUE;
@@ -343,7 +349,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
 
     return DEFAULT_EFFORT_VALUE;
-  }, [getAllowedEffortValues]);
+  }, [getAllowedEffortValues, providerModelCatalog]);
 
   // One reconciliation pass over every provider, mirroring the effort effect
   // below. This was four copy-pasted eleven-line effects, one per provider.
@@ -394,7 +400,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
 
+  const { permissionModeExplicit, markExplicit } = useOpenCodeAgentMode(
+    provider, selectedSession?.id, setPermissionMode, getPermissionModesForProvider(provider),
+  );
+
   useEffect(() => {
+    if (permissionModeExplicit) return;
     const validModes = getPermissionModesForProvider(provider);
     const sessionSavedMode = selectedSession?.id
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
@@ -408,7 +419,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       (mode): mode is PermissionMode => Boolean(mode && validModes.includes(mode)),
     );
     setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
-  }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
+  }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider, permissionModeExplicit]);
 
   useEffect(() => {
     if (!selectedSession?.__provider || selectedSession.__provider === provider) {
@@ -428,6 +439,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [selectedSession?.id]);
 
   const selectPermissionMode = useCallback((nextMode: PermissionMode) => {
+    markExplicit();
     setPermissionMode(nextMode);
 
     // Persist per provider as well as per session: a brand-new chat has no
@@ -437,7 +449,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     if (selectedSession?.id) {
       localStorage.setItem(`permissionMode-${selectedSession.id}`, nextMode);
     }
-  }, [provider, selectedSession?.id]);
+  }, [provider, selectedSession, markExplicit]);
 
   const cyclePermissionMode = useCallback(() => {
     const modes = getPermissionModesForProvider(provider);
@@ -723,10 +735,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     targetProvider: LLMProvider,
     input: CustomProviderModelInput,
   ) => {
-    const response = await api.providers.createModel(targetProvider, input);
+    const response = await api.providers.createModel(targetProvider, input, workspacePath);
     const result = await readModelMutationResponse(response);
     applyProviderCatalog(targetProvider, result.models);
-  }, [applyProviderCatalog, readModelMutationResponse]);
+  }, [applyProviderCatalog, readModelMutationResponse, workspacePath]);
 
   const updateCustomModel = useCallback(async (
     targetProvider: LLMProvider,
@@ -737,7 +749,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('This model cannot be edited.');
     }
 
-    const response = await api.providers.updateModel(targetProvider, existing.recordId, input);
+    const response = await api.providers.updateModel(targetProvider, existing.recordId, input, workspacePath);
     const result = await readModelMutationResponse(response);
     applyProviderCatalog(targetProvider, result.models);
 
@@ -752,6 +764,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [
     applyProviderCatalog,
+    workspacePath,
     provider,
     providerModels,
     readModelMutationResponse,
@@ -767,7 +780,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       throw new Error('This model cannot be deleted.');
     }
 
-    const response = await api.providers.deleteModel(targetProvider, existing.recordId);
+    const response = await api.providers.deleteModel(targetProvider, existing.recordId, workspacePath);
     const result = await readModelMutationResponse(response);
     applyProviderCatalog(targetProvider, result.models);
 
@@ -782,6 +795,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
   }, [
     applyProviderCatalog,
+    workspacePath,
     provider,
     providerModels,
     readModelMutationResponse,
@@ -798,14 +812,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     targetProvider: LLMProvider,
     enabled: boolean,
   ) => {
-    const response = await api.providers.setCustomModelsOnly(targetProvider, enabled);
+    const response = await api.providers.setCustomModelsOnly(targetProvider, enabled, workspacePath);
     const body = (await response.json()) as ProviderModelMutationApiResponse;
     if (!response.ok || !body.success || !body.data?.models) {
       throw new Error(body.error?.message || 'Unable to change this setting.');
     }
 
     applyProviderCatalog(targetProvider, body.data.models);
-  }, [applyProviderCatalog]);
+  }, [applyProviderCatalog, workspacePath]);
 
   const providerModelActions = useMemo<ProviderModelActions>(() => ({
     create: createCustomModel,
@@ -824,6 +838,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     currentProviderModel,
     currentProviderModelOptions,
     permissionMode,
+    permissionModeExplicit,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     availablePermissionModes,

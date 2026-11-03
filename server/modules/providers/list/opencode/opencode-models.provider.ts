@@ -1,12 +1,10 @@
-import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
-import spawn from 'cross-spawn';
+import type { ModelInfo } from '@opencode/client';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { readOpenCodeConnectedIntegrations } from '@/shared/index.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -15,495 +13,46 @@ import type {
 import {
   buildDefaultProviderCurrentActiveModel,
   getOpenCodeDatabasePath,
-  stripJsonComments,
-  stripTrailingCommas,
   readObjectRecord,
   readOptionalString,
 } from '@/shared/utils.js';
 
-/**
- * Curated OpenCode catalog shipped as immutable CloudCLI defaults.
- *
- * OpenCode routes by `<providerID>/<modelID>`, so this list mirrors the
- * providers `opencode models --verbose` reports: the OpenCode Zen gateway, the
- * OpenCode Go subscription gateway, and the Anthropic and OpenAI providers
- * OpenCode can address directly with the user's own credentials.
- */
-export const OPENCODE_PREDEFINED_MODELS: ProviderModelsDefinition = {
-  OPTIONS: [
-    { value: 'opencode/gpt-5.6-sol', label: 'GPT 5.6 Sol', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.6-terra', label: 'GPT 5.6 Terra', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.6-luna', label: 'GPT 5.6 Luna', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.5', label: 'GPT 5.5', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.5-pro', label: 'GPT 5.5 Pro', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.4', label: 'GPT 5.4', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.4-pro', label: 'GPT 5.4 Pro', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.4-mini', label: 'GPT 5.4 Mini', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.4-nano', label: 'GPT 5.4 Nano', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.3-codex', label: 'GPT 5.3 Codex', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.3-codex-spark', label: 'GPT 5.3 Codex Spark', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.2', label: 'GPT 5.2', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5.1', label: 'GPT 5.1', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5', label: 'GPT 5', description: 'OpenCode Zen' },
-    { value: 'opencode/gpt-5-nano', label: 'GPT 5 Nano', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-fable-5', label: 'Claude Fable 5', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-opus-5', label: 'Claude Opus 5', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-opus-4-8', label: 'Claude Opus 4.8', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-opus-4-7', label: 'Claude Opus 4.7', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-opus-4-6', label: 'Claude Opus 4.6', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-opus-4-5', label: 'Claude Opus 4.5', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-sonnet-5', label: 'Claude Sonnet 5', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-sonnet-4-5', label: 'Claude Sonnet 4.5', description: 'OpenCode Zen' },
-    { value: 'opencode/claude-haiku-4-5', label: 'Claude Haiku 4.5', description: 'OpenCode Zen' },
-    { value: 'opencode/gemini-3.6-flash', label: 'Gemini 3.6 Flash', description: 'OpenCode Zen' },
-    { value: 'opencode/gemini-3.5-flash', label: 'Gemini 3.5 Flash', description: 'OpenCode Zen' },
-    { value: 'opencode/gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', description: 'OpenCode Zen' },
-    { value: 'opencode/gemini-3.1-pro', label: 'Gemini 3.1 Pro', description: 'OpenCode Zen' },
-    { value: 'opencode/gemini-3-flash', label: 'Gemini 3 Flash', description: 'OpenCode Zen' },
-    { value: 'opencode/grok-4.5', label: 'Grok 4.5', description: 'OpenCode Zen' },
-    { value: 'opencode/grok-build-0.1', label: 'Grok Build 0.1', description: 'OpenCode Zen' },
-    { value: 'opencode/qwen3.7-max', label: 'Qwen3.7 Max', description: 'OpenCode Zen' },
-    { value: 'opencode/qwen3.7-plus', label: 'Qwen3.7 Plus', description: 'OpenCode Zen' },
-    { value: 'opencode/qwen3.6-plus', label: 'Qwen3.6 Plus', description: 'OpenCode Zen' },
-    { value: 'opencode/qwen3.5-plus', label: 'Qwen3.5 Plus', description: 'OpenCode Zen' },
-    { value: 'opencode/deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: 'OpenCode Zen' },
-    { value: 'opencode/deepseek-v4-flash', label: 'DeepSeek V4 Flash', description: 'OpenCode Zen' },
-    { value: 'opencode/minimax-m3', label: 'MiniMax M3', description: 'OpenCode Zen' },
-    { value: 'opencode/minimax-m2.7', label: 'MiniMax M2.7', description: 'OpenCode Zen' },
-    { value: 'opencode/minimax-m2.5', label: 'MiniMax M2.5', description: 'OpenCode Zen' },
-    { value: 'opencode/glm-5.2', label: 'GLM 5.2', description: 'OpenCode Zen' },
-    { value: 'opencode/glm-5.1', label: 'GLM 5.1', description: 'OpenCode Zen' },
-    { value: 'opencode/kimi-k2.5', label: 'Kimi K2.5', description: 'OpenCode Zen' },
-    { value: 'opencode/kimi-k2.6', label: 'Kimi K2.6', description: 'OpenCode Zen' },
-    { value: 'opencode/kimi-k2.7-code', label: 'Kimi K2.7 Code', description: 'OpenCode Zen' },
-    { value: 'opencode/kimi-k3', label: 'Kimi K3', description: 'OpenCode Zen' },
-    { value: 'opencode/big-pickle', label: 'Big Pickle', description: 'OpenCode Zen · Free' },
-    { value: 'opencode/mimo-v2.5-free', label: 'MiMo-V2.5 Free', description: 'OpenCode Zen · Free' },
-    { value: 'opencode/laguna-s-2.1-free', label: 'Laguna S 2.1 Free', description: 'OpenCode Zen · Free' },
-    { value: 'opencode/ling-3.0-flash-free', label: 'Ling-3.0-flash Free', description: 'OpenCode Zen · Free' },
-    { value: 'opencode/north-mini-code-free', label: 'North Mini Code Free', description: 'OpenCode Zen · Free' },
-    { value: 'opencode/nemotron-3-ultra-free', label: 'Nemotron 3 Ultra Free', description: 'OpenCode Zen · Free' },
-    { value: 'opencode/deepseek-v4-flash-free', label: 'DeepSeek V4 Flash Free', description: 'OpenCode Zen · Free' },
-    {
-      value: 'opencode-go/grok-4.6',
-      label: 'Grok 4.6',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
-      },
-    },
-    {
-      value: 'opencode-go/glm-5.3-flash',
-      label: 'GLM 5.3 Flash',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }],
-      },
-    },
-    {
-      value: 'opencode-go/glm-5.3',
-      label: 'GLM 5.3',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }],
-      },
-    },
-    {
-      value: 'opencode-go/glm-5.2',
-      label: 'GLM 5.2',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'high' }, { value: 'max' }],
-      },
-    },
-    { value: 'opencode-go/glm-5.1', label: 'GLM 5.1', description: 'OpenCode Go' },
-    {
-      value: 'opencode-go/gpt-5.6-luna',
-      label: 'GPT 5.6 Luna',
-      description: 'OpenCode Go',
-      effort: {
-        values: [
-          { value: 'none' },
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-          { value: 'max' },
-        ],
-      },
-    },
-    {
-      value: 'opencode-go/kimi-k3',
-      label: 'Kimi K3',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'max' }],
-      },
-    },
-    { value: 'opencode-go/kimi-k2.7-code', label: 'Kimi K2.7 Code', description: 'OpenCode Go' },
-    { value: 'opencode-go/kimi-k2.6', label: 'Kimi K2.6', description: 'OpenCode Go' },
-    {
-      value: 'opencode-go/longcat-2.0',
-      label: 'LongCat 2.0',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }],
-      },
-    },
-    { value: 'opencode-go/mimo-v2.5', label: 'MiMo V2.5', description: 'OpenCode Go' },
-    { value: 'opencode-go/mimo-v2.5-pro', label: 'MiMo V2.5 Pro', description: 'OpenCode Go' },
-    {
-      value: 'opencode-go/minimax-m3',
-      label: 'MiniMax M3',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'none' }, { value: 'thinking' }],
-      },
-    },
-    { value: 'opencode-go/minimax-m2.7', label: 'MiniMax M2.7', description: 'OpenCode Go' },
-    {
-      value: 'opencode-go/muse-spark-1.3-contributor',
-      label: 'Muse Spark 1.3 Contributor',
-      description: 'OpenCode Go',
-      effort: {
-        values: [
-          { value: 'minimal' },
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-        ],
-      },
-    },
-    {
-      value: 'opencode-go/muse-spark-1.2-contributor',
-      label: 'Muse Spark 1.2 Contributor',
-      description: 'OpenCode Go',
-      effort: {
-        values: [
-          { value: 'minimal' },
-          { value: 'low' },
-          { value: 'medium' },
-          { value: 'high' },
-          { value: 'xhigh' },
-        ],
-      },
-    },
-    {
-      value: 'opencode-go/qwen3.8-max',
-      label: 'Qwen3.8 Max',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'medium' }, { value: 'xhigh' }],
-      },
-    },
-    {
-      value: 'opencode-go/qwen3.8-flash',
-      label: 'Qwen3.8 Flash',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'medium' }, { value: 'xhigh' }],
-      },
-    },
-    { value: 'opencode-go/qwen3.7-max', label: 'Qwen3.7 Max', description: 'OpenCode Go' },
-    { value: 'opencode-go/qwen3.7-plus', label: 'Qwen3.7 Plus', description: 'OpenCode Go' },
-    { value: 'opencode-go/qwen3.6-plus', label: 'Qwen3.6 Plus', description: 'OpenCode Go' },
-    {
-      value: 'opencode-go/deepseek-v4-pro',
-      label: 'DeepSeek V4 Pro',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'high' }, { value: 'max' }],
-      },
-    },
-    {
-      value: 'opencode-go/deepseek-v4-flash',
-      label: 'DeepSeek V4 Flash',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }],
-      },
-    },
-    {
-      value: 'opencode-go/deepseek-v4-flash-vision-exp',
-      label: 'DeepSeek V4 Flash Vision Exp',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'high' }, { value: 'max' }],
-      },
-    },
-    {
-      value: 'opencode-go/hy4-preview',
-      label: 'Hy4 Preview',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'none' }, { value: 'high' }],
-      },
-    },
-    {
-      value: 'opencode-go/hy3',
-      label: 'Hy3',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'none' }, { value: 'low' }, { value: 'high' }],
-      },
-    },
-    {
-      value: 'opencode-go/omen-alpha',
-      label: 'Omen Alpha',
-      description: 'OpenCode Go',
-      effort: {
-        values: [{ value: 'low' }, { value: 'high' }],
-      },
-    },
-    { value: 'anthropic/claude-opus-5', label: 'Claude Opus 5', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-5-fast', label: 'Claude Opus 5 Fast', description: 'Anthropic' },
-    { value: 'anthropic/claude-fable-5', label: 'Claude Fable 5', description: 'Anthropic' },
-    { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-8-fast', label: 'Claude Opus 4.8 Fast', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-7-fast', label: 'Claude Opus 4.7 Fast', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-6-fast', label: 'Claude Opus 4.6 Fast', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-5', label: 'Claude Opus 4.5 (latest)', description: 'Anthropic' },
-    { value: 'anthropic/claude-opus-4-5-20251101', label: 'Claude Opus 4.5', description: 'Anthropic' },
-    { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', description: 'Anthropic' },
-    { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5 (latest)', description: 'Anthropic' },
-    { value: 'anthropic/claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', description: 'Anthropic' },
-    { value: 'anthropic/claude-haiku-4-5', label: 'Claude Haiku 4.5 (latest)', description: 'Anthropic' },
-    { value: 'anthropic/claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', description: 'Anthropic' },
-    { value: 'openai/gpt-5.6', label: 'GPT-5.6', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-fast', label: 'GPT-5.6 Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-pro', label: 'GPT-5.6 Pro', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-sol', label: 'GPT-5.6 Sol', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-sol-fast', label: 'GPT-5.6 Sol Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-sol-pro', label: 'GPT-5.6 Sol Pro', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-terra', label: 'GPT-5.6 Terra', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-terra-fast', label: 'GPT-5.6 Terra Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-terra-pro', label: 'GPT-5.6 Terra Pro', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-luna-fast', label: 'GPT-5.6 Luna Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.6-luna-pro', label: 'GPT-5.6 Luna Pro', description: 'OpenAI' },
-    { value: 'openai/gpt-5.5', label: 'GPT-5.5', description: 'OpenAI' },
-    { value: 'openai/gpt-5.5-fast', label: 'GPT-5.5 Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.4', label: 'GPT-5.4', description: 'OpenAI' },
-    { value: 'openai/gpt-5.4-fast', label: 'GPT-5.4 Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini', description: 'OpenAI' },
-    { value: 'openai/gpt-5.4-mini-fast', label: 'GPT-5.4 mini Fast', description: 'OpenAI' },
-    { value: 'openai/gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', description: 'OpenAI' },
-  ],
-  DEFAULT: 'opencode/gpt-5.6-terra',
+import { startOpenCodeServer } from './opencode-server.provider.js';
+
+/** Only native catalog fields used by the model picker; credentials remain in OpenCode. */
+type NativeCatalog = {
+  models: Pick<ModelInfo, 'id' | 'providerID' | 'name' | 'variants' | 'enabled'>[];
+  defaultId?: string;
 };
 
-/** Global OpenCode config files, in the order the CLI loads them. */
-const OPENCODE_CONFIG_FILES = ['config.json', 'opencode.json', 'opencode.jsonc'];
-
-/** Provider API keys OpenCode reads straight from the environment. */
-const OPENCODE_ENV_PROVIDER_IDS: Record<string, string> = {
-  OPENCODE_API_KEY: 'opencode',
-  ANTHROPIC_API_KEY: 'anthropic',
-  OPENAI_API_KEY: 'openai',
-};
-
-const OPENCODE_MODELS_TIMEOUT_MS = 5_000;
-/** How long a successful `opencode models` listing is served before it is refreshed. */
-const OPENCODE_MODELS_CACHE_TTL_MS = 5 * 60_000;
-/**
- * Empty listings (CLI missing, timed out on a cold start, or logged out) are
- * retried sooner so a transient failure does not pin the static fallback.
- */
-const OPENCODE_MODELS_EMPTY_CACHE_TTL_MS = 30_000;
-const OPENCODE_MODEL_REFERENCE_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/:+-]*$/i;
-
-/**
- * Reads model references from the local OpenCode CLI without invoking a shell.
- *
- * Model availability can differ by account and changes independently of
- * CloudCLI releases, so `opencode models` is the source of truth. The CLI
- * output is deliberately treated as untrusted: only standalone,
- * fully-qualified `<provider>/<model>` lines are accepted.
- */
-const readInstalledOpenCodeModels = async (): Promise<string[]> => new Promise((resolve) => {
-  let settled = false;
-  let output = '';
-  let timeout: NodeJS.Timeout | undefined;
-  const models = new Set<string>();
-  const finish = (): void => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-    resolve([...models]);
-  };
-  const child = spawn('opencode', ['models'], {
-    stdio: ['ignore', 'pipe', 'ignore'],
-    shell: false,
-  });
-  timeout = setTimeout(() => {
-    // A truncated listing must not be cached as a complete one; an empty
-    // result takes the short retry path instead.
-    models.clear();
-    child.kill();
-    finish();
-  }, OPENCODE_MODELS_TIMEOUT_MS);
-
-  child.stdout?.on('data', (chunk: Buffer) => {
-    output += chunk.toString();
-    const completeLines = output.split(/\r?\n/);
-    output = completeLines.pop() ?? '';
-    for (const line of completeLines) {
-      const model = line.trim();
-      if (OPENCODE_MODEL_REFERENCE_PATTERN.test(model)) {
-        models.add(model);
-      }
-    }
-  });
-  child.on('error', finish);
-  child.on('close', (code) => {
-    if (code !== 0) {
-      models.clear();
-    } else if (OPENCODE_MODEL_REFERENCE_PATTERN.test(output.trim())) {
-      models.add(output.trim());
-    }
-    finish();
-  });
-});
-
-const readOpenCodeJsonFile = async (filePath: string): Promise<Record<string, unknown> | null> => {
+async function readNativeCatalog(directory: string): Promise<NativeCatalog> {
+  const signal = AbortSignal.timeout(60_000);
+  const { client, server } = await startOpenCodeServer(signal);
   try {
-    return readObjectRecord(JSON.parse(stripTrailingCommas(stripJsonComments(await readFile(filePath, 'utf8')))));
-  } catch {
-    // Missing, unreadable, or comment-bearing (.jsonc) files simply contribute
-    // nothing; the auth store is the authoritative source below.
-    return null;
+    const location = { directory };
+    const catalog = await client.model.list({ location }, { signal });
+    const selected = await client.model.default({ location }, { signal });
+    return {
+      models: catalog.data,
+      defaultId: selected.data ? `${selected.data.providerID}/${selected.data.id}` : undefined,
+    };
+  } finally {
+    server.close();
   }
-};
+}
 
-/**
- * Lists the upstream providers this OpenCode install can actually route to.
- *
- * OpenCode resolves `<providerID>/<modelID>` against the providers the user has
- * connected, and rejects anything else outright - `Model
- * opencode/claude-sonnet-4-6 is not valid` is what a run gets for asking for an
- * OpenCode Zen model on a machine that only has an Anthropic key. The curated
- * catalog spans every provider OpenCode can address, so it has to be narrowed
- * to this machine's providers before it reaches the model picker.
- *
- * Custom config passed through `OPENCODE_CONFIG` (a file path) or
- * `OPENCODE_CONFIG_CONTENT` (inline JSON) is read too, so providers declared
- * there are not filtered out of the CLI listing.
- *
- * Returns null when nothing can be read. Providers declared only in a
- * project-level `opencode.json` are not visible here, so callers retain the
- * unfiltered catalog in that case.
- */
-const readConnectedOpenCodeProviderIds = async (): Promise<Set<string> | null> => {
-  const providerIds = new Set<string>(readOpenCodeConnectedIntegrations());
-  const configDir = path.join(os.homedir(), '.config', 'opencode');
-
-  const auth = await readOpenCodeJsonFile(
-    path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'),
-  );
-  for (const [providerId, credential] of Object.entries(auth ?? {})) {
-    if (readObjectRecord(credential)) {
-      providerIds.add(providerId);
-    }
-  }
-
-  const configs: Array<Record<string, unknown> | null> = [];
-  for (const configFile of OPENCODE_CONFIG_FILES) {
-    configs.push(await readOpenCodeJsonFile(path.join(configDir, configFile)));
-  }
-
-  const customConfigPath = readOptionalString(process.env.OPENCODE_CONFIG);
-  if (customConfigPath) {
-    configs.push(await readOpenCodeJsonFile(customConfigPath));
-  }
-
-  const inlineConfig = readOptionalString(process.env.OPENCODE_CONFIG_CONTENT);
-  if (inlineConfig) {
-    try {
-      configs.push(readObjectRecord(JSON.parse(inlineConfig)));
-    } catch {
-      // Malformed inline config contributes nothing, like an unreadable file.
-    }
-  }
-
-  for (const config of configs) {
-    for (const providerId of Object.keys(readObjectRecord(config?.providers) ?? readObjectRecord(config?.provider) ?? {})) {
-      providerIds.add(providerId);
-    }
-  }
-
-  for (const [envKey, providerId] of Object.entries(OPENCODE_ENV_PROVIDER_IDS)) {
-    if (readOptionalString(process.env[envKey])) {
-      providerIds.add(providerId);
-    }
-  }
-
-  return providerIds.size > 0 ? providerIds : null;
-};
-
-/**
- * Narrows a catalog to providers OpenCode can route to.
- *
- * The default has to move with the list: leaving it on an OpenCode Zen model
- * would hand every new session a model the CLI refuses to run.
- */
-const filterOpenCodeModelsByProvider = (
-  definition: ProviderModelsDefinition,
-  connectedProviderIds: Set<string> | null,
-): ProviderModelsDefinition => {
-  if (!connectedProviderIds) {
-    return definition;
-  }
-
-  const options = definition.OPTIONS.filter(
-    (option) => connectedProviderIds.has(option.value.split('/')[0]),
-  );
+function projectNativeCatalog(catalog: NativeCatalog): ProviderModelsDefinition {
+  const options = catalog.models.filter((model) => model.enabled).map((model) => ({
+    value: `${model.providerID}/${model.id}`,
+    label: model.name || model.id,
+    description: model.providerID,
+    ...(model.variants.length ? { effort: { values: model.variants.map(({ id }) => ({ value: id })) } } : {}),
+  }));
   return {
-    ...definition,
     OPTIONS: options,
-    DEFAULT: options.some((option) => option.value === definition.DEFAULT)
-      ? definition.DEFAULT
-      : options[0]?.value ?? '',
+    DEFAULT: options.find((model) => model.value === catalog.defaultId)?.value ?? options[0]?.value ?? '',
   };
-};
-
-/** Curated options by model id, so discovered ids keep their labels and effort levels. */
-const OPENCODE_PREDEFINED_OPTIONS_BY_VALUE = new Map(
-  OPENCODE_PREDEFINED_MODELS.OPTIONS.map((option) => [option.value, option]),
-);
-
-const createDiscoveredOpenCodeModels = (
-  modelReferences: string[],
-  connectedProviderIds: Set<string> | null,
-): ProviderModelsDefinition | null => {
-  const options = modelReferences
-    .filter((model) => !connectedProviderIds || connectedProviderIds.has(model.split('/')[0]))
-    .map((value) => {
-      const predefined = OPENCODE_PREDEFINED_OPTIONS_BY_VALUE.get(value);
-      if (predefined) {
-        return predefined;
-      }
-
-      const [providerId, ...modelIdParts] = value.split('/');
-      return {
-        value,
-        label: modelIdParts.join('/'),
-        description: providerId,
-      };
-    });
-
-  return options.length > 0
-    ? { OPTIONS: options, DEFAULT: options[0].value }
-    : null;
-};
+}
 
 const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   if (typeof rawModel === 'string') {
@@ -546,67 +95,32 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   return modelId;
 };
 
-/** Provider registry model adapter for OpenCode predefined models and session metadata. */
+/** Provider registry model adapter for OpenCode native project models and session metadata. */
 export class OpenCodeProviderModels implements IProviderModels {
-  /** Last `opencode models` listing and when it stops being fresh. */
-  private cachedModelReferences: { references: string[]; expiresAt: number } | null = null;
+  // Successful catalogs are bounded and isolated by project; failed refreshes propagate.
+  private readonly catalogs = new Map<string, { value: ProviderModelsDefinition; expiresAt: number }>();
+  private readonly pending = new Map<string, Promise<ProviderModelsDefinition>>();
 
-  /** In-flight CLI read, shared so concurrent picker loads spawn one process. */
-  private pendingModelReferences: Promise<string[]> | null = null;
-
-  /** Used by the provider registry and focused adapter tests to read local OpenCode models. */
   constructor(
-    private readonly readModels = readInstalledOpenCodeModels,
+    private readonly readModels = readNativeCatalog,
     private readonly now: () => number = Date.now,
   ) {}
 
-  private refreshModelReferences(): Promise<string[]> {
-    this.pendingModelReferences ??= this.readModels()
-      // The picker remains available when a local CLI invocation fails.
-      .catch(() => [] as string[])
-      .then((references) => {
-        const ttl = references.length > 0
-          ? OPENCODE_MODELS_CACHE_TTL_MS
-          : OPENCODE_MODELS_EMPTY_CACHE_TTL_MS;
-        this.cachedModelReferences = { references, expiresAt: this.now() + ttl };
-        return references;
-      })
-      .finally(() => {
-        this.pendingModelReferences = null;
-      });
-    return this.pendingModelReferences;
-  }
-
-  /**
-   * Serves the cached CLI listing, refreshing it in the background once stale.
-   *
-   * Spawning `opencode models` takes seconds and every picker load asks for
-   * the catalog, so only the first read after startup waits on the CLI.
-   */
-  private async readModelReferences(): Promise<string[]> {
-    if (!this.cachedModelReferences) {
-      return this.refreshModelReferences();
-    }
-    if (this.now() >= this.cachedModelReferences.expiresAt) {
-      void this.refreshModelReferences();
-    }
-    return this.cachedModelReferences.references;
-  }
-
-  async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    const [connectedProviderIds, modelReferences] = await Promise.all([
-      readConnectedOpenCodeProviderIds(),
-      this.readModelReferences(),
-    ]);
-    const discovered = createDiscoveredOpenCodeModels(modelReferences, connectedProviderIds);
-    if (discovered) {
-      return discovered;
-    }
-
-    // Discovery can fail when the CLI is not installed or is upgraded. Keep
-    // known static options only for connected providers; an unknown provider
-    // gets an empty picker instead of a misleading foreign-provider catalog.
-    return filterOpenCodeModelsByProvider(OPENCODE_PREDEFINED_MODELS, connectedProviderIds);
+  async getSupportedModels(workspacePath?: string): Promise<ProviderModelsDefinition> {
+    const directory = path.resolve(workspacePath || os.homedir());
+    const cached = this.catalogs.get(directory);
+    if (cached && cached.expiresAt > this.now()) return cached.value;
+    const existing = this.pending.get(directory);
+    if (existing) return existing;
+    const request = this.readModels(directory).then((native) => {
+      const value = projectNativeCatalog(native);
+      this.catalogs.delete(directory);
+      this.catalogs.set(directory, { value, expiresAt: this.now() + 60_000 });
+      if (this.catalogs.size > 64) this.catalogs.delete(this.catalogs.keys().next().value!);
+      return value;
+    }).finally(() => this.pending.delete(directory));
+    this.pending.set(directory, request);
+    return request;
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
@@ -617,7 +131,8 @@ export class OpenCodeProviderModels implements IProviderModels {
     // OpenCode's `session` table is keyed by its own session id, so the stable
     // app id has to be translated first; sessions discovered on disk store the
     // provider id in both columns and resolve to themselves.
-    const providerSessionId = sessionsDb.getSessionById(sessionId)?.provider_session_id ?? sessionId;
+    const appSession = sessionsDb.getSessionById(sessionId);
+    const providerSessionId = appSession?.provider_session_id ?? sessionId;
 
     try {
       const dbPath = getOpenCodeDatabasePath();
@@ -655,9 +170,9 @@ export class OpenCodeProviderModels implements IProviderModels {
         db.close();
       }
     } catch {
-      // Fall through to the curated default when OpenCode session lookup fails.
+      // Fall through to the project's native default when session lookup fails.
     }
 
-    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels());
+    return buildDefaultProviderCurrentActiveModel(await this.getSupportedModels(appSession?.project_path ?? undefined));
   }
 }

@@ -207,10 +207,18 @@ export const providerModelsDb = {
     return row ? toCustomProviderModelRecord(row) : null;
   },
 
+  /** Providers resolves project-specific native defaults before deleting a shared custom model. */
+  getCustomModelSessionDirectories(provider: LLMProvider, modelId: string): string[] {
+    const rows = getConnection().prepare(`
+      SELECT DISTINCT project_path FROM sessions WHERE provider = ? AND model = ?
+    `).all(provider, modelId) as Array<{ project_path: string }>;
+    return rows.map((row) => row.project_path);
+  },
+
   deleteCustomProviderModel(
     provider: LLMProvider,
     recordId: number,
-    fallbackModelId: string,
+    fallbackModelId: string | ReadonlyMap<string, string>,
   ): CustomProviderModelRecord | null {
     const db = getConnection();
     const remove = db.transaction(() => {
@@ -221,11 +229,23 @@ export const providerModelsDb = {
 
       // The effort is cleared alongside the model because it was chosen for the
       // deleted model; replaced sessions resume on the fallback model's default.
-      db.prepare(`
+      const replace = db.prepare(`
         UPDATE sessions
         SET model = ?, effort = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE provider = ? AND model = ?
-      `).run(fallbackModelId, provider, row.model_id);
+        WHERE provider = ? AND model = ? AND (? IS NULL OR project_path = ?)
+      `);
+      if (typeof fallbackModelId === 'string') {
+        replace.run(fallbackModelId, provider, row.model_id, null, null);
+      } else {
+        const directories = this.getCustomModelSessionDirectories(provider, row.model_id);
+        // A new project may have started using the model during native catalog
+        // reads. Roll back rather than assign another project's default.
+        for (const directory of directories) {
+          const fallback = fallbackModelId.get(directory);
+          if (fallback === undefined) throw new Error('Model usage changed during deletion. Please retry.');
+          replace.run(fallback, provider, row.model_id, directory, directory);
+        }
+      }
 
       db.prepare(`
         DELETE FROM provider_models
