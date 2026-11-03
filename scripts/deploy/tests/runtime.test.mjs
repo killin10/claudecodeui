@@ -24,7 +24,7 @@ test('installed launcher works with quoted home paths and no dependency on sourc
   const release = path.join(p.releases, 'fixture');
   await fs.mkdir(path.join(release, 'dist-server/server'), { recursive: true });
   await fs.writeFile(path.join(release, 'release.json'), JSON.stringify({ nodeVersion: process.version }));
-  await fs.writeFile(path.join(release, 'dist-server/server/index.js'), 'console.log(JSON.stringify({cwd:process.cwd(), home:process.env.HOME, host:process.env.HOST, secret:process.env.UNRELATED_SECRET, ssh:process.env.SSH_AUTH_SOCK, nodeEnv:process.env.NODE_ENV}));');
+  await fs.writeFile(path.join(release, 'dist-server/server/index.js'), 'console.log(JSON.stringify({cwd:process.cwd(), home:process.env.HOME, host:process.env.HOST, secret:process.env.UNRELATED_SECRET, ssh:process.env.SSH_AUTH_SOCK, nodeEnv:process.env.NODE_ENV, browserMcp:process.env.CLOUDCLI_BROWSER_USE_MCP_COMMAND}));');
   await selectRelease(p, 'current', release);
   const result = JSON.parse(execFileSync('/bin/sh', [path.join(p.bin, 'launch.sh')], {
     cwd: '/', env: { PATH: '/usr/bin:/bin', UNRELATED_SECRET: 'do not inherit', SSH_AUTH_SOCK: '/tmp/test-agent.sock' }, encoding: 'utf8',
@@ -35,6 +35,7 @@ test('installed launcher works with quoted home paths and no dependency on sourc
   assert.equal(result.secret, undefined);
   assert.equal(result.ssh, '/tmp/test-agent.sock');
   assert.equal(result.nodeEnv, undefined);
+  assert.equal(result.browserMcp, path.join(p.home, '.local/bin/cloudcli'));
 
   await fs.appendFile(p.env, 'NODE_ENV=test\n');
   const configured = JSON.parse(execFileSync('/bin/sh', [path.join(p.bin, 'launch.sh')], {

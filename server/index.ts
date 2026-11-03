@@ -339,6 +339,10 @@ async function startServer() {
         // Initialize authentication database
         await initializeDatabase();
 
+        await browserUseService.reconcileAgentMcp().catch((error) => {
+            console.error('[Browser] Could not refresh managed MCP registrations:', error);
+        });
+
         // Configure Web Push (VAPID keys)
         configureWebPush();
 

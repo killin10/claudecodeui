@@ -1,19 +1,16 @@
-import { createRequire } from 'node:module';
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
-// cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
-import spawn from 'cross-spawn';
 
 import { appConfigDb } from '@/modules/database/index.js';
 import { providerMcpService } from '@/modules/providers/index.js';
 import { getModuleDirectory } from '@/shared/utils.js';
 
 import { getBrowserUseRuntime } from './browser-use-runtime.js';
+import { createBrowserRuntimeManager } from './browser-runtime-manager.js';
 
-const require = createRequire(import.meta.url);
+const browserRuntime = createBrowserRuntimeManager();
 const __dirname = getModuleDirectory(import.meta.url);
 const MAX_SESSIONS_PER_OWNER = Number.parseInt(process.env.CLOUDCLI_BROWSER_USE_MAX_SESSIONS_PER_OWNER || '3', 10);
 const SESSION_TTL_MS = Number.parseInt(process.env.CLOUDCLI_BROWSER_USE_SESSION_TTL_MS || String(30 * 60 * 1000), 10);
@@ -156,15 +153,14 @@ function getSetupMessage(settings: BrowserUseSettings, readiness: RuntimeReadine
   return readiness.installMessage || 'Browser runtime is not ready.';
 }
 
-function getPlaywright(): any | null {
-  try {
-    return require('playwright');
-  } catch {
-    return null;
-  }
-}
-
 function getMcpCommand(): { command: string; args: string[] } {
+  const stableCommand = process.env.CLOUDCLI_BROWSER_USE_MCP_COMMAND;
+  if (stableCommand) {
+    if (!path.isAbsolute(stableCommand) || !fs.existsSync(stableCommand)) {
+      throw new Error('CLOUDCLI_BROWSER_USE_MCP_COMMAND must name an existing absolute CLI path.');
+    }
+    return { command: stableCommand, args: ['browser-use-mcp'] };
+  }
   const mcpScriptPath = path.join(__dirname, 'browser-use-mcp.js');
   if (fs.existsSync(mcpScriptPath)) {
     return {
@@ -211,7 +207,7 @@ function getProfilePath(profileName: string): string {
 }
 
 function probeRuntime(): RuntimeProbe {
-  const playwright = getPlaywright();
+  const playwright = browserRuntime.get();
   const readiness: RuntimeProbe = {
     playwright,
     playwrightInstalled: Boolean(playwright),
@@ -254,54 +250,6 @@ function getRuntimeReadiness(options: { force?: boolean } = {}): RuntimeReadines
   };
 }
 
-const INSTALL_COMMAND_TIMEOUT_MS = Number.parseInt(
-  process.env.CLOUDCLI_BROWSER_USE_INSTALL_TIMEOUT_MS || String(10 * 60 * 1000),
-  10,
-);
-
-function runCommand(command: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env: process.env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const output: string[] = [];
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish(() => reject(new Error(
-        `${command} ${args.join(' ')} timed out after ${INSTALL_COMMAND_TIMEOUT_MS}ms.`,
-      )));
-    }, INSTALL_COMMAND_TIMEOUT_MS);
-    timer.unref?.();
-
-    // stdio config above guarantees the pipes exist; cross-spawn's types
-    // just don't narrow them the way node's spawn overloads do.
-    child.stdout?.on('data', (chunk) => output.push(String(chunk)));
-    child.stderr?.on('data', (chunk) => output.push(String(chunk)));
-    child.on('error', (error) => finish(() => reject(error)));
-    child.on('close', (code) => finish(() => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(output.join('').trim() || `${command} ${args.join(' ')} exited with code ${code}`));
-    }));
-  });
-}
-
 function formatInstallError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('sudo') && message.includes('password')) {
@@ -315,20 +263,11 @@ async function installRuntime(): Promise<{ success: boolean; message: string }> 
     return installPromise;
   }
 
-  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   runtimeProbeCache = null;
   installPromise = (async () => {
     try {
-      lastInstallMessage = 'Installing Playwright package...';
-      await runCommand(npmCommand, ['install', '--no-save', '--no-package-lock', 'playwright']);
-
-      if (process.platform === 'linux') {
-        lastInstallMessage = 'Installing Chromium system dependencies...';
-        await runCommand(npmCommand, ['exec', '--', 'playwright', 'install-deps', 'chromium']);
-      }
-
-      lastInstallMessage = 'Installing Chromium runtime...';
-      await runCommand(npmCommand, ['exec', '--', 'playwright', 'install', 'chromium']);
+      lastInstallMessage = `Installing Playwright ${browserRuntime.version} and Chromium...`;
+      await browserRuntime.install();
 
       lastInstallMessage = 'Browser runtime installed.';
       return { success: true, message: lastInstallMessage };
@@ -442,6 +381,11 @@ async function getActionPoint(page: any, input: { selector?: string; text?: stri
 }
 
 export const browserUseService = {
+  /** Server startup refreshes enabled managed MCP registrations after release changes. */
+  async reconcileAgentMcp() {
+    if (readSettings().enabled) await this.registerAgentMcp();
+  },
+
   async getSettings() {
     return readSettings();
   },
@@ -495,6 +439,10 @@ export const browserUseService = {
         CLOUDCLI_BROWSER_USE_API_URL: getMcpApiUrl(),
       },
     });
+    const failed = results.filter((result) => !result.created);
+    if (failed.length) {
+      throw new Error(`Browser MCP registration failed: ${failed.map((result) => `${result.provider}: ${result.error}`).join('; ')}`);
+    }
     return { name: MCP_SERVER_NAME, command, args, results };
   },
 

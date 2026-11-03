@@ -51,6 +51,7 @@ export async function launch(p) {
   // Do not permit server.env to move the process away from its configured user/runtime.
   env.HOME = p.home;
   env.PATH = runtime.path;
+  env.CLOUDCLI_BROWSER_USE_MCP_COMMAND = path.join(p.home, '.local/bin/cloudcli');
   process.chdir(release);
   process.execve(runtime.node, [runtime.node, path.join(release, 'dist-server/server/index.js')], env);
 }
