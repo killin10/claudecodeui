@@ -16,6 +16,7 @@ import MessageModelLabel from '@/modules/chat/transcript/MessageModelLabel';
 import MessageSpeakControl from '@/modules/chat/transcript/MessageSpeakControl';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { MemoryCitations } from '@/modules/chat/transcript/MemoryCitations';
+import { OpenCodePermissionRecovery } from '@/modules/chat/modals/OpenCodePermissionRecovery';
 
 type MessageComponentProps = {
   message: ChatMessage;
@@ -299,6 +300,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {message.toolProgress && !message.toolResult && (
                   <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground" aria-live="polite">{message.toolProgress}</pre>
                 )}
+                {!isExporting && provider === 'opencode' && message.toolResult && (selectedProject?.fullPath || selectedProject?.path) && (
+                  <OpenCodePermissionRecovery key={`${message.id}:${selectedProject.fullPath || selectedProject.path}`} result={message.toolResult} workspacePath={(selectedProject.fullPath || selectedProject.path)!} />
+                )}
                 {/* Tool Result Section — Bash renders its output inside the command row above. */}
                 {message.toolResult && message.toolName !== 'Bash' && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
                   message.toolResult.isError ? (
@@ -436,4 +440,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 });
 
 export default MessageComponent;
-

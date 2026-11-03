@@ -634,7 +634,8 @@ router.get(
   '/:provider/auth/status',
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
-    const status = await providerAuthService.getProviderAuthStatus(provider);
+    const workspacePath = req.query.workspacePath === '' ? '' : readOptionalQueryString(req.query.workspacePath);
+    const status = await providerAuthService.getProviderAuthStatus(provider, workspacePath);
     res.json(createApiSuccessResponse(status));
   }),
 );

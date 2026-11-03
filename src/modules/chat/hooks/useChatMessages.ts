@@ -462,6 +462,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           ? {
               content: formatToolResultContent(tr.content),
               isError: Boolean(tr.isError),
+              ...('errorType' in tr && typeof tr.errorType === 'string' ? { errorType: tr.errorType } : {}),
               toolUseResult: tr.toolUseResult,
             }
           : null;

@@ -488,6 +488,8 @@ export type SessionEstablishedContext = {
 export type ToolResult = {
   content?: unknown;
   isError?: boolean;
+  /** Structured native error discriminator, used for provider-specific recovery actions. */
+  errorType?: string;
   timestamp?: string | number | Date;
   toolUseResult?: unknown;
   [key: string]: unknown;
@@ -578,7 +580,7 @@ export type NormalizedMessage = {
   toolId?: string;
   /** Latest transient output while a tool is still running. */
   toolProgress?: string;
-  toolResult?: { content: string; isError: boolean; toolUseResult?: unknown } | null;
+  toolResult?: { content: string; isError: boolean; errorType?: string; toolUseResult?: unknown } | null;
   /** A `tool_result` row's structured output — a launch acknowledgement's task id and metadata, a search's file list. */
   toolUseResult?: unknown;
   isError?: boolean;

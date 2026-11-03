@@ -916,5 +916,18 @@
     "teamManagementDescription": "Multiple users, role-based access, and shared projects for your team.",
     "licensed": "Licensed under AGPL-3.0",
     "proCta": "Available with CloudCLI Pro"
+  },
+  "opencodeAvailability": {
+    "title": "Project model availability",
+    "project": "Check project",
+    "checking": "Checking project models…",
+    "available": "{{count}} models available",
+    "empty": "No models available in this project.",
+    "failed": "Could not check project models. Retry the check.",
+    "description": "Uses the project’s native OpenCode configuration, including custom providers and environment credentials. Model availability does not verify a request to the model provider.",
+    "credentials": "Detected credentials",
+    "noCredentials": "No credentials detected here; check project availability below.",
+    "detected": "Detected",
+    "notDetected": "Not detected"
   }
 }

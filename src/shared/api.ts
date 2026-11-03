@@ -418,8 +418,8 @@ export const api = {
   providers: {
     opencodeSessionAgent: (sessionId: string) => get(`/api/providers/opencode/sessions/${encodeURIComponent(sessionId)}/agent`),
     capabilities: () => get('/api/providers/capabilities'),
-    authStatus: (provider: string) =>
-      get(`/api/providers/${encodeURIComponent(provider)}/auth/status`),
+    authStatus: (provider: string, workspacePath?: string) =>
+      get(`/api/providers/${encodeURIComponent(provider)}/auth/status${workspacePath === undefined ? '' : `?workspacePath=${encodeURIComponent(workspacePath)}`}`),
     cliStatus: (provider: string) =>
       get(`/api/providers/${encodeURIComponent(provider)}/cli`),
     updateCli: (provider: string) =>

@@ -87,17 +87,17 @@ function RuleSources({ settings }: { settings: OpenCodePermissionSettings }) {
   </>;
 }
 
-/** Used by the OpenCode settings category to edit user rules and inspect native rules for a selected project. */
-export function OpenCodePermissionsContent({ projects }: { projects: AgentSettingsProject[] }) {
+/** Settings and chat's denial recovery dialog use this native permission editor. A fixed workspace keeps recovery scoped to its conversation. */
+export function OpenCodePermissionsContent({ projects, fixedWorkspacePath }: { projects: AgentSettingsProject[]; fixedWorkspacePath?: string }) {
   const { t } = useTranslation('settings');
   // A directory determines which project config and saved approvals OpenCode applies.
-  const [workspacePath, setWorkspacePath] = useState('');
+  const [workspacePath, setWorkspacePath] = useState(fixedWorkspacePath ?? '');
   const { settings, rules, setRules, status, error, reload, save, changeSaved } = useOpenCodePermissions(workspacePath);
   const busy = status !== 'ready';
   return <div className="space-y-5">
     <h3 className="font-medium">{t('opencodePermissions.title', 'OpenCode permissions')}</h3>
     <p className="text-sm text-muted-foreground">{t('opencodePermissions.description', 'Edit user rules shared by OpenCode sessions. Later matching rules take precedence; agent and session rules may also apply. Changes apply to new turns.')}</p>
-    <label className="block space-y-1 text-sm">
+    {fixedWorkspacePath === undefined && <label className="block space-y-1 text-sm">
       <span>{t('opencodePermissions.directory', 'Inspect rules for')}</span>
       <select aria-label={t('opencodePermissions.directory', 'Inspect rules for')} disabled={busy} value={workspacePath} onChange={(event) => {
         reload();
@@ -106,7 +106,7 @@ export function OpenCodePermissionsContent({ projects }: { projects: AgentSettin
         <option value="">{t('opencodePermissions.home', 'Home directory')}</option>
         {projects.map((project) => <option key={project.name} value={project.fullPath || project.path}>{project.displayName || project.name}</option>)}
       </select>
-    </label>
+    </label>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {busy && <p role="status">{t('opencodePermissions.loading', 'Loading or saving…')}</p>}
     <Button variant="outline" disabled={busy} onClick={reload}>{t('opencodePermissions.reload', 'Reload')}</Button>

@@ -2,13 +2,15 @@ import { AlertTriangle, LogIn } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import ProviderCliVersion from '@/modules/settings/tabs/agents-settings/sections/content/ProviderCliVersion';
+import { OpenCodeAvailability } from '@/modules/settings/tabs/agents-settings/sections/content/OpenCodeAvailability';
 import { Badge, Button, LLMProviderLogo } from '@/shared/ui';
-import type { AgentProvider, ProviderAuthStatus, ProviderAuthSubscriptionOverride } from '@/shared/types';
+import type { AgentProvider, AgentSettingsProject, ProviderAuthStatus, ProviderAuthSubscriptionOverride } from '@/shared/types';
 
 type AccountContentProps = {
   agent: AgentProvider;
   authStatus: ProviderAuthStatus;
   onLogin: () => void;
+  projects?: AgentSettingsProject[];
 };
 
 type AgentVisualConfig = {
@@ -96,7 +98,7 @@ function SubscriptionOverrideNotice({ override }: SubscriptionOverrideNoticeProp
 }
 
 /** Rendered by AgentCategoryContentSection for the "account" category to show sign-in state for one provider. */
-export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
+export default function AccountContent({ agent, authStatus, onLogin, projects = [] }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
 
@@ -119,17 +121,17 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
           <div className="flex items-center gap-3">
             <div className="flex-1">
               <div className={`font-medium ${config.textClass}`}>
-                {t('agents.connectionStatus')}
+                {agent === 'opencode' ? t('opencodeAvailability.credentials', 'Detected credentials') : t('agents.connectionStatus')}
               </div>
               <div className={`text-sm ${config.subtextClass}`}>
                 {authStatus.loading ? (
                   t('agents.authStatus.checkingAuth')
                 ) : authStatus.authenticated ? (
-                  t('agents.authStatus.loggedInAs', {
+                  agent === 'opencode' ? authStatus.email || authStatus.method : t('agents.authStatus.loggedInAs', {
                     email: authStatus.email || t('agents.authStatus.authenticatedUser'),
                   })
                 ) : (
-                  t('agents.authStatus.notConnected')
+                  agent === 'opencode' ? t('opencodeAvailability.noCredentials', 'No credentials detected here; check project availability below.') : t('agents.authStatus.notConnected')
                 )}
               </div>
             </div>
@@ -140,11 +142,11 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
                 </Badge>
               ) : authStatus.authenticated ? (
                 <Badge variant="secondary" className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
-                  {t('agents.authStatus.connected')}
+                  {agent === 'opencode' ? t('opencodeAvailability.detected', 'Detected') : t('agents.authStatus.connected')}
                 </Badge>
               ) : (
                 <Badge variant="secondary" className="bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
-                  {t('agents.authStatus.disconnected')}
+                  {agent === 'opencode' ? t('opencodeAvailability.notDetected', 'Not detected') : t('agents.authStatus.disconnected')}
                 </Badge>
               )}
             </div>
@@ -153,6 +155,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
           {!authStatus.loading && authStatus.subscriptionOverride && (
             <SubscriptionOverrideNotice override={authStatus.subscriptionOverride} />
           )}
+          {agent === 'opencode' && <OpenCodeAvailability projects={projects} />}
           <ProviderCliVersion
             key={agent}
             agent={agent}

@@ -87,7 +87,11 @@
     "addTo": "将 {{entry}} 添加到允许的工具。",
     "retry": "权限已保存。重试请求以使用该工具。",
     "error": "无法更新权限。请重试。",
-    "openSettings": "打开设置"
+    "openSettings": "打开设置",
+    "reviewNative": "查看 OpenCode 权限",
+    "reviewNativeHint": "请查看匹配规则后再修改权限。用户规则跨项目生效，Agent 和会话规则仍可能拒绝访问。保存后不会自动重试失败的工具。",
+    "loadingNative": "正在加载权限…",
+    "closeNative": "关闭"
   },
   "todo": {
     "updated": "待办列表已成功更新",

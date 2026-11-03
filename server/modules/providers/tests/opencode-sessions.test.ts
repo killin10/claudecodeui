@@ -360,7 +360,7 @@ test('V2 errors and failed tool calls retain their readable messages', () => {
       state: { status: 'error', input: {}, error: { type: 'ToolError', message: 'File missing' } } }],
   });
   assert.equal(messages[0].content, 'Rate limit exceeded');
-  assert.deepEqual(messages[1].toolResult, { content: 'File missing', isError: true });
+  assert.deepEqual(messages[1].toolResult, { content: 'File missing', isError: true, errorType: 'ToolError' });
 });
 
 test('V1 wire events are no longer accepted', () => {
@@ -652,6 +652,32 @@ test('V2 edit anchors exclude the selected prompt, preserve the source, and supp
     });
   } finally {
     restoreHome();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test('native permission error type survives live and persisted history normalization', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-denial-'));
+  const restore = patchHomeDir(root);
+  const message = { id: 'msg_denied', type: 'assistant', time: { created: 1700000006000 }, content: [{
+    type: 'tool', name: 'shell', id: 'call_denied', state: {
+      status: 'error', input: { command: 'pwd' }, error: { type: 'permission.rejected', message: 'Permission denied: shell' },
+    },
+  }] };
+  try {
+    await createOpenCodeDatabase(root, root);
+    const db = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+    db.prepare('INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)')
+      .run(message.id, 'open-session-1', 'assistant', 3, JSON.stringify(message));
+    db.close();
+    const provider = new OpenCodeSessionsProvider();
+    const live = provider.normalizeMessage({ type: 'session.message', message }, 'open-session-1');
+    const history = await provider.fetchHistory('open-session-1');
+    assert.equal(live[0].toolResult?.errorType, 'permission.rejected');
+    assert.deepEqual(history.messages.find((row) => row.id === live[0].id), live[0]);
+  } finally {
+    restore();
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -2,6 +2,7 @@
 import path from "path";
 
 import express from "express";
+import { readMemoryCommand } from "./services/memory-command.service.js";
 
 import { parseFrontMatter } from "../../shared/frontmatter.js";
 
@@ -205,7 +206,7 @@ const builtInCommands = [
   },
   {
     name: "/memory",
-    description: "Open CLAUDE.md memory file for editing",
+    description: "Open project instructions for editing",
     namespace: "builtin",
     metadata: { type: "builtin" },
   },
@@ -409,43 +410,11 @@ Custom commands can be created in:
     };
   },
 
-  "/memory": async (args, context) => {
-    const projectPath = context?.projectPath;
-
-    if (!projectPath) {
-      return {
-        type: "builtin",
-        action: "memory",
-        data: {
-          error: "No project selected",
-          message: "Please select a project to access its CLAUDE.md file",
-        },
-      };
-    }
-
-    const claudeMdPath = path.join(projectPath, "CLAUDE.md");
-
-    // Check if CLAUDE.md exists
-    let exists = false;
-    try {
-      await fs.access(claudeMdPath);
-      exists = true;
-    } catch (err) {
-      // File doesn't exist
-    }
-
-    return {
-      type: "builtin",
-      action: "memory",
-      data: {
-        path: claudeMdPath,
-        exists,
-        message: exists
-          ? `Opening CLAUDE.md at ${claudeMdPath}`
-          : `CLAUDE.md not found at ${claudeMdPath}. Create it to store project-specific instructions.`,
-      },
-    };
-  },
+  "/memory": async (args, context) => ({
+    type: "builtin",
+    action: "memory",
+    data: await readMemoryCommand(context?.projectPath, readModelProvider(context?.provider), fs.access),
+  }),
 
   "/config": async (args, context) => {
     return {

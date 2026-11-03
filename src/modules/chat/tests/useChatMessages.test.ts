@@ -271,3 +271,12 @@ test('an updated event finds a call launched before this page loaded through its
   const [row] = normalizedToChatMessages([workflowCall, launchAck, killed]);
   assert.equal(row?.taskStatus?.status, 'stopped');
 });
+
+
+test('native denial provenance survives conversion into a tool card', () => {
+  const rows = normalizedToChatMessages([message('denied', {
+    provider: 'opencode', kind: 'tool_use', toolId: 'denied', toolName: 'Bash', toolInput: { command: 'pwd' },
+    toolResult: { content: 'Permission denied: shell', isError: true, errorType: 'permission.rejected' },
+  })]);
+  assert.equal(rows[0].toolResult?.errorType, 'permission.rejected');
+});

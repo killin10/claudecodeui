@@ -483,3 +483,25 @@ The fake V2 host persists agent/model/metadata changes and can fail each mutatio
 before applying it. Retry tests read the resulting native session state through
 the real client, including failures between switching an agent and clearing its
 recovery metadata.
+
+
+OpenCode account settings distinguish detected credentials from project model
+availability. An explicit `GET /api/providers/opencode/auth/status?workspacePath=...`
+adds `projectAvailability` from the native model catalog (cached for 60 seconds).
+An empty directory selects the home directory; omitting the parameter keeps the
+ordinary credential/installation check. `modelCount: null` with `error` means the
+probe failed, while zero means the catalog was read successfully and is empty.
+Availability does not test an inference request or imply an account login.
+
+The application `/memory` command opens `AGENTS.md` for OpenCode and retains
+`CLAUDE.md` for existing other-provider behavior. Native commands still override
+application commands with the same name.
+
+Failed OpenCode tools retain their native structured error type through history
+and live rendering. A `permission.rejected` result offers the native permission
+editor for the conversation directory. The user reviews sources and explicitly
+saves rules; opening the editor grants nothing and saving does not retry a tool.
+User config rules apply globally, and higher-priority agent/session rules may
+still deny access. Generic tool errors, command output, and OS permission errors
+do not trigger this recovery action. The discriminator follows
+[V2 error serialization](https://github.com/anomalyco/opencode/blob/v2.1.4/packages/core/src/session/to-session-error.ts).

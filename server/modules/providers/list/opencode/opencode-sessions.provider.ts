@@ -71,7 +71,9 @@ function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
       ? state.content.map((item: AnyRecord) => item.type === 'text' ? item.text : item.uri ?? '').join('\n')
       : undefined;
     const normalizedPart = part.type === 'tool'
-      ? { ...part, callID: part.id, ...normalizeOpenCodeTool(part.name, { ...state, output, error: state.error?.message ?? state.error }) }
+      ? { ...part, callID: part.id, ...normalizeOpenCodeTool(part.name, {
+        ...state, output, errorType: state.error?.type, error: state.error?.message ?? state.error,
+      }) }
       : part;
     return {
       ...base, part_id: part.type === 'text' || part.type === 'reasoning'
@@ -616,6 +618,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           toolMessage.toolResult = {
             content: formatToolContent(state.output ?? state.error),
             isError: status === 'error',
+            ...(status === 'error' && readOptionalString(state.errorType) ? { errorType: state.errorType } : {}),
             ...(state.toolUseResult ? { toolUseResult: state.toolUseResult } : {}),
           };
         }

@@ -668,5 +668,18 @@
   "skillsPage": {
     "remove": "删除 Skill",
     "confirmRemove": "从 OpenCode 用户 Skill 目录删除 {{name}} 及其所有文件？"
+  },
+  "opencodeAvailability": {
+    "title": "项目模型可用性",
+    "project": "检查项目",
+    "checking": "正在检查项目模型…",
+    "available": "有 {{count}} 个可用模型",
+    "empty": "此项目没有可用模型。",
+    "failed": "无法检查项目模型，请重试。",
+    "description": "按项目的原生 OpenCode 配置检查，包括自定义提供商和环境变量凭据。模型可用不代表已验证模型服务调用。",
+    "credentials": "凭据检测",
+    "noCredentials": "此处未检测到凭据，请查看下方的项目模型可用性。",
+    "detected": "已检测到",
+    "notDetected": "未检测到"
   }
 }

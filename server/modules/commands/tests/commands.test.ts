@@ -46,6 +46,7 @@ async function executeCommand(
   const router = createCommandsRouter({
     fileSystem: {
       readFile: async () => JSON.stringify({ name: 'claude-code-ui', version: '0.0.0-test' }),
+      access: async () => undefined,
     } as unknown as typeof import('node:fs/promises'),
     homeDirectory: () => '/home/test',
     appRoot: '/app',
@@ -76,6 +77,11 @@ test('models command returns models only for the active provider using injected 
   const result = await executeCommand('/models', { provider: 'codex' });
   const data = result.data as Record<string, unknown>;
   assert.deepEqual(Object.keys(data.available as object), ['codex']);
+});
+
+test('memory command passes the selected provider to instruction lookup', async () => {
+  const result = await executeCommand('/memory', { provider: 'opencode', projectPath: '/project' });
+  assert.deepEqual(result.data, { path: '/project/AGENTS.md', exists: true, message: 'Opening AGENTS.md at /project/AGENTS.md' });
 });
 
 test('models command uses the active project catalog', async () => {

@@ -380,6 +380,8 @@ export type NormalizedMessage = {
   toolResult?: {
     content?: string;
     isError?: boolean;
+    /** Structured native error discriminator; never inferred from command output. */
+    errorType?: string;
     toolUseResult?: unknown;
   };
   isError?: boolean;
@@ -929,6 +931,8 @@ export type ProviderAuthSubscriptionOverride = {
  * credential state for each provider.
  */
 export type ProviderAuthStatus = {
+  /** Native project discovery, independent of saved credentials. Null count means the probe failed. */
+  projectAvailability?: { directory: string; modelCount: number | null; error?: string };
   installed: boolean;
   provider: LLMProvider;
   /**

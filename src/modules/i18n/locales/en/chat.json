@@ -100,7 +100,11 @@
     "addTo": "Adds {{entry}} to Allowed Tools.",
     "retry": "Permission saved. Retry the request to use the tool.",
     "error": "Unable to update permissions. Please try again.",
-    "openSettings": "Open settings"
+    "openSettings": "Open settings",
+    "reviewNative": "Review OpenCode permissions",
+    "reviewNativeHint": "Review the matching rules before changing access. User rules apply across projects; agent and session rules can still deny access. Saving does not retry the failed tool.",
+    "loadingNative": "Loading permissions…",
+    "closeNative": "Close"
   },
   "todo": {
     "updated": "Todo list has been updated successfully",
