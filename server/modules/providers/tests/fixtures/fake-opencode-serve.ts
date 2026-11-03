@@ -23,7 +23,7 @@ type Step =
   | { type: 'interrupt' }
   | { type: 'background'; childID: string }
   | { type: 'background-shell'; shellID: string; stop?: boolean }
-  | { type: 'detached-child'; childID: string }
+  | { type: 'detached-child'; childID: string; missCompletionEvents?: boolean }
   /** Several requests asked at once; a reject of one rejects the rest, as OpenCode does. */
   | { type: 'parallel-permissions'; requests: Array<{ id: string; permission: string; patterns: string[]; always: string[] }> }
   | { type: 'error'; name: string; message: string }
@@ -208,6 +208,7 @@ async function runTurn(sessionID: string): Promise<void> {
       });
       emit('session.tool.success', { sessionID, assistantMessageID: 'msg_detached', id: 'tool_background' });
       emit('session.execution.succeeded', { sessionID });
+      if (!shell && step.missCompletionEvents) return;
       if (shell && step.stop) await aborted;
       if (!shell) emit('session.execution.succeeded', { sessionID: taskID });
       // Native notifications can arrive well after child execution ends.

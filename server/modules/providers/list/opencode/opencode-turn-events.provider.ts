@@ -62,6 +62,12 @@ export class OpenCodeTurnEvents {
 
   flush(): Promise<void> { return this.messageQueue; }
 
+  /** Runtime reconciliation republishes cards after correcting missed terminal events. */
+  async refreshBackgroundCards(): Promise<void> {
+    for (const messageID of this.rootToolMessages) this.forwardMessage(messageID);
+    await this.messageQueue;
+  }
+
   // A resumed child emits no session.created event. Verify its ancestry before
   // routing requests; never accept an unrelated session just because it shares a server.
   private ownsSession = async (sessionID: string): Promise<boolean> => {
@@ -275,7 +281,7 @@ export class OpenCodeTurnEvents {
     }
     if (!this.ownedSessions.has(data.sessionID) || this.context.finished()) return;
     if (event.type === 'session.synthetic') {
-      this.host.work.notificationDelivered(data.sessionID, data.metadata);
+      this.host.work.notificationDelivered(data.sessionID, data.metadata, event.created);
     }
     if (event.type === 'permission.replied') settleOpenCodePermission(event.data.requestID);
     if (data.sessionID !== this.host.providerSessionId) {

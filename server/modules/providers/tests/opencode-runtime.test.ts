@@ -6,6 +6,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import Database from 'better-sqlite3';
 import type { OpenCodeClient } from '@opencode/client';
 
 import type { ProviderPermissionDecision, ProviderRuntimeContext } from '@/shared/types.js';
@@ -1225,4 +1226,58 @@ test('revoking project approvals invalidates remembered chat approvals', async (
   clearOpenCodeRememberedApprovals('prj_test');
   const revoked = await runTurn({ scenario, appSessionId: 'app-revoke', onFrame: (frame) => frame.kind === 'permission_request' ? { allow: false } : undefined });
   assert.equal(revoked.frames.some((frame) => frame.kind === 'permission_request'), true);
+});
+
+
+test('missed background completion and delivery events reconcile cards, release the registry and close the host', async () => {
+  const dataDir = path.join(tempRoot, '.local', 'share', 'opencode');
+  await mkdir(dataDir, { recursive: true });
+  const dbPath = path.join(dataDir, 'opencode.db');
+  let initialTasks = 0;
+  try {
+    const turn = await runTurn({
+      scenario: { newSessionId: 'ses_recovered_parent', steps: [
+        { type: 'detached-child', childID: 'ses_recovered_child', missCompletionEvents: true },
+      ] },
+      onFrame(frame) {
+        if (frame.kind !== 'complete') return;
+        initialTasks = opencodeRuntime.listBackgroundWork()[0]?.tasks.length ?? 0;
+        const db = new Database(dbPath);
+        try {
+          db.exec(`
+            CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, time_busy INTEGER, time_idle INTEGER, idle_outcome TEXT);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, data TEXT);
+          `);
+          const now = Date.now();
+          const insert = db.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?)');
+          insert.run('ses_recovered_parent', null, now, now, 'succeeded');
+          insert.run('ses_recovered_child', 'ses_recovered_parent', now, now, 'succeeded');
+          db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)').run('msg_delivery', 'ses_recovered_parent', 'synthetic', 10,
+            JSON.stringify({ time: { created: now }, metadata: { source: 'subagent', childID: 'ses_recovered_child', state: 'completed' } }));
+        } finally {
+          db.close();
+        }
+        // The registry is deliberately still stale here. Both live and history
+        // normalization must prefer the persisted terminal execution anyway.
+        const [card] = sessionsProvider.normalizeMessage({ type: 'session.message', message: {
+          id: 'msg_card', type: 'assistant', time: { created: 1 }, content: [{
+            type: 'tool', name: 'subagent', id: 'tool_background', time: { created: 1 }, state: {
+              status: 'completed', input: { background: true }, content: [],
+              metadata: { sessionID: 'ses_recovered_child', status: 'running' },
+            },
+          }],
+        } }, 'app-session');
+        assert.equal(card.subagent?.status, 'completed');
+      },
+    });
+    assert.equal(initialTasks, 1);
+    assert.equal(turn.error, null);
+    assert.ok(turn.frames.some((frame) => frame.subagent?.status === 'completed'));
+    assert.deepEqual(opencodeRuntime.listBackgroundWork(), []);
+    assert.equal(turn.frames.filter((frame) => frame.kind === 'complete').length, 1);
+    assert.equal(findRequest(turn.requests, 'POST', /interrupt$/), undefined);
+    assert.ok(await waitForExit(turn.serverPid!));
+  } finally {
+    await rm(dbPath, { force: true });
+  }
 });

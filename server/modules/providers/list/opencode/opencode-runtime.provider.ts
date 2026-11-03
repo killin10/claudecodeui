@@ -31,6 +31,7 @@ import type {
 
 import { prepareOpenCodeSession } from './opencode-agent.provider.js';
 import { sendOpenCodeInput } from './opencode-inputs.provider.js';
+import { readOpenCodeCompletion } from './opencode-completion.provider.js';
 import { OpenCodeBackgroundWork } from './opencode-background.provider.js';
 import { startOpenCodeServer } from './opencode-server.provider.js';
 import { readOpenCodeUsage, recordOpenCodeContextWindows } from './opencode-usage.provider.js';
@@ -69,6 +70,9 @@ const OWNER_PID_ENV = 'CLOUDCLI_OPENCODE_OWNER_PID';
 
 /** How long stopping a turn waits for OpenCode's session abort before stopping the server anyway. */
 const SESSION_ABORT_TIMEOUT_MS = 5_000;
+
+/** Repair missed background events without starting another native host. */
+const BACKGROUND_RECONCILE_INTERVAL_MS = 5_000;
 
 type OpenCodeServer = { url: string; close(): void };
 
@@ -252,6 +256,7 @@ const nextMacrotask = () => new Promise<void>((resolve) => setImmediate(resolve)
 
 /** One run owns its host, foreground completion, and any retained background work. */
 class OpenCodeRun {
+  private readonly startedAt = Date.now();
   private readonly appSessionId: string | null;
   private readonly directory: string;
   private readonly turn: OpenCodeTurn;
@@ -264,6 +269,8 @@ class OpenCodeRun {
   private rootIdle = false;
   private completeSent = false;
   private backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconciliationTimer: ReturnType<typeof setInterval> | undefined;
+  private reconciling = false;
   private eventLoop: Promise<void> = Promise.resolve();
   private finish!: () => void;
   private readonly finished = new Promise<void>((resolve) => { this.finish = resolve; });
@@ -303,6 +310,8 @@ class OpenCodeRun {
     installExitHook();
     try {
       await this.prepareAndSend();
+      this.reconciliationTimer = setInterval(() => { void this.reconcileBackground(); }, BACKGROUND_RECONCILE_INTERVAL_MS);
+      this.reconciliationTimer.unref();
       await this.finished;
       await this.events.flush();
     } catch (error) {
@@ -357,6 +366,36 @@ class OpenCodeRun {
     if (this.rootIdle && !this.turn.work.pending) this.finish();
   };
 
+  private async reconcileBackground(): Promise<void> {
+    if (this.reconciling || this.ended || !this.turn.providerSessionId) return;
+    if (!this.turn.work.pending && !this.completeSent) return;
+    this.reconciling = true;
+    try {
+      const db = new Database(getOpenCodeDatabasePath(), { readonly: true, fileMustExist: true });
+      let changed: boolean;
+      try {
+        changed = db.transaction(() => {
+          const rootCompletion = readOpenCodeCompletion(db, this.turn.providerSessionId!, this.startedAt);
+          const updated = this.turn.work.reconcile(db);
+          // A recovered host may still be processing the parent's followup.
+          this.rootIdle = Boolean(rootCompletion);
+          return updated;
+        })();
+      } finally {
+        db.close();
+      }
+      if (!this.ended) {
+        if (changed) await this.events.refreshBackgroundCards();
+        this.settleBackground();
+      }
+    } catch (error) {
+      // Preserve the last known state and retry; a failed read never completes work.
+      console.warn('[OpenCode] Background reconciliation failed:', this.turn.providerSessionId, error);
+    } finally {
+      this.reconciling = false;
+    }
+  }
+
   private registerSession(sessionID: string): void {
     this.turn.providerSessionId = sessionID;
     this.events.register(sessionID);
@@ -408,7 +447,11 @@ class OpenCodeRun {
     let streamError: unknown;
     try {
       for await (const event of client.event.subscribe({ signal: this.turn.abortController.signal })) {
-        if (event.type === 'server.connected') { connected(); continue; }
+        if (event.type === 'server.connected') {
+          connected();
+          void this.reconcileBackground();
+          continue;
+        }
         try {
           await this.events.handleEvent(event);
         } catch (error) {
@@ -452,6 +495,7 @@ class OpenCodeRun {
     this.ended = true;
     if (!this.turn.aborted && this.error && this.turn.work.tasks.size > 0) await interruptTurnWork(this.turn);
     clearTimeout(this.backgroundTimer);
+    clearInterval(this.reconciliationTimer);
     this.gateway.close();
     if (this.turn.aborted) await this.turn.abortFinished;
     this.turn.abortController.abort();
@@ -543,7 +587,7 @@ async function abortOpenCodeTurn(turn: OpenCodeTurn): Promise<void> {
  * provider, which treats subagents of a running turn as still in progress.
  */
 export function isOpenCodeSessionActive(sessionId: string): boolean {
-  return Array.from(liveTurns).some((turn) => turn.key === sessionId || turn.work.tasks.has(sessionId));
+  return Array.from(liveTurns).some((turn) => turn.key === sessionId || turn.work.runningTasks.some((task) => task.taskId === sessionId));
 }
 
 /**
@@ -555,8 +599,8 @@ export const opencodeRuntime = {
   run: runOpenCodeTurn,
   abort: abortOpenCodeSession,
   listBackgroundWork: () => Array.from(liveTurns)
-    .filter((turn) => turn.work.tasks.size > 0)
-    .map((turn) => ({ sessionId: turn.key, tasks: Array.from(turn.work.tasks.values()) })),
+    .map((turn) => ({ sessionId: turn.key, tasks: turn.work.runningTasks }))
+    .filter((work) => work.tasks.length > 0),
   async stopBackgroundTask(sessionId: string, taskId: string): Promise<boolean> {
     const turn = Array.from(liveTurns).find((candidate) => candidate.key === sessionId && candidate.work.tasks.has(taskId));
     if (!turn?.client) return false;

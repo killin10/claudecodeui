@@ -43,7 +43,7 @@ async function withOpenCodeDatabase(
   const db = new Database(path.join(dataDir, 'opencode.db'));
   try {
     db.exec(`
-      CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT);
+      CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, time_busy INTEGER, time_idle INTEGER, idle_outcome TEXT);
       CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, data TEXT);
     `);
     const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?)');
@@ -184,3 +184,26 @@ test('a task whose child session is missing still renders as a subagent, without
     assert.equal(message?.subagentTools, undefined);
   });
 });
+
+for (const [outcome, status] of [['succeeded', 'completed'], ['failed', 'failed'], ['interrupted', 'stopped']]) {
+  test(`native ${outcome} overrides the background launch acknowledgement in history and live cards`, { concurrency: false }, async () => {
+    await withOpenCodeDatabase(taskPart('completed', { status: 'running' }), async (provider, dataDir) => {
+      const db = new Database(path.join(dataDir, 'opencode.db'));
+      try {
+        db.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?)').run('ses_child', 'ses_parent', 3, 20, outcome);
+      } finally { db.close(); }
+      const { task } = await readTask(provider);
+      assert.equal(task?.subagent?.status, status);
+      const [live] = provider.normalizeMessage({ type: 'session.message', message: {
+        id: 'msg_live', type: 'assistant', time: { created: 2 }, content: [taskPart('completed', { status: 'running' })],
+      } }, 'app-session');
+      assert.equal(live.subagent?.status, status);
+      // A new tool in the same assistant message must not reuse its old idle.
+      const next = { ...taskPart('completed', { status: 'running' }), time: { created: 30 } };
+      const [resumed] = provider.normalizeMessage({ type: 'session.message', message: {
+        id: 'msg_live', type: 'assistant', time: { created: 2 }, content: [next],
+      } }, 'app-session');
+      assert.equal(resumed.subagent?.status, 'stopped');
+    });
+  });
+}

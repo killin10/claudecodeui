@@ -31,6 +31,8 @@ import {
   unwrapJsonStringLiteral,
 } from '@/shared/utils.js';
 
+import { readOpenCodeCompletion } from './opencode-completion.provider.js';
+
 const PROVIDER = 'opencode';
 
 /** OpenCode's tool for spawning a subagent; it runs in a child session of the caller. */
@@ -346,6 +348,7 @@ const attachOpenCodeSubagent = (
   state: AnyRecord,
   db: Database.Database | null,
   runIsLive: boolean,
+  startedAt: number,
 ): void => {
   if (message.toolName !== SUBAGENT_TOOL_NAME && message.toolName !== 'task') {
     return;
@@ -360,12 +363,9 @@ const attachOpenCodeSubagent = (
     status = 'stopped';
   } else if (metadata.status === 'running' && childSessionId) {
     status = isOpenCodeSessionActive(childSessionId) ? 'running' : 'stopped';
-    if (status === 'stopped' && db) {
-      const idle = db.prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'idle' ORDER BY seq DESC LIMIT 1")
-        .get(childSessionId) as { data: string } | undefined;
-      const outcome = readJsonRecord(idle?.data)?.outcome;
-      if (outcome === 'succeeded') status = 'completed';
-      if (outcome === 'failed') status = 'failed';
+    if (db) {
+      const completion = readOpenCodeCompletion(db, childSessionId, startedAt);
+      if (completion) status = completion.status;
     }
   } else if (toolResult) {
     status = toolResult.isError ? 'failed' : 'completed';
@@ -627,7 +627,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
           toAskUserQuestionCall(toolMessage, state);
         }
 
-        attachOpenCodeSubagent(toolMessage, state, db, runIsLive);
+        attachOpenCodeSubagent(toolMessage, state, db, runIsLive, partData.time?.created ?? row.message_time_created ?? Number.NaN);
         normalized.push(toolMessage);
         continue;
       }
