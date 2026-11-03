@@ -119,6 +119,7 @@ export default function SidebarModals({
                     {pendingDeletion.sessionCount > 0 && (
                       <p className="mt-2 text-sm text-muted-foreground">
                         {t('deleteConfirmation.sessionCount', { count: pendingDeletion.sessionCount })}
+                        <span className="block mt-2">{t('common:schedules.deleteNotice')}</span>
                       </p>
                     )}
                   </div>
@@ -174,6 +175,7 @@ export default function SidebarModals({
                       {pendingDeletion.isArchived
                         ? t('deleteConfirmation.archivedSessionNotice', 'This session is already archived. You can keep it hidden or delete it permanently.')
                         : t('deleteConfirmation.archiveSessionNotice', 'Archive keeps the session out of the active list while preserving its history.')}
+                      <span className="block mt-2">{t('common:schedules.deleteNotice')}</span>
                     </p>
                   </div>
                 </div>
@@ -228,6 +230,7 @@ export default function SidebarModals({
                     </p>
                     <p className="mt-3 text-xs text-muted-foreground">
                       {t('deleteConfirmation.archiveSessionsNotice', { count: pendingDeletion.sessionIds.length })}
+                      <span className="block mt-2">{t('common:schedules.deleteNotice')}</span>
                     </p>
                   </div>
                 </div>

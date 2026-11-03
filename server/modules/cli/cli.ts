@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 async function runCli(): Promise<number> {
-  if (process.argv[2] === 'session') {
+  if (process.argv[2] === 'session' || process.argv[2] === 'schedule') {
     const { runSessionCli } = await import('./session-cli.js');
-    return runSessionCli(process.argv.slice(3));
+    return runSessionCli(process.argv.slice(3), process.argv[2] as 'session' | 'schedule');
   }
   // Bootstrap the server environment only for the original server commands.
   // eslint-disable-next-line boundaries/no-unknown

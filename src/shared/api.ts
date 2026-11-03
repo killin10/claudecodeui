@@ -293,7 +293,22 @@ export const api = {
   workflowAgentActivity: (sessionId: string, runId: string, agentId: string) =>
     get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/workflows/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}`),
 
-  // Scheduled messages: send a message to a session at a future time.
+  // Built-in tasks: persisted schedules enqueue through the shared session submission queue.
+  schedules: {
+    list: (startingToken?: string) => get(`/api/schedules${query({ startingToken, maxItems: 100 })}`),
+    show: (id: string) => get(`/api/schedules/${encodeURIComponent(id)}`),
+    create: (body: unknown) => post('/api/schedules', body),
+    update: (id: string, body: unknown) => patch(`/api/schedules/${encodeURIComponent(id)}`, body),
+    action: (id: string, action: 'pause' | 'resume' | 'run', body: unknown = {}) => post(`/api/schedules/${encodeURIComponent(id)}/${action}`, body),
+    remove: (id: string) => del(`/api/schedules/${encodeURIComponent(id)}`),
+    preview: (body: unknown) => post('/api/schedules/preview', body),
+    sessions: (search: string, startingToken?: string) => get(`/api/schedules/sessions${query({ search, startingToken, maxItems: 100 })}`),
+    session: (id: string) => get(`/api/schedules/sessions/${encodeURIComponent(id)}`),
+    runs: (id: string, startingToken?: string) => get(`/api/schedules/${encodeURIComponent(id)}/runs${query({ startingToken, maxItems: 50 })}`),
+    run: (id: string, runId: string) => get(`/api/schedules/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`),
+    cancel: (id: string, runId: string) => post(`/api/schedules/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/cancel`, {}),
+  },
+  // Composer scheduled messages retain their existing one-time dispatch behavior.
   scheduledMessages: {
     list: (sessionId?: string) =>
       get(`/api/scheduled-messages${sessionId ? query({ sessionId }) : ''}`),

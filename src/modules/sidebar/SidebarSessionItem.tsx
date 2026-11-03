@@ -1,7 +1,9 @@
 import { memo, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
+import { Clock, Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
+
+import { ScheduleLink } from '@/modules/schedules';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
 import { cn } from '@/shared/utils';
@@ -275,6 +277,10 @@ function SidebarSessionItem({
               </div>
             </div>
 
+            <ScheduleLink sessionId={session.id} className="mb-3 flex items-center gap-2 rounded-xl border px-4 py-3 text-sm">
+              <Clock className="h-4 w-4" />
+              {t('common:schedules.create')}
+            </ScheduleLink>
             {isEditing ? (
               <div className="mb-3 space-y-2">
                 <label htmlFor={`mobile-session-rename-${session.id}`} className="block px-1 text-xs font-medium text-muted-foreground">

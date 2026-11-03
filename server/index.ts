@@ -20,6 +20,11 @@ import { chatRunRegistry, createWebSocketServer } from '@/modules/websocket/inde
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
+import {
+    createSchedulesRouter,
+    startScheduleDispatcher,
+    closeScheduleDispatcher,
+} from './modules/schedules/index.js';
 import { createGitModule } from './modules/git/index.js';
 import {
     authenticateToken,
@@ -151,6 +156,7 @@ app.get('/health', (req, res) => {
 });
 
 // Session automation authenticates a per-user UI API key, independently of the legacy API_KEY gate.
+app.use('/api/session-control/v1/schedules', createSchedulesRouter());
 app.use('/api/session-control/v1', createSessionControlRouter());
 
 // Optional API key validation (if configured)
@@ -202,6 +208,7 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
 app.use('/api/scheduled-messages', authenticateToken, scheduledMessagesRoutes);
+app.use('/api/schedules', authenticateToken, createSchedulesRouter(true));
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -394,6 +401,7 @@ async function startServer() {
             // then keeps polling.
             initializeScheduledMessageDispatcher(providerRuntimeService);
             submissionDispatcher.start();
+            startScheduleDispatcher();
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
@@ -406,6 +414,7 @@ async function startServer() {
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
             submissionDispatcher.close();
+            closeScheduleDispatcher();
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

@@ -7,6 +7,7 @@ import { AuthProvider, ProtectedRoute } from '@/modules/auth';
 import { TaskMasterProvider,TasksSettingsProvider } from '@/modules/task-master';
 import { WebSocketProvider } from '@/shared/context/WebSocketContext';
 import { PluginsProvider } from '@/modules/plugins';
+import { SchedulesPage } from '@/modules/schedules';
 import { ProjectWorkspaceRoute } from '@/modules/project-workspace';
 import { i18n } from '@/modules/i18n';
 
@@ -121,6 +122,7 @@ export default function App() {
                 <ProtectedRoute>
                   <Router basename={routerBasename}>
                     <Routes>
+                      <Route path="/schedules" element={<SchedulesPage />} />
                       <Route path="/" element={<ProjectWorkspaceRoute />} />
                       <Route path="/session/:sessionId" element={<ProjectWorkspaceRoute />} />
                     </Routes>

@@ -2,6 +2,8 @@ import { parseArgs } from 'node:util';
 
 import type { SessionCliOptions } from '@/shared/types.js';
 
+import { SCHEDULE_COMMANDS } from './schedule-command.js';
+
 const GLOBAL = ['output', 'query', 'endpoint', 'config-file', 'debug', 'only-show-errors', 'help'];
 
 const MESSAGE = ['message', 'message-file', 'stdin'];
@@ -24,7 +26,7 @@ const COMMANDS: Record<string, {
   'submission cancel': { options: ['session-id', 'submission-id'], required: ['session-id', 'submission-id'], description: 'Cancel this queued submission or stop its own active run.' },
 };
 
-const BOOLEAN = new Set(['debug', 'only-show-errors', 'help', 'stdin', 'permanent']);
+const BOOLEAN = new Set(['debug', 'only-show-errors', 'help', 'stdin', 'permanent', 'paused', 'inherit-model', 'inherit-permission-mode']);
 
 /** CLI-local errors retain a stable machine code and a documented exit status. */
 export class SessionCliError extends Error {
@@ -32,8 +34,9 @@ export class SessionCliError extends Error {
 }
 
 /** Strict parser for the session command tree: business values are always named options. */
-export function parseSessionCommand(args: string[]) {
-  const names = new Set([...GLOBAL, ...Object.values(COMMANDS).flatMap((definition) => definition.options)]);
+export function parseSessionCommand(args: string[], family: 'session' | 'schedule' = 'session') {
+  const commands: typeof COMMANDS = family === 'schedule' ? SCHEDULE_COMMANDS : COMMANDS;
+  const names = new Set([...GLOBAL, ...Object.values(commands).flatMap((definition) => definition.options)]);
   let parsed: ReturnType<typeof parseArgs>;
   try {
     parsed = parseArgs({ args, allowPositionals: true, strict: true, tokens: true,
@@ -43,10 +46,10 @@ export function parseSessionCommand(args: string[]) {
     throw new SessionCliError('INVALID_ARGUMENT', error instanceof Error ? error.message : String(error));
   }
   const command = parsed.positionals.join(' ');
-  const definition = COMMANDS[command];
+  const definition = commands[command];
   const options = parsed.values as SessionCliOptions;
   if (!definition && !(options.help && !command)) {
-    throw new SessionCliError('INVALID_COMMAND', `Unknown command or positional argument: ${command}. Use cloudcli session --help.`);
+    throw new SessionCliError('INVALID_COMMAND', `Unknown command or positional argument: ${command}. Use cloudcli ${family} --help.`);
   }
   const seen = new Set<string>();
   for (const token of parsed.tokens ?? []) {
@@ -72,7 +75,8 @@ export function parseSessionCommand(args: string[]) {
         throw new SessionCliError('INVALID_ARGUMENT', `--${name} must not be empty.`);
       }
     }
-    if (command === 'send' && MESSAGE.filter((key) => options[key] !== undefined).length !== 1) {
+    if (family === 'schedule') validateScheduleCommand(command, options);
+    if (family === 'session' && command === 'send' && MESSAGE.filter((key) => options[key] !== undefined).length !== 1) {
       throw new SessionCliError('INVALID_ARGUMENT', 'Specify exactly one of --message, --message-file or --stdin.');
     }
   }
@@ -83,9 +87,10 @@ export function parseSessionCommand(args: string[]) {
 }
 
 /** Help shared by the CLI entrypoint and command contract tests. */
-export function sessionHelp(command: string): string {
-  const commands = command ? [[command, COMMANDS[command]] as const] : Object.entries(COMMANDS);
-  return ['Usage: cloudcli session <command> [named options]', '', ...commands.flatMap(([name, definition]) => [
+export function sessionHelp(command: string, family: 'session' | 'schedule' = 'session'): string {
+  const definitions: typeof COMMANDS = family === 'schedule' ? SCHEDULE_COMMANDS : COMMANDS;
+  const commands = command ? [[command, definitions[command]] as const] : Object.entries(definitions);
+  return [`Usage: cloudcli ${family} <command> [named options]`, '', ...commands.flatMap(([name, definition]) => [
       `${name}: ${definition.description}`, `  ${definition.options.map((option) => `--${option}${BOOLEAN.has(option) ? '' : ' <value>'}`).join(' ')}`,
       `  Required: ${(definition.required ?? []).map((key) => '--' + key).join(', ') || 'none'}`,
     ]), '', 'Global: --output json|table|tsv (default json), --query <JMESPath>, --endpoint <URL>, --config-file <path>, --debug, --only-show-errors, --help',
@@ -93,9 +98,31 @@ export function sessionHelp(command: string): string {
     'Endpoint: --endpoint > CLOUDCLI_ENDPOINT > config.endpoint > http://127.0.0.1:3001.',
     'Permission modes: default, auto, accept-edits, bypass-permissions, plan (provider-specific).',
     'Pagination: --max-items limits total output; resume using nextToken as --starting-token.',
-    'send: --if-busy queue|reject (default queue). --client-token deduplicates create/send requests.',
-    'wait: --timeout-seconds defaults to 1800; timeout or Ctrl-C never cancels the server job.',
+    ...(family === 'schedule' ? [
+      'Timing: exactly one of --cron (five numeric fields) or --run-at (ISO timestamp with offset), plus --timezone.',
+      'Missed occurrences: --misfire-policy skip|latest (default skip). An unfinished previous execution skips the next trigger.',
+      'create/run: --client-token deduplicates retries. run success acknowledges enqueue, not model completion; use run show.',
+      'Updates require --revision from show. Use --inherit-model/--inherit-permission-mode to clear overrides.',
+      'Pause/delete only stop future triggers; use run cancel to stop an existing execution.',
+    ] : [
+      'send: --if-busy queue|reject (default queue). --client-token deduplicates create/send requests.',
+      'wait: --timeout-seconds defaults to 1800; timeout or Ctrl-C never cancels the server job.',
+    ]),
     'Exit: 0 success; 2 arguments; 3 not found; 4 authentication; 5 conflict; 6 transport/config; 7 execution failed; 8 wait timeout; 130 interrupted.',
     'Use CloudCLI session IDs, not provider-native IDs. Project paths refer to the server; message files are local.',
   ].join('\n');
+}
+
+function validateScheduleCommand(command: string, options: SessionCliOptions) {
+  const messages = MESSAGE.filter((key) => options[key] !== undefined).length;
+  if ((command === 'create' && messages !== 1) || messages > 1) {
+    throw new SessionCliError('INVALID_ARGUMENT', 'Specify exactly one message source when creating; at most one when updating.');
+  }
+  const timingCount = ['cron', 'run-at'].filter((key) => options[key] !== undefined).length;
+  if ((['create', 'preview'].includes(command) && timingCount !== 1) || timingCount > 1) {
+    throw new SessionCliError('INVALID_ARGUMENT', 'Specify exactly one of --cron or --run-at.');
+  }
+  if (options['inherit-model'] && options.model || options['inherit-permission-mode'] && options['permission-mode']) {
+    throw new SessionCliError('INVALID_ARGUMENT', 'An explicit override and inherit flag are mutually exclusive.');
+  }
 }

@@ -1,5 +1,6 @@
+import { useInRouterContext, useNavigate } from 'react-router-dom';
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Clock, Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -44,7 +45,8 @@ type SessionOptionsProps = {
  * how two rows end up diverging one fix at a time. Callers keep only what is
  * genuinely theirs: where the controls sit, and whether deleting is offered.
  */
-export default function SessionOptions({
+function SessionOptionsContent({
+  onSchedule,
   sessionId,
   sessionName,
   provider,
@@ -61,7 +63,7 @@ export default function SessionOptions({
   canDelete = true,
   className,
   t,
-}: SessionOptionsProps) {
+}: SessionOptionsProps & { onSchedule: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const providerLabel = PROVIDER_LABELS[provider];
   const { copyState, copyLabel, setOptionsOpen, handleCopyAction, isCopyPending, CopyStateIcon } =
@@ -160,6 +162,12 @@ export default function SessionOptions({
             </div>
           )}
           items={[
+            {
+              key: 'schedule',
+              label: t('common:schedules.create'),
+              icon: Clock,
+              onSelect: onSchedule,
+            },
             ...(projectId !== null ? [{
               key: 'rename',
               label: 'Rename session',
@@ -194,5 +202,26 @@ export default function SessionOptions({
         />
       )}
     </div>
+  );
+}
+
+function RoutedSessionOptions(props: SessionOptionsProps) {
+  const navigate = useNavigate();
+  return (
+    <SessionOptionsContent
+      {...props}
+      onSchedule={() => navigate('/schedules?sessionId=' + encodeURIComponent(props.sessionId))}
+    />
+  );
+}
+
+/** Project and conversation lists share these controls, including navigation to a session-bound scheduled task. */
+export default function SessionOptions(props: SessionOptionsProps) {
+  const inRouter = useInRouterContext();
+  return inRouter ? <RoutedSessionOptions {...props} /> : (
+    <SessionOptionsContent
+      {...props}
+      onSchedule={() => window.location.assign('/schedules?sessionId=' + encodeURIComponent(props.sessionId))}
+    />
   );
 }

@@ -1,5 +1,7 @@
-import { Settings, ArrowUpCircle, Bug, AlertTriangle } from 'lucide-react';
+import { Clock, Settings, ArrowUpCircle, Bug, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
+
+import { ScheduleLink } from '@/modules/schedules';
 
 import { IS_PLATFORM } from '@/shared/utils';
 import type { ReleaseInfo } from '@/shared/types';
@@ -41,6 +43,10 @@ export default function SidebarFooter({
 }: SidebarFooterProps) {
   return (
     <div className="flex-shrink-0" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
+      <ScheduleLink className="m-2 flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+        <Clock className="h-4 w-4" />
+        {t('common:schedules.title')}
+      </ScheduleLink>
       {/* Restart-required banner: the running server version differs from the
           installed/frontend version (updated but not restarted). */}
       {restartRequired && (

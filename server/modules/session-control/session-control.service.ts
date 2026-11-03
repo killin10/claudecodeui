@@ -168,15 +168,38 @@ export const sessionControlService = {
       if (ifBusy === 'reject' && (running.has(id) || chatRunRegistry.isProcessing(id) || sessionControlDb.pending(id) || sessionControlDb.hasOtherPending(id))) {
         invalid('Session is busy.', 'SESSION_BUSY', 409);
       }
-      const now = new Date().toISOString();
-      const submission: SessionSubmission = {
-        submissionId: randomUUID(), sessionId: id, userId, content,
-        options: { ...(row.model ? { model: row.model } : {}), permissionMode: permission(userId, row.provider as LLMProvider, id) },
-        state: 'queued', result: [], error: null, createdAt: now, updatedAt: now,
-      };
-      sessionControlDb.insert(submission);
-      return { submissionId: submission.submissionId, sessionId: id, state: submission.state, createdAt: now };
+      return this.enqueue(userId, id, content);
     });
+  },
+  /** Scheduler calls this inside its SQLite transaction; options are validated before storing a task. */
+  enqueue(userId: number, id: string, content: string, overrides: { model?: string | null; permissionMode?: string | null } = {}): SubmissionAcknowledgement {
+    const row = session(id);
+    if (row.isArchived) invalid('Restore the archived session before sending.', 'SESSION_ARCHIVED', 409);
+    if (chatRunRegistry.isMutationReserved(id)) invalid('Session is being modified.', 'SESSION_BUSY', 409);
+    const now = new Date().toISOString();
+    const model = overrides.model ?? row.model;
+    const mode = overrides.permissionMode ? MODES[overrides.permissionMode] : permission(userId, row.provider as LLMProvider, id);
+    if (!mode) invalid('Unsupported permission mode.');
+    const submission: SessionSubmission = {
+      submissionId: randomUUID(), sessionId: id, userId, content,
+      options: { ...(model ? { model } : {}), permissionMode: mode },
+      state: 'queued', result: [], error: null, createdAt: now, updatedAt: now,
+    };
+    sessionControlDb.insert(submission);
+    return { submissionId: submission.submissionId, sessionId: id, state: submission.state, createdAt: now };
+  },
+  /** Schedule configuration validates overrides without changing the target session's own settings. */
+  async validateOverrides(id: string, model: string | null, permissionMode: string | null) {
+    const row = session(id);
+    if (row.isArchived) invalid('Restore the archived session first.', 'SESSION_ARCHIVED', 409);
+    const provider = row.provider as LLMProvider;
+    if (permissionMode && !providerCapabilitiesService.getProviderCapabilities(provider).permissionModes.includes(MODES[permissionMode])) {
+      invalid('Permission mode is not supported by the provider.');
+    }
+    if (model) {
+      const catalog = await providerModelsService.getProviderModels(provider, row.project_path ?? undefined);
+      if (!catalog.OPTIONS.some((option) => option.value === model)) invalid('Model is not in the provider catalog.', 'INVALID_MODEL');
+    }
   },
   async change(userId: number, id: string, action: 'archive' | 'restore' | 'delete') {
     session(id);

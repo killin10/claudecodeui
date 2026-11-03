@@ -1,5 +1,7 @@
-import { Settings, Sparkles, PanelLeftOpen, Bug, AlertTriangle } from 'lucide-react';
+import { Clock, Settings, Sparkles, PanelLeftOpen, Bug, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
+
+import { ScheduleLink } from '@/modules/schedules';
 
 const DISCORD_INVITE_URL = 'https://discord.gg/buxwujPNRE';
 const GITHUB_ISSUES_URL = 'https://github.com/siteboon/claudecodeui/issues/new';
@@ -44,6 +46,13 @@ export default function SidebarCollapsed({
 
       <div className="nav-divider my-1 w-6" />
 
+      <ScheduleLink
+        title={t('common:schedules.title')}
+        aria-label={t('common:schedules.title')}
+        className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-accent"
+      >
+        <Clock className="h-4 w-4" />
+      </ScheduleLink>
       {/* Settings */}
       <button
         onClick={onShowSettings}

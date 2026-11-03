@@ -157,11 +157,11 @@ function render(value: unknown, format: string): string {
 }
 
 /** CLI entrypoint for session automation. No server imports, database access, or startup side effects. */
-export async function runSessionCli(args: string[]): Promise<number> {
+export async function runSessionCli(args: string[], family: 'session' | 'schedule' = 'session'): Promise<number> {
   try {
-    const { command, options } = parseSessionCommand(args);
+    const { command, options } = parseSessionCommand(args, family);
     if (options.help) {
-      process.stdout.write(sessionHelp(command) + '\n');
+      process.stdout.write(sessionHelp(command, family) + '\n');
       return 0;
     }
     if (options.query) {
@@ -174,7 +174,7 @@ export async function runSessionCli(args: string[]): Promise<number> {
         throw new SessionCliError('INVALID_QUERY', 'Invalid JMESPath query.');
       }
     }
-    const result = await execute(command, options);
+    const result = family === 'schedule' ? await executeSchedule(command, options) : await execute(command, options);
     const projected = options.query ? jmespath.search(result, String(options.query)) : result;
     process.stdout.write(render(projected, String(options.output ?? 'json')) + '\n');
     return 0;
@@ -183,5 +183,40 @@ export async function runSessionCli(args: string[]): Promise<number> {
     const known = error instanceof SessionCliError;
     process.stderr.write(JSON.stringify({ error: { code: known ? error.code : 'CLI_ERROR', message: error instanceof Error ? error.message : String(error) } }) + '\n');
     return known ? error.exitCode : 6;
+  }
+}
+
+async function scheduleInput(command: string, options: SessionCliOptions) {
+  const input: Record<string, unknown> = {};
+  for (const key of ['name', 'session-id', 'cron', 'run-at', 'timezone', 'misfire-policy', 'model', 'permission-mode', 'client-token']) {
+    if (options[key] !== undefined) input[key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = options[key];
+  }
+  if (['message', 'message-file', 'stdin'].some((key) => options[key] !== undefined)) input.message = await message(options);
+  if (options.cron) input.runAt = null;
+  if (options['run-at']) input.cron = null;
+  if (options['inherit-model']) input.model = null;
+  if (options['inherit-permission-mode']) input.permissionMode = null;
+  if (command === 'update') input.revision = numberOption(options, 'revision', 0);
+  if (command === 'create') input.enabled = !options.paused;
+  return input;
+}
+async function executeSchedule(command: string, options: SessionCliOptions) {
+  const request = await createSessionClient(options);
+  const resource = '/schedules/' + encodeURIComponent(String(options['schedule-id']));
+  const runResource = resource + '/runs/' + encodeURIComponent(String(options['run-id']));
+  switch (command) {
+    case 'list': return list(request, '/schedules', options);
+    case 'show': return request('GET', resource);
+    case 'create': return request('POST', '/schedules', await scheduleInput(command, options));
+    case 'update': return request('PATCH', resource, await scheduleInput(command, options));
+    case 'preview': return request('POST', '/schedules/preview', await scheduleInput(command, options));
+    case 'pause':
+    case 'resume': return request('POST', resource + '/' + command, {});
+    case 'delete': return request('DELETE', resource);
+    case 'run': return request('POST', resource + '/run', { clientToken: options['client-token'] });
+    case 'run list': return list(request, resource + '/runs', options);
+    case 'run show': return request('GET', runResource);
+    case 'run cancel': return request('POST', runResource + '/cancel', {});
+    default: throw new SessionCliError('INVALID_COMMAND', command);
   }
 }

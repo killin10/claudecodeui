@@ -1925,3 +1925,8 @@ type TaskStatus =
 
 /** A TaskMaster task's priority; high, medium and low are the known values and the string fallback tolerates anything else TaskMaster emits. */
 type TaskPriority = 'high' | 'medium' | 'low' | string;
+
+//----------------- SCHEDULES HTTP CONTRACT ------------
+/** Schedules UI/API and persistence share this transport contract. */
+export type { Schedule, ScheduleDefinition, ScheduleRun } from '@shared/schedules';
+// ---------------------------

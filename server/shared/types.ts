@@ -1693,3 +1693,8 @@ export type SessionSubmission = {
 
 /** Parsed named CLI options shared by the session parser, HTTP client and command executor; undefined means omitted. */
 export type SessionCliOptions = Record<string, string | boolean | undefined>;
+
+//----------------- SCHEDULES HTTP CONTRACT ------------
+/** Schedules UI/API and persistence share this transport contract. */
+export type { Schedule, ScheduleDefinition, ScheduleRun } from '../../shared/schedules.js';
+// ---------------------------

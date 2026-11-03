@@ -28,3 +28,6 @@ export type { ScheduledMessageRow, ScheduledMessageStatus } from './repositories
 
 // Session control API and chat gateway share durable submission and permission state.
 export { sessionControlDb } from './repositories/session-control.db.js';
+
+// Used by the built-in schedule service for task and trigger persistence.
+export { schedulesDb } from './repositories/schedules.db.js';
