@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS scheduled_messages (
 export const SESSIONS_TABLE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    resume_after_restart INTEGER NOT NULL DEFAULT 0,
     provider TEXT NOT NULL DEFAULT 'claude',
     -- The session id used by the provider CLI/SDK on disk (JSONL file name,
     -- store.db folder, sqlite row id, ...). \`session_id\` is the stable

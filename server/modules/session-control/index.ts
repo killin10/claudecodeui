@@ -4,3 +4,6 @@ export { createSessionControlRouter, submissionDispatcher } from './session-cont
 export { sessionControlService } from './session-control.service.js';
 // Schedules integration tests exercise the same queue with an isolated provider runtime.
 export { createSubmissionDispatcher } from './session-submissions.service.js';
+
+// Server lifecycle snapshots owned sessions and enqueues restart continuations.
+export { resumeSessionsAfterRestart, stopSessionsForRestart } from './session-restart.service.js';

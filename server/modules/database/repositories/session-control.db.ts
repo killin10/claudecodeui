@@ -102,6 +102,13 @@ export const sessionControlDb = {
     return getConnection().prepare(`SELECT * FROM sessions ${predicates.length ? 'WHERE ' + predicates.join(' AND ') : ''} ORDER BY updated_at DESC, session_id DESC LIMIT ?`)
       .all(...args, input.limit) as NonNullable<ReturnType<typeof sessionsDb.getSessionById>>[];
   },
+  /** Restart recovery yields to ready user messages, but not future scheduled messages. */
+  hasReadyFollowup(sessionId: string): boolean {
+    return Boolean(getConnection().prepare(`SELECT 1 FROM session_submissions WHERE session_id = ? AND state = 'queued'
+      UNION ALL SELECT 1 FROM session_drafts WHERE draft_scope = ? AND queued_message IS NOT NULL
+      UNION ALL SELECT 1 FROM scheduled_messages WHERE session_id = ? AND status = 'pending'
+        AND julianday(scheduled_for) <= julianday('now') LIMIT 1`).get(sessionId, sessionId, sessionId));
+  },
   hasOtherPending(sessionId: string): boolean {
     const db = getConnection();
     return Boolean(db.prepare("SELECT 1 FROM session_drafts WHERE draft_scope=? AND queued_message IS NOT NULL LIMIT 1").get(sessionId)

@@ -28,6 +28,9 @@ type ChatRun = {
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
+  /** Excludes an explicit stop whose provider acknowledgement is still pending. */
+  userCancelling: boolean;
+  pendingInputs: Set<string>;
   lastSeq: number;
   events: NormalizedMessage[];
   writer: ChatSessionWriter;
@@ -59,6 +62,9 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  */
 const runs = new Map<string, ChatRun>();
 const blockedSessions = new Set<string>();
+let acceptingRuns = true;
+const restartCandidates = new Set<ChatRun>();
+const restartAborts = new Set<ChatRun>();
 
 /**
  * Answers whether a completed run must stay registered a while longer. Set by
@@ -110,6 +116,16 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     return null;
   }
 
+  if (message.kind === 'permission_request') run.pendingInputs.add(message.requestId ?? message.id);
+  if (message.kind === 'permission_resolved' || message.kind === 'permission_cancelled') {
+    run.pendingInputs.delete(message.requestId ?? message.id);
+  }
+  // Natural completion after the snapshot cancels recovery. Shutdown-induced
+  // abort completions must leave the saved marker intact for the next process.
+  if (message.kind === 'complete' && restartCandidates.has(run) && !restartAborts.has(run)) {
+    sessionsDb.setResumeAfterRestart(run.appSessionId, false);
+    restartCandidates.delete(run);
+  }
   run.lastSeq += 1;
 
   const outbound: NormalizedMessage = {
@@ -180,6 +196,26 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * regardless of which provider runtime produced them.
  */
 export const chatRunRegistry = {
+  /** Server lifecycle gates every shared chat entrypoint during startup/shutdown. */
+  setAcceptingRuns(value: boolean): void { acceptingRuns = value; },
+  isAcceptingRuns(): boolean { return acceptingRuns; },
+  /** Shutdown snapshots only owned main turns, excluding unresolved approvals/questions. */
+  saveRestartCandidates(isWaiting: (sessionId: string) => boolean): ChatRun[] {
+    acceptingRuns = false;
+    const active = Array.from(runs.values()).filter(run => run.status === 'running');
+    for (const run of active) {
+      if (run.userCancelling || run.pendingInputs.size || isWaiting(run.appSessionId)) continue;
+      sessionsDb.setResumeAfterRestart(run.appSessionId, true);
+      restartCandidates.add(run);
+    }
+    return active;
+  },
+  /** Called immediately before the shutdown coordinator aborts this exact run. */
+  markRestartAbort(run: ChatRun): boolean {
+    if (run.status !== 'running' || runs.get(run.appSessionId) !== run) return false;
+    restartAborts.add(run);
+    return true;
+  },
   /** Session-control holds this reservation while archiving or removing native data. */
   reserveMutation(sessionId: string): boolean {
     if (blockedSessions.has(sessionId)) return false;
@@ -210,7 +246,7 @@ export const chatRunRegistry = {
     connection: RealtimeClientConnection | null;
     userId: string | number | null;
   }): ChatRun | null {
-    if (blockedSessions.has(input.appSessionId)) return null;
+    if (!acceptingRuns || blockedSessions.has(input.appSessionId)) return null;
     const existing = runs.get(input.appSessionId);
     if (existing && existing.status === 'running') {
       return null;
@@ -221,6 +257,8 @@ export const chatRunRegistry = {
       provider: input.provider,
       providerSessionId: input.providerSessionId,
       status: 'running',
+      pendingInputs: new Set(),
+      userCancelling: false,
       lastSeq: 0,
       events: [],
       writer: null as unknown as ChatSessionWriter,
@@ -340,5 +378,8 @@ export const chatRunRegistry = {
    */
   clearAll(): void {
     runs.clear();
+    restartCandidates.clear();
+    restartAborts.clear();
+    acceptingRuns = true;
   },
 };

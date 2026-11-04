@@ -4,6 +4,10 @@ import { normalizeProjectPath } from '@/shared/utils.js';
 
 type SessionRow = {
   session_id: string;
+  /** Single-user owner, including sessions indexed from provider storage. */
+  user_id: number | null;
+  /** One-shot continuation intent saved only during graceful shutdown. */
+  resume_after_restart: number;
   provider: string;
   provider_session_id: string | null;
   project_path: string | null;
@@ -26,7 +30,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, user_id, resume_after_restart, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -70,6 +74,19 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
 }
 
 export const sessionsDb = {
+  /** Restart service reads only markers, including archived rows so they can be cleared. */
+  listRestartSessions(): SessionRow[] {
+    return getConnection().prepare(`SELECT ${SESSION_ROW_COLUMNS} FROM sessions WHERE resume_after_restart = 1`).all() as SessionRow[];
+  },
+  /** Shutdown and startup recovery update only the marker, never the sidebar activity timestamp. */
+  setResumeAfterRestart(sessionId: string, resume: boolean): void {
+    getConnection().prepare('UPDATE sessions SET resume_after_restart = ? WHERE session_id = ? AND resume_after_restart <> ?').run(Number(resume), sessionId, Number(resume));
+  },
+  /** The authenticated gateway fills unowned rows without changing an existing owner. */
+  assignOwner(sessionId: string, userId: number): void {
+    getConnection().prepare('UPDATE sessions SET user_id = ? WHERE session_id = ? AND user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE id = ?)').run(userId, sessionId, userId);
+  },
+
   /**
    * Upserts one session row discovered on disk by a provider synchronizer.
    *

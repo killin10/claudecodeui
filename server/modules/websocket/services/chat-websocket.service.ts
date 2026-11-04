@@ -220,6 +220,13 @@ async function dispatchRun(
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
 ): Promise<{ started: boolean; error: string | null }> {
+  if (!chatRunRegistry.isAcceptingRuns()) {
+    if (ws) sendProtocolError(ws, 'SERVER_RESTARTING', 'Server is restarting. Please retry after reconnecting.', sessionId);
+    return { started: false, error: 'Server is restarting.' };
+  }
+  if (userId !== null && Number.isSafeInteger(Number(userId))) {
+    sessionsDb.assignOwner(sessionId, Number(userId));
+  }
   const provider = session.provider as LLMProvider;
 
   const run = chatRunRegistry.startRun({
@@ -242,6 +249,7 @@ async function dispatchRun(
     return { started: false, error: 'A run is already in progress for this session.' };
   }
 
+  sessionsDb.setResumeAfterRestart(sessionId, false);
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
@@ -294,6 +302,7 @@ async function dispatchRun(
       sessionControlDb.setPermission(sessionId, clientOptions.permissionMode);
     }
     await beforeRun?.(run);
+    if (!chatRunRegistry.isAcceptingRuns()) return { started: false, error: 'Server is restarting.' };
     await dependencies.runtime.run(provider, command, runtimeOptions, run.writer);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
@@ -437,7 +446,13 @@ async function handleChatAbort(
     return;
   }
 
-  const success = await dependencies.runtime.abort(run.provider, sessionId);
+  run.userCancelling = true;
+  let success: boolean;
+  try {
+    success = await dependencies.runtime.abort(run.provider, sessionId);
+  } finally {
+    run.userCancelling = false;
+  }
 
   // Scoped to the run that was stopped: a stop can take a round trip, and a
   // new run of the session may have started by the time it returns.
@@ -626,6 +641,7 @@ export async function runDetachedChatTurn(
   },
   dependencies: ChatWebSocketDependencies,
 ): Promise<{ started: boolean; error: string | null }> {
+  if (!chatRunRegistry.isAcceptingRuns()) return { started: false, error: 'Server is restarting.' };
   const session = sessionsDb.getSessionById(input.sessionId);
   if (!session) {
     return { started: false, error: 'The session no longer exists.' };
@@ -646,7 +662,13 @@ export async function runDetachedChatTurn(
     // interrupted run end before this turn's stream begins. The interrupted
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
-    const aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+    activeRun.userCancelling = true;
+    let aborted: boolean;
+    try {
+      aborted = await dependencies.runtime.abort(activeRun.provider, input.sessionId);
+    } finally {
+      activeRun.userCancelling = false;
+    }
     chatRunRegistry.completeRunIfCurrent(activeRun, {
       exitCode: aborted ? 0 : 1,
       aborted: true,
@@ -683,6 +705,10 @@ export function handleChatConnection(
       const data = parsed as AnyRecord;
       const messageType = typeof data.type === 'string' ? data.type : '';
 
+      if (!chatRunRegistry.isAcceptingRuns() && ['chat.send', 'chat.edit-send'].includes(messageType)) {
+        sendProtocolError(ws, 'SERVER_RESTARTING', 'Server is restarting. Please retry after reconnecting.', data.sessionId);
+        return;
+      }
       switch (messageType) {
         case 'chat.edit-send':
           await handleChatEditSend(ws, userId, data, dependencies);

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
+import { closeConnection, getConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { closeScheduledMessageDispatcher, dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry, connectedClients } from '@/modules/websocket/index.js';
 
@@ -537,5 +537,34 @@ test('a socket that cannot be written to does not stop a claimed message from be
     assert.equal(runs.length, 1);
     assert.equal(runs[0].command, 'still goes');
     assert.equal(closedTab.frames.length, 0);
+  });
+});
+
+test('shutdown returns unstarted messages from a claimed scheduled batch to pending', async () => {
+  await withIsolatedDatabase(async userId => {
+    sessionsDb.createAppSession('first', 'claude', '/tmp/project');
+    sessionsDb.createAppSession('second', 'claude', '/tmp/project');
+    for (const id of ['first', 'second']) {
+      getConnection().prepare(`INSERT INTO scheduled_messages(id,user_id,session_id,content,scheduled_for)
+        VALUES(?,?,?,'Scheduled task','2020-01-01T00:00:00Z')`).run(id, userId, id);
+    }
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    const pending = dispatchDueScheduledMessages({ ...createRuntime([]) as object, run: async () => {
+      calls++;
+      started();
+      await blocked;
+    } } as never);
+    await ready;
+    chatRunRegistry.setAcceptingRuns(false);
+    closeScheduledMessageDispatcher();
+    const row = getConnection().prepare("SELECT status FROM scheduled_messages WHERE id = 'second'").get() as { status: string };
+    assert.equal(row.status, 'pending');
+    release();
+    await pending;
+    assert.equal(calls, 1);
   });
 });

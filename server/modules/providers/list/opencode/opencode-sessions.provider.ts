@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { isSessionNotFoundError } from '@opencode/client';
 
-import { compactionMetricsDb } from '@/modules/database/index.js';
 import { readOpenCodeUsage } from '@/modules/providers/list/opencode/opencode-usage.provider.js';
 import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { isOpenCodeSessionActive } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
@@ -422,18 +421,6 @@ const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
 
 /** Used by the OpenCode provider to render V2 messages consistently in live chat and history. */
 export class OpenCodeSessionsProvider implements IProviderSessions {
-  private restoreCompactionTimings(messages: NormalizedMessage[], sessionId: string): NormalizedMessage[] {
-    if (!messages.some(message => message.compact?.phase === 'done' || message.compact?.phase === 'failed')) return messages;
-    const metrics = compactionMetricsDb.list(sessionId);
-    return messages.map(message => {
-      const timing = metrics.get(message.id);
-      if (!timing || !message.compact || message.compact.phase === 'running') return message;
-      return { ...message, timestamp: timing.startedAt,
-        compact: { ...message.compact, durationMs: timing.durationMs },
-        content: message.content?.replace(/\n|$/, match => ` · ${(timing.durationMs / 1000).toFixed(1)}s${match}`),
-      };
-    });
-  }
   private readonly branches = new OpenCodeForkProvider();
 
   resolveEditAnchor(sessionId: string, anchorId: string) {
@@ -466,7 +453,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     // Text-only search already has a reader and must not open a new database per row.
     const db = options.hydrateSubagents === false ? null : openOpenCodeDatabaseForLiveEvent();
     try {
-      return this.restoreCompactionTimings(this.normalizeHistoryRows(messageRows(raw.message), sessionId ?? '', db), sessionId ?? '');
+      return this.normalizeHistoryRows(messageRows(raw.message), sessionId ?? '', db);
     } finally {
       db?.close();
     }
@@ -491,7 +478,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     try {
       const rows = readHistoryRows(db, providerSessionId);
 
-      const normalized = this.restoreCompactionTimings(this.normalizeHistoryRows(rows, sessionId, db), sessionId);
+      const normalized = this.normalizeHistoryRows(rows, sessionId, db);
       const tokenUsage = readOpenCodeUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);

@@ -76,6 +76,10 @@ export const scheduledMessagesDb = {
    * message up instead of skipping it. Doing it in one transaction is what
    * stops two overlapping polls from sending the same message twice.
    */
+  /** A shutdown can happen while an earlier message in the claimed batch runs. */
+  restoreUnstarted(id: string): void {
+    getConnection().prepare("UPDATE scheduled_messages SET status = 'pending' WHERE id = ? AND status = 'sent'").run(id);
+  },
   claimDue(now: Date): ScheduledMessageRow[] {
     const db = getConnection();
     const nowIso = now.toISOString();

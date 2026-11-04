@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import Database from 'better-sqlite3';
 
-import { closeConnection, compactionMetricsDb, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { OpenCodeSessionSynchronizer } from '@/modules/providers/list/opencode/opencode-session-synchronizer.provider.js';
 import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/opencode-sessions.provider.js';
@@ -81,7 +81,7 @@ const createOpenCodeDatabase = async (homeDir: string, workspacePath: string): P
   }
 };
 
-test('observed compaction duration survives history reload and is removed with its app session', async () => {
+test('native compaction history remains readable without persisted timing metrics', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-compaction-metrics-'));
   const restore = patchHomeDir(root);
   try {
@@ -96,17 +96,14 @@ test('observed compaction duration survives history reload and is removed with i
     await withIsolatedDatabase(async () => {
       sessionsDb.createAppSession('app-compact', 'opencode', root);
       sessionsDb.assignProviderSessionId('app-compact', 'open-session-1');
-      compactionMetricsDb.save('app-compact', 'compact-1_0', 2500, new Date(1000).toISOString());
       closeConnection();
       const history = await new OpenCodeSessionsProvider().fetchHistory('app-compact', { providerSessionId: 'open-session-1' });
       const compact = history.messages.find(message => message.compact)!;
-      assert.equal(compact.compact?.durationMs, 2500);
-      assert.equal(compact.content, 'Context compacted · 2.5s\nSummary');
+      assert.equal(compact.compact?.durationMs, undefined);
+      assert.equal(compact.content, 'Context compacted\nSummary');
       assert.equal(compact.compact?.preTokens, undefined);
       assert.equal(compact.compact?.postTokens, undefined);
-      assert.equal(compactionMetricsDb.list('open-session-1').size, 1);
       sessionsDb.deleteSessionById('app-compact');
-      assert.equal(compactionMetricsDb.list('app-compact').size, 0);
     });
   } finally {
     restore();

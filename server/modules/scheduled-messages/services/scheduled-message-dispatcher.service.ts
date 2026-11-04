@@ -16,6 +16,8 @@ const POLL_INTERVAL_MS = 30_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let dispatchInFlight = false;
+// Due messages are claimed as a batch; shutdown returns only those not started.
+const unstartedDueMessages = new Set<string>();
 
 function readOptions(raw: string): Record<string, unknown> {
   try {
@@ -50,7 +52,7 @@ async function sendClaimedQueuedMessage(
 
   // The registry check and run reservation are separate operations. If a run
   // wins that tiny race, put the turn back so the next poll tries again.
-  if (!result.started && result.error === 'A run was already in progress for this session.') {
+  if (!result.started && (result.error === 'A run was already in progress for this session.' || result.error === 'Server is restarting.')) {
     sessionDraftsDb.restoreQueuedMessage(candidate);
     return;
   }
@@ -72,6 +74,7 @@ function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): bool
 
 /** Sends every persisted queued turn whose session is currently idle. */
 export async function dispatchQueuedMessages(runtime: ProviderRuntimeGateway): Promise<number> {
+  if (!chatRunRegistry.isAcceptingRuns()) return 0;
   const candidates = sessionDraftsDb.listQueuedMessages();
   let claimed = 0;
 
@@ -118,6 +121,10 @@ async function sendClaimedMessage(
     // (deleted session, unavailable provider) or started and then failed.
     // Silently dropping a message the user scheduled is worse than telling
     // them it did not go.
+    if (!result.started && result.error === 'Server is restarting.') {
+      scheduledMessagesDb.restoreUnstarted(row.id);
+      return;
+    }
     if (!result.started || result.error) {
       recordFailure(row, result.error ?? 'The session was unavailable when this was due.');
     }
@@ -138,10 +145,13 @@ export async function dispatchDueScheduledMessages(
 ): Promise<number> {
   // Claimed before any of them runs, so a long turn cannot let the next poll
   // pick the same message up again.
+  if (!chatRunRegistry.isAcceptingRuns()) return 0;
   const due = scheduledMessagesDb.claimDue(now);
   if (due.length === 0) {
     return 0;
   }
+
+  for (const row of due) unstartedDueMessages.add(row.id);
 
   // The claim already recorded them as sent, so their banners come down now,
   // as the turns start, rather than once the last turn has finished.
@@ -152,6 +162,11 @@ export async function dispatchDueScheduledMessages(
   // Sequentially: a session can only have one run at a time, and two due
   // messages for the same session must not race each other into it.
   for (const row of due) {
+    unstartedDueMessages.delete(row.id);
+    if (!chatRunRegistry.isAcceptingRuns()) {
+      scheduledMessagesDb.restoreUnstarted(row.id);
+      continue;
+    }
     await sendClaimedMessage(row, runtime);
   }
 
@@ -197,6 +212,8 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
 }
 
 export function closeScheduledMessageDispatcher(): void {
+  for (const id of unstartedDueMessages) scheduledMessagesDb.restoreUnstarted(id);
+  unstartedDueMessages.clear();
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;

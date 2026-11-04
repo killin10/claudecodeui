@@ -17,6 +17,7 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
   const cancellations = new Map<string, Promise<boolean>>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let polling = false;
+  let closed = false;
   async function execute(row: SessionSubmission): Promise<void> {
     const resultTracker = createSubmissionResult(row, () => cancellations.has(row.submissionId));
     const observedRuntime: ProviderRuntimeGateway = {
@@ -52,7 +53,7 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
     }
   }
   async function poll(): Promise<void> {
-    if (polling) {
+    if (closed || polling || !chatRunRegistry.isAcceptingRuns()) {
       return;
     }
     polling = true;
@@ -64,7 +65,7 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
       for (const row of sessionDraftsDb.listQueuedMessages())
         busy.add(row.sessionId);
       for (const row of sessionControlDb.queued([...busy, ...executing])) {
-        if (executing.size >= 8) {
+        if (closed || !chatRunRegistry.isAcceptingRuns() || executing.size >= 8) {
           break;
         }
         if (chatRunRegistry.isMutationReserved(row.sessionId) || busy.has(row.sessionId) || executing.has(row.sessionId) || chatRunRegistry.isProcessing(row.sessionId) || runtime.hasBackgroundWork(row.sessionId)) {
@@ -91,13 +92,14 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
       if (timer) {
         return;
       }
+      closed = false;
       sessionControlDb.recover();
       const tick = () => { void poll().catch((error) => console.error('[SessionControl] Dispatch failed', error)); };
       timer = setInterval(tick, 1000);
       timer.unref();
       tick();
     },
-    close() { clearInterval(timer); timer = undefined; },
+    close() { closed = true; clearInterval(timer); timer = undefined; },
     async cancel(userId: number, sessionId: string, submissionId: string) {
       const row = sessionControlService.submission(userId, sessionId, submissionId);
       if (row.state === 'queued') {
@@ -110,12 +112,14 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
         }
         const pending = cancellations.get(submissionId) ?? Promise.resolve().then(() => runtime.abort(run.provider, sessionId));
         cancellations.set(submissionId, pending);
+        run.userCancelling = true;
         let aborted: boolean;
         try {
           aborted = await pending;
         }
         finally {
           cancellations.delete(submissionId);
+          run.userCancelling = false;
         }
         if (!aborted) {
           invalid('Provider did not acknowledge cancellation.', 'CANCEL_FAILED', 409);

@@ -78,6 +78,12 @@ const migrateLegacySessionNames = (db: Database): void => {
         created_at = COALESCE(sessions.created_at, excluded.created_at),
         updated_at = COALESCE(excluded.updated_at, sessions.updated_at)
     `);
+    // This merge can run against the current schema, whose mapping column
+    // already exists. Only legacy-name rows need native-id backfilling here.
+    if (getTableInfo(db, 'sessions').some(column => column.name === 'provider_session_id')) {
+      db.exec(`UPDATE sessions SET provider_session_id = session_id
+        WHERE provider_session_id IS NULL AND session_id IN (SELECT session_id FROM session_names)`);
+    }
     db.exec('DROP TABLE session_names');
     return;
   }
@@ -399,6 +405,8 @@ const addProviderSessionIdMapping = (db: Database): void => {
   const sessionsTableInfo = getTableInfo(db, 'sessions');
   const columnNames = sessionsTableInfo.map((column) => column.name);
 
+  // Later boots must preserve app sessions that have not acquired a native ID.
+  if (columnNames.includes('provider_session_id')) return;
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_session_id', 'TEXT');
   db.exec(`
     UPDATE sessions
@@ -489,6 +497,31 @@ const ensureProjectsForSessionPaths = (db: Database): void => {
   `);
 };
 
+// Single-user ownership covers imported sessions as well as UI/CLI-created rows.
+const addSessionRestartFields = (db: Database): void => {
+  const columns = getTableInfo(db, 'sessions').map(column => column.name);
+  db.transaction(() => {
+    addColumnToTableIfNotExists(db, 'sessions', columns, 'user_id', 'INTEGER REFERENCES users(id) ON DELETE SET NULL');
+    addColumnToTableIfNotExists(db, 'sessions', columns, 'resume_after_restart', 'INTEGER NOT NULL DEFAULT 0');
+    db.exec(`
+      UPDATE sessions SET user_id = (SELECT MIN(id) FROM users WHERE is_active = 1 HAVING COUNT(*) = 1)
+      WHERE user_id IS NULL;
+      CREATE TRIGGER IF NOT EXISTS sessions_assign_owner AFTER INSERT ON sessions
+      WHEN NEW.user_id IS NULL
+      BEGIN
+        UPDATE sessions SET user_id = (SELECT MIN(id) FROM users WHERE is_active = 1 HAVING COUNT(*) = 1)
+        WHERE session_id = NEW.session_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS sessions_assign_first_user AFTER INSERT ON users
+      WHEN NEW.is_active = 1 AND (SELECT COUNT(*) FROM users WHERE is_active = 1) = 1
+      BEGIN
+        UPDATE sessions SET user_id = NEW.id WHERE user_id IS NULL;
+      END;
+      DROP TABLE IF EXISTS compaction_metrics;
+    `);
+  })();
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -533,6 +566,7 @@ export const runMigrations = (db: Database) => {
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
     addForkedFromSessionIdColumn(db);
+    addSessionRestartFields(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

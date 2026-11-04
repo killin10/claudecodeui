@@ -61,7 +61,7 @@ import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { initializeDatabase, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './modules/notifications/index.js';
-import { createSessionControlRouter, submissionDispatcher } from './modules/session-control/index.js';
+import { createSessionControlRouter, submissionDispatcher, resumeSessionsAfterRestart, stopSessionsForRestart } from './modules/session-control/index.js';
 
 const __dirname = getModuleDirectory(import.meta.url);
 // The server source runs from /server, while the compiled output runs from /dist-server/server.
@@ -367,54 +367,73 @@ async function startServer() {
 
         console.log(`${terminalTextStyles.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
    
+        chatRunRegistry.setAcceptingRuns(false);
+        let shuttingDown = false;
         server.listen(SERVER_PORT, HOST, async () => {
-            const appInstallPath = APP_ROOT;
-            await writeLocalServerMarker().catch((error) => {
-                console.warn('[WARN] Could not write local server marker:', error.message);
-            });
-
-            console.log('');
-            console.log(terminalTextStyles.dim('═'.repeat(63)));
-            console.log(`  ${terminalTextStyles.bright('CloudCLI Server - Ready')}`);
-            console.log(terminalTextStyles.dim('═'.repeat(63)));
-            console.log('');
-            console.log(`${terminalTextStyles.info('[INFO]')} Server URL:  ${terminalTextStyles.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
-            console.log(`${terminalTextStyles.info('[INFO]')} Installed at: ${terminalTextStyles.dim(appInstallPath)}`);
-            console.log(`${terminalTextStyles.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
-            console.log('');
-
-            // OpenCode turn servers a killed CloudCLI process left behind keep
-            // running until stopped; this is the first chance to do so.
-            void reapOrphanedOpenCodeServers()
-                .then((count) => {
-                    if (count > 0) {
-                        console.log(`${terminalTextStyles.info('[INFO]')} Stopped ${count} OpenCode server(s) left running by an earlier CloudCLI process`);
-                    }
-                })
-                .catch((error) => {
-                    console.warn('[WARN] Could not check for leftover OpenCode servers:', getErrorMessage(error));
+            try {
+                const appInstallPath = APP_ROOT;
+                await writeLocalServerMarker().catch((error) => {
+                    console.warn('[WARN] Could not write local server marker:', error.message);
                 });
 
-            // Start watching the projects folder for changes
-            await initializeSessionsWatcher();
-            // Sends anything that came due while the server was not running,
-            // then keeps polling.
-            initializeScheduledMessageDispatcher(providerRuntimeService);
-            submissionDispatcher.start();
-            startScheduleDispatcher();
+                console.log('');
+                console.log(terminalTextStyles.dim('═'.repeat(63)));
+                console.log(`  ${terminalTextStyles.bright('CloudCLI Server - Ready')}`);
+                console.log(terminalTextStyles.dim('═'.repeat(63)));
+                console.log('');
+                console.log(`${terminalTextStyles.info('[INFO]')} Server URL:  ${terminalTextStyles.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
+                console.log(`${terminalTextStyles.info('[INFO]')} Installed at: ${terminalTextStyles.dim(appInstallPath)}`);
+                console.log(`${terminalTextStyles.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
+                console.log('');
 
-            // Start server-side plugin processes for enabled plugins
-            startEnabledPluginServers().catch(err => {
-                console.error('[Plugins] Error during startup:', err.message);
-            });
+                // OpenCode turn servers a killed CloudCLI process left behind keep
+                // running until stopped; this is the first chance to do so.
+                await reapOrphanedOpenCodeServers()
+                    .then((count) => {
+                        if (count > 0) {
+                            console.log(`${terminalTextStyles.info('[INFO]')} Stopped ${count} OpenCode server(s) left running by an earlier CloudCLI process`);
+                        }
+                    })
+                    .catch((error) => {
+                        throw new Error('Could not clean up leftover OpenCode servers', { cause: error });
+                    });
+
+                // Start watching the projects folder for changes
+                await initializeSessionsWatcher();
+                // Sends anything that came due while the server was not running,
+                // then keeps polling.
+                if (shuttingDown) return;
+                await resumeSessionsAfterRestart();
+                if (shuttingDown) return;
+                chatRunRegistry.setAcceptingRuns(true);
+                initializeScheduledMessageDispatcher(providerRuntimeService);
+                submissionDispatcher.start();
+                startScheduleDispatcher();
+
+                // Start server-side plugin processes for enabled plugins
+                startEnabledPluginServers().catch(err => {
+                    console.error('[Plugins] Error during startup:', err.message);
+                });
+            } catch (error) {
+                console.error('[Startup] Execution initialization failed', error);
+                process.exit(1);
+            }
         });
 
-        await closeSessionsWatcher();
-        closeScheduledMessageDispatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            if (shuttingDown) return;
+            shuttingDown = true;
+            chatRunRegistry.setAcceptingRuns(false);
+            closeScheduledMessageDispatcher();
             submissionDispatcher.close();
             closeScheduleDispatcher();
+            try {
+                await stopSessionsForRestart(providerRuntimeService);
+                await closeSessionsWatcher();
+            } catch (error) {
+                console.error('[SessionRestart] Could not prepare recovery', error);
+            }
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {
