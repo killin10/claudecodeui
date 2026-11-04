@@ -341,7 +341,8 @@ export type NormalizedMessage = {
    * the live events they missed across websocket reconnects.
    */
   seq?: number;
-  role?: 'user' | 'assistant';
+  /** System text is a provider notice, not an assistant reply or a processing-status event. */
+  role?: 'user' | 'assistant' | 'system';
   content?: string;
   /**
    * The model that produced this assistant message, as the provider reported

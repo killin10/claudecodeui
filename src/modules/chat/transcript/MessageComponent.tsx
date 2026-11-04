@@ -163,6 +163,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             </div>
           )}
         </div>
+      ) : message.type === 'system' ? (
+        <div role="note" className="w-full whitespace-pre-wrap break-words border-l-2 border-muted pl-3 text-xs text-muted-foreground">
+          {message.content}
+        </div>
       ) : message.compact ? (
         /* A compaction: one row, its numbers, and its summary folded into it */
         <div className="w-full">

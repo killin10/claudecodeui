@@ -548,7 +548,8 @@ export type NormalizedMessage = {
   seq?: number;
 
   // kind-specific fields (flat for simplicity)
-  role?: 'user' | 'assistant';
+  /** System text is a provider notice, not an assistant reply or a processing-status event. */
+  role?: 'user' | 'assistant' | 'system';
   content?: string;
   /**
    * The model that answered this turn, as the backend read it off the

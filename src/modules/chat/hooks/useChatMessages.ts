@@ -405,7 +405,11 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         const files = Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : undefined;
         if (!content.trim() && !images && !files) break;
 
-        if (msg.role === 'user') {
+        if (msg.role === 'system') {
+          converted.push({
+            type: 'system', content, timestamp: msg.timestamp, ...sharedMetadata,
+          });
+        } else if (msg.role === 'user') {
           // Parse task notifications
           const taskNotif = parseTaskNotification(content);
           if (taskNotif) {

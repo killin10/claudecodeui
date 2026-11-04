@@ -52,7 +52,6 @@ test('durable notices share their history identity and replay does not duplicate
     ['session.model.selected', { model: { providerID: 'test', id: 'model' } }, { type: 'model-switched', model: { providerID: 'test', id: 'model' } }],
     ['session.moved', { location: { directory: '/repo' } }, { type: 'location-switched', location: { directory: '/repo' } }],
     ['session.synthetic', { text: 'Background done' }, { type: 'synthetic', text: 'Background done' }],
-    ['session.instructions.updated', { text: 'New instructions' }, { type: 'system', text: 'New instructions' }],
   ] as const;
   for (const [index, [type, data, message]] of cases.entries()) {
     const event = { id: `evt_${index}`, created: 1700000000000, type, data: { sessionID: 'ses_native', ...data } } as OpenCodeEvent;
@@ -67,40 +66,59 @@ test('durable notices share their history identity and replay does not duplicate
   }
 });
 
-test('Code Mode catalog updates stay internal in both live events and persisted history', () => {
-  const frames: NormalizedMessage[] = [];
-  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame), normalize);
-  const text = 'The Code Mode tool catalog has changed.';
-  const event = { type: 'session.instructions.updated', id: 'evt_catalog', created: 1,
-    durable: { aggregateID: 'ses_native', seq: 1, version: 2 },
-    data: { sessionID: 'ses_native', delta: { 'core/codemode': 'hash' }, text } } as OpenCodeEvent;
-  assert.equal(projector.handle(event), true);
-  assert.deepEqual(frames, []);
-  assert.deepEqual(normalize({ type: 'session.message', message: {
-    id: 'msg_catalog', type: 'system', text, time: { created: 1 },
-    metadata: { notice: 'instructions', instructionSources: ['core/codemode'] },
-  } }, 'app'), []);
+test('instruction updates stay internal regardless of sources in live events and history', () => {
+  const sources = [
+    ['core/codemode'],
+    ['core/codemode', 'core/skill-guidance'],
+    ['core/codemode', 'project/instructions'],
+    ['future/source'],
+    [],
+    undefined,
+  ];
+  for (const instructionSources of sources) {
+    const frames: NormalizedMessage[] = [];
+    const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame), normalize);
+    const text = 'The Code Mode tool catalog has changed. Skills have changed too.';
+    const event = { type: 'session.instructions.updated', id: 'evt_catalog', created: 1,
+      data: { sessionID: 'ses_native',
+        delta: instructionSources && Object.fromEntries(instructionSources.map((source) => [source, 'hash'])), text },
+    } as OpenCodeEvent;
+    assert.equal(projector.handle(event), true);
+    assert.deepEqual(frames, []);
+    const message = { id: 'msg_catalog', type: 'system', text, time: { created: 1 },
+      metadata: { notice: 'instructions', instructionSources } };
+    const original = structuredClone(message);
+    assert.deepEqual(normalize({ type: 'session.message', message }, 'app'), []);
+    assert.deepEqual(message, original);
+  }
 });
 
-test('mixed instruction updates and unrelated messages remain visible', () => {
-  const frames: NormalizedMessage[] = [];
-  const projector = new OpenCodeEventProjector(() => 'app', (frame) => frames.push(frame), normalize);
-  projector.handle({ type: 'session.instructions.updated', id: 'evt_mixed', created: 1,
-    durable: { aggregateID: 'ses_native', seq: 2, version: 2 },
-    data: { sessionID: 'ses_native', delta: { 'core/codemode': 'hash', 'project/instructions': 'hash2' }, text: 'Mixed update' },
-  } as OpenCodeEvent);
-  assert.equal(frames[0].content, 'Mixed update');
-  const metadata = { notice: 'instructions', instructionSources: ['core/codemode'] };
-  const cases = [
-    { type: 'system', text: 'MCP connection failed' },
-    { type: 'system', text: 'Missing sources', metadata: { notice: 'instructions', instructionSources: [] } },
-    { type: 'system', text: 'Connection failed', metadata, error: { message: 'MCP connection failed' } },
-    { type: 'synthetic', text: 'Background done', metadata },
-    { type: 'assistant', content: [{ type: 'text', text: 'The Code Mode tool catalog has changed.' }] },
-  ];
-  for (const message of cases) {
-    assert.ok(normalize({ type: 'session.message', message: {
+test('unknown system notices are visible as system text and instruction errors remain errors', () => {
+  const [notice] = normalize({ type: 'session.message', message: {
+    id: 'msg_notice', type: 'system', text: 'New provider notice', time: { created: 1 },
+    metadata: { notice: 'future-notice' },
+  } }, 'app');
+  assert.equal(notice.kind, 'text');
+  assert.equal(notice.role, 'system');
+  assert.equal(notice.content, 'New provider notice');
+  const [error] = normalize({ type: 'session.message', message: {
+    id: 'msg_error', type: 'system', time: { created: 1 },
+    metadata: { notice: 'instructions' }, error: { message: 'MCP connection failed' },
+  } }, 'app');
+  assert.equal(error.kind, 'error');
+  assert.equal(error.content, 'MCP connection failed');
+});
+
+test('instruction metadata and catalog wording do not hide conversation or background messages', () => {
+  const text = 'The Code Mode tool catalog has changed.';
+  for (const message of [
+    { type: 'synthetic', text, metadata: { notice: 'instructions' } },
+    { type: 'assistant', content: [{ type: 'text', text }] },
+    { type: 'user', text },
+  ]) {
+    const [row] = normalize({ type: 'session.message', message: {
       id: 'msg_visible', time: { created: 1 }, ...message,
-    } }, 'app').length > 0);
+    } }, 'app');
+    assert.equal(row.content, text);
   }
 });

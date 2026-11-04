@@ -104,3 +104,14 @@ describe('the model label in the message footer', () => {
     assert.equal(container.querySelector('[title^="Answered by"]'), null);
   });
 });
+
+test('system notices render as notes without assistant controls or a model label', () => {
+  const [notice] = normalizedToChatMessages([normalized({
+    provider: 'opencode', role: 'system', content: 'Provider notice',
+  })]);
+  assert.equal(notice.type, 'system');
+  const view = renderMessage(notice);
+  expect(view.getByRole('note').textContent).toBe('Provider notice');
+  expect(view.queryByRole('button')).toBeNull();
+  view.unmount();
+});

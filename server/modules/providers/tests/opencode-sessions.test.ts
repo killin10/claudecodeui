@@ -711,3 +711,35 @@ test('native permission error type survives live and persisted history normaliza
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test('stored mixed instruction notices are hidden on reload without deleting native messages', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-instruction-display-'));
+  const restore = patchHomeDir(root);
+  try {
+    await createOpenCodeDatabase(root, root);
+    const native = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+    try {
+      const data = JSON.stringify({
+        time: { created: 1700000004000 },
+        text: 'The Code Mode tool catalog has changed. New skills are available.',
+        metadata: { notice: 'instructions', instructionSources: ['core/codemode', 'core/skill-guidance'] },
+      });
+      native.prepare('INSERT INTO session_message(id,session_id,type,seq,data) VALUES(?,?,?,?,?)')
+        .run('mixed-instructions', 'open-session-1', 'system', 3, data);
+      const provider = new OpenCodeSessionsProvider();
+      const history = await provider.fetchHistory('app-session', { providerSessionId: 'open-session-1' });
+      assert.ok(history.messages.some(message => message.content === 'The provider is wired.'));
+      assert.equal(history.messages.some(message => message.id.startsWith('mixed-instructions')), false);
+      assert.deepEqual(provider.normalizeMessage({ type: 'session.message', message: {
+        ...JSON.parse(data), id: 'mixed-instructions', type: 'system',
+      } }, 'app-session'), []);
+      assert.deepEqual(native.prepare('SELECT data FROM session_message WHERE id = ?').get('mixed-instructions'), { data });
+    } finally {
+      native.close();
+    }
+  } finally {
+    restore();
+    await rm(root, { recursive: true, force: true });
+  }
+});

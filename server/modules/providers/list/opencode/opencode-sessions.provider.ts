@@ -53,11 +53,9 @@ type OpenCodeHistoryRow = {
 
 /** Projects V2 message content onto the display rows shared by live and history rendering. */
 function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
-  const sources = message.metadata?.instructionSources;
-  // Code Mode catalogs instruct the model, not the user. Keep native storage intact
-  // and retain mixed-source notices and errors rather than hiding unrelated content.
-  if (message.type === 'system' && !message.error && message.metadata?.notice === 'instructions'
-    && Array.isArray(sources) && sources.length > 0 && sources.every((source) => source === 'core/codemode')) {
+  // Instruction updates are model context, regardless of their source or wording.
+  // Filter only the display projection; native storage and model input stay intact.
+  if (message.type === 'system' && !message.error && message.metadata?.notice === 'instructions') {
     return [];
   }
   const created = message.time?.created ?? 0;
@@ -138,6 +136,12 @@ function normalizeSpecialMessage(part: AnyRecord, base: Pick<NormalizedMessage, 
     case 'skill':
       return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: `Skill: ${part.name}\n${part.text ?? ''}` });
     case 'system':
+      return createNormalizedMessage({
+        ...base,
+        kind: part.error ? 'error' : 'text',
+        role: 'system',
+        content: [part.text, readEventError(part.error)].filter(Boolean).join('\n'),
+      });
     case 'synthetic':
       return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', content: part.text ?? '' });
     case 'agent-switched':
