@@ -3,6 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { Clock, Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHorizontal, Square, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { SidebarSessionTooltip } from '@/modules/sidebar/SidebarSessionTooltip';
 import { ScheduleLink } from '@/modules/schedules';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
@@ -410,95 +411,96 @@ function SidebarSessionItem({
 
       {!isCompact && (
       <div>
-        <a
-          href={`/session/${session.id}`}
-          role={isSelecting ? 'checkbox' : undefined}
-          aria-checked={isSelecting ? isChecked : undefined}
-          aria-disabled={isSelecting && !isSelectable ? true : undefined}
-          className={cn(
-            buttonVariants({ variant: 'ghost' }),
-            'h-auto w-full justify-start rounded-md border bg-card p-2 text-left font-normal transition-all duration-150',
-            isSelecting ? 'pr-2' : 'pr-11',
-            isSelected ? 'border-primary/20 bg-primary/5' : 'border-border/30',
-            !isSelected && isProcessing
-              ? 'border-border/60 bg-muted/20 hover:bg-muted/25'
-              : !isSelected && sessionView.isActive
-                ? 'border-green-500/30 bg-green-50/5 hover:bg-green-50/10 dark:bg-green-900/5 dark:hover:bg-green-900/10'
-                : 'hover:bg-accent/50',
-            isChecked && 'border-primary/40 bg-primary/10',
-          )}
-          // Left-click keeps in-app navigation; Ctrl/Cmd/middle-click and the
-          // native right-click menu use the href to open a new tab/window.
-          // While selecting, every click ticks the row instead.
-          onClick={(event) => {
-            if (isSelecting) {
-              event.preventDefault();
-              if (isSelectable) {
-                toggleSelected();
+        <SidebarSessionTooltip name={isEditing ? '' : sessionView.sessionName}>
+          <a
+            href={`/session/${session.id}`}
+            role={isSelecting ? 'checkbox' : undefined}
+            aria-checked={isSelecting ? isChecked : undefined}
+            aria-disabled={isSelecting && !isSelectable ? true : undefined}
+            className={cn(
+              buttonVariants({ variant: 'ghost' }),
+              'h-auto w-full justify-start rounded-md border bg-card p-2 text-left font-normal transition-all duration-150',
+              isSelecting ? 'pr-2' : 'pr-11',
+              isSelected ? 'border-primary/20 bg-primary/5' : 'border-border/30',
+              !isSelected && isProcessing
+                ? 'border-border/60 bg-muted/20 hover:bg-muted/25'
+                : !isSelected && sessionView.isActive
+                  ? 'border-green-500/30 bg-green-50/5 hover:bg-green-50/10 dark:bg-green-900/5 dark:hover:bg-green-900/10'
+                  : 'hover:bg-accent/50',
+              isChecked && 'border-primary/40 bg-primary/10',
+            )}
+            // Left-click keeps in-app navigation; Ctrl/Cmd/middle-click and the
+            // native right-click menu use the href to open a new tab/window.
+            // While selecting, every click ticks the row instead.
+            onClick={(event) => {
+              if (isSelecting) {
+                event.preventDefault();
+                if (isSelectable) {
+                  toggleSelected();
+                }
+                return;
               }
-              return;
-            }
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-            event.preventDefault();
-            if (event.detail > 1) return;
-            onSessionSelect(session, project.projectId);
-          }}
-          onKeyDown={isSelecting ? handleSelectionKeyDown : undefined}
-        >
-          <div className="flex w-full min-w-0 items-center gap-2">
-            {selectionIcon}
-            <div
-              className={cn(
-                'flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md',
-                isSelected ? 'bg-primary/10' : 'bg-muted/50',
-              )}
-            >
-              <LLMProviderLogo provider={session.__provider} className="h-3 w-3" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <div
-                  className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
-                  title={sessionView.sessionName}
-                  onDoubleClick={(event) => {
-                    if (isSelecting || isEditing || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onStartEditingSession(project.projectId, session.id, sessionView.sessionName);
-                  }}
-                >
-                  {sessionView.sessionName}
-                </div>
-                {isProcessing ? (
-                  <span
-                    className={cn(
-                      'ml-auto flex-shrink-0 transition-opacity duration-200',
-                      isEditing ? 'opacity-0' : !isSelecting && 'group-hover:opacity-0',
-                    )}
-                  >
-                    <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      </span>
-                    </Tooltip>
-                  </span>
-                ) : compactSessionAge && (
-                  <span
-                    className={cn(
-                      'ml-auto flex-shrink-0 text-[11px] text-muted-foreground transition-opacity duration-200',
-                      isEditing ? 'opacity-0' : !isSelecting && 'group-hover:opacity-0',
-                    )}
-                  >
-                    {compactSessionAge}
-                  </span>
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              if (event.detail > 1) return;
+              onSessionSelect(session, project.projectId);
+            }}
+            onKeyDown={isSelecting ? handleSelectionKeyDown : undefined}
+          >
+            <div className="flex w-full min-w-0 items-center gap-2">
+              {selectionIcon}
+              <div
+                className={cn(
+                  'flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md',
+                  isSelected ? 'bg-primary/10' : 'bg-muted/50',
                 )}
+              >
+                <LLMProviderLogo provider={session.__provider} className="h-3 w-3" />
               </div>
-              <div className="mt-0.5 flex items-center">
-                {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="min-w-0 flex-1 truncate text-sm font-normal text-foreground"
+                    onDoubleClick={(event) => {
+                      if (isSelecting || isEditing || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onStartEditingSession(project.projectId, session.id, sessionView.sessionName);
+                    }}
+                  >
+                    {sessionView.sessionName}
+                  </div>
+                  {isProcessing ? (
+                    <span
+                      className={cn(
+                        'ml-auto flex-shrink-0 transition-opacity duration-200',
+                        isEditing ? 'opacity-0' : !isSelecting && 'group-hover:opacity-0',
+                      )}
+                    >
+                      <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
+                        <span className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        </span>
+                      </Tooltip>
+                    </span>
+                  ) : compactSessionAge && (
+                    <span
+                      className={cn(
+                        'ml-auto flex-shrink-0 text-[11px] text-muted-foreground transition-opacity duration-200',
+                        isEditing ? 'opacity-0' : !isSelecting && 'group-hover:opacity-0',
+                      )}
+                    >
+                      {compactSessionAge}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 flex items-center">
+                  {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
+                </div>
               </div>
             </div>
-          </div>
-        </a>
+          </a>
+        </SidebarSessionTooltip>
 
         {!isSelecting && (
           <SessionOptions

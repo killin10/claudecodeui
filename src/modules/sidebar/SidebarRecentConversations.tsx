@@ -2,6 +2,7 @@ import { Loader2, MessageSquare } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import type { TFunction } from 'i18next';
 
+import { SidebarSessionTooltip } from '@/modules/sidebar/SidebarSessionTooltip';
 import { Button, LLMProviderLogo, Tooltip } from '@/shared/ui';
 import { cn } from '@/shared/utils';
 import type { ProjectSession, RecentConversationListItem, SessionRowActions } from '@/shared/types';
@@ -152,61 +153,63 @@ export default function SidebarRecentConversations({
                 </div>
               )}
 
-              <a
-                href={`/session/${conversation.sessionId}`}
-                onClick={handleClick}
-                data-testid="recent-conversation-row"
-                className={cn(
-                  'flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 pr-11 text-left transition-colors',
-                  isSelected
-                    ? 'bg-primary/10 text-foreground'
-                    : 'text-foreground hover:bg-accent/60',
-                )}
-              >
-                <span className={cn(
-                  'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md',
-                  isSelected ? 'bg-primary/10' : 'bg-muted/60',
-                )}>
-                  <LLMProviderLogo provider={conversation.provider} className="h-3.5 w-3.5" />
-                </span>
+              <SidebarSessionTooltip name={conversation.sessionTitle}>
+                <a
+                  href={`/session/${conversation.sessionId}`}
+                  onClick={handleClick}
+                  data-testid="recent-conversation-row"
+                  className={cn(
+                    'flex min-w-0 items-center gap-2 rounded-lg px-2 py-2 pr-11 text-left transition-colors',
+                    isSelected
+                      ? 'bg-primary/10 text-foreground'
+                      : 'text-foreground hover:bg-accent/60',
+                  )}
+                >
+                  <span className={cn(
+                    'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md',
+                    isSelected ? 'bg-primary/10' : 'bg-muted/60',
+                  )}>
+                    <LLMProviderLogo provider={conversation.provider} className="h-3.5 w-3.5" />
+                  </span>
 
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-normal leading-4">
-                    {conversation.sessionTitle}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-normal leading-4">
+                      {conversation.sessionTitle}
+                    </span>
+                    <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
+                      <span className="truncate">{conversation.projectDisplayName}</span>
+                      {isProcessing ? (
+                        <>
+                          <span className="flex-shrink-0 text-muted-foreground/40">·</span>
+                          <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
+                            <Loader2 className="h-3 w-3 flex-shrink-0 animate-spin" />
+                          </Tooltip>
+                        </>
+                      ) : hasBackgroundWork ? (
+                        // No spinner: nothing is responding. The purple of the
+                        // workflow and agent cards says what is still running.
+                        <>
+                          <span className="flex-shrink-0 text-muted-foreground/40">·</span>
+                          <Tooltip content={t('tooltips.backgroundWorkIndicator', 'Background work running')} position="top">
+                            <span
+                              role="status"
+                              aria-label={t('tooltips.backgroundWorkIndicator', 'Background work running')}
+                              className="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-purple-500 dark:bg-purple-400"
+                            />
+                          </Tooltip>
+                        </>
+                      ) : age && (
+                        <>
+                          <span className="flex-shrink-0 text-muted-foreground/40">·</span>
+                          <time className="flex-shrink-0 tabular-nums" dateTime={conversation.lastActivity ?? undefined}>
+                            {age}
+                          </time>
+                        </>
+                      )}
+                    </span>
                   </span>
-                  <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
-                    <span className="truncate">{conversation.projectDisplayName}</span>
-                    {isProcessing ? (
-                      <>
-                        <span className="flex-shrink-0 text-muted-foreground/40">·</span>
-                        <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
-                          <Loader2 className="h-3 w-3 flex-shrink-0 animate-spin" />
-                        </Tooltip>
-                      </>
-                    ) : hasBackgroundWork ? (
-                      // No spinner: nothing is responding. The purple of the
-                      // workflow and agent cards says what is still running.
-                      <>
-                        <span className="flex-shrink-0 text-muted-foreground/40">·</span>
-                        <Tooltip content={t('tooltips.backgroundWorkIndicator', 'Background work running')} position="top">
-                          <span
-                            role="status"
-                            aria-label={t('tooltips.backgroundWorkIndicator', 'Background work running')}
-                            className="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-purple-500 dark:bg-purple-400"
-                          />
-                        </Tooltip>
-                      </>
-                    ) : age && (
-                      <>
-                        <span className="flex-shrink-0 text-muted-foreground/40">·</span>
-                        <time className="flex-shrink-0 tabular-nums" dateTime={conversation.lastActivity ?? undefined}>
-                          {age}
-                        </time>
-                      </>
-                    )}
-                  </span>
-                </span>
-              </a>
+                </a>
+              </SidebarSessionTooltip>
 
               <SessionOptions
                 className="absolute right-2 top-1/2 -translate-y-1/2 transform"

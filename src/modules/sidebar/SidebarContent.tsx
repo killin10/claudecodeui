@@ -2,6 +2,7 @@ import { type ReactNode } from 'react';
 import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { SidebarSessionTooltip } from '@/modules/sidebar/SidebarSessionTooltip';
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
 import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
 import { formatCompactAge, getAllSessions } from '@/modules/sidebar/utils/sidebarProjectFormatting';
@@ -251,36 +252,37 @@ export default function SidebarContent({
                     const age = formatCompactAge(session.lastActivity, projectListProps.currentTime);
 
                     return (
-                      <button
-                        key={`${session.provider}-${session.sessionId}`}
-                        type="button"
-                        className="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent/60"
-                        onClick={() => onConversationResultClick(
-                          session.projectId,
-                          session.sessionId,
-                          session.provider,
-                        )}
-                      >
-                        <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-muted/60">
-                          <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[13px] font-normal leading-4 text-foreground">
-                            {session.sessionTitle}
+                      <SidebarSessionTooltip key={`${session.provider}-${session.sessionId}`} name={session.sessionTitle}>
+                        <button
+                          type="button"
+                          className="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent/60"
+                          onClick={() => onConversationResultClick(
+                            session.projectId,
+                            session.sessionId,
+                            session.provider,
+                          )}
+                        >
+                          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-muted/60">
+                            <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
                           </span>
-                          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
-                            <span className="truncate">{session.projectDisplayName}</span>
-                            {age && (
-                              <>
-                                <span className="flex-shrink-0 text-muted-foreground/40">·</span>
-                                <time className="flex-shrink-0 tabular-nums" dateTime={session.lastActivity ?? undefined}>
-                                  {age}
-                                </time>
-                              </>
-                            )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[13px] font-normal leading-4 text-foreground">
+                              {session.sessionTitle}
+                            </span>
+                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
+                              <span className="truncate">{session.projectDisplayName}</span>
+                              {age && (
+                                <>
+                                  <span className="flex-shrink-0 text-muted-foreground/40">·</span>
+                                  <time className="flex-shrink-0 tabular-nums" dateTime={session.lastActivity ?? undefined}>
+                                    {age}
+                                  </time>
+                                </>
+                              )}
+                            </span>
                           </span>
-                        </span>
-                      </button>
+                        </button>
+                      </SidebarSessionTooltip>
                     );
                   })}
                 </section>
@@ -536,65 +538,64 @@ export default function SidebarContent({
                     </div>
                     {projectSessions.length > 0 && (
                       <div className="border-t border-border/45 bg-muted/[0.08]">
-                        {projectSessions.map((session) => (
-                          <button
-                            key={String(session.id)}
-                            className="flex w-full items-center gap-2.5 border-b border-border/35 px-2.5 py-2 text-left transition-colors last:border-b-0 hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                            onClick={() => onArchivedSessionClick({
-                              sessionId: String(session.id),
-                              provider: session.__provider,
-                              projectId: project.projectId,
-                              projectPath: project.fullPath,
-                              projectDisplayName: project.displayName,
-                              sessionTitle:
-                                (typeof session.summary === 'string' && session.summary.trim().length > 0
-                                  ? session.summary
-                                  : typeof session.name === 'string' && session.name.trim().length > 0
-                                    ? session.name
-                                    : String(session.id)),
-                              createdAt: typeof session.created_at === 'string' ? session.created_at : null,
-                              updatedAt: typeof session.updated_at === 'string' ? session.updated_at : null,
-                              lastActivity:
-                                typeof session.lastActivity === 'string'
-                                  ? session.lastActivity
-                                  : typeof session.updated_at === 'string'
-                                    ? session.updated_at
-                                    : typeof session.created_at === 'string'
-                                      ? session.created_at
-                                      : null,
-                              isProjectArchived: true,
-                            })}
-                          >
-                            <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
-                              <LLMProviderLogo provider={session.__provider} className="h-3.5 w-3.5" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-xs text-foreground">
-                                {(typeof session.summary === 'string' && session.summary.trim().length > 0
-                                  ? session.summary
-                                  : typeof session.name === 'string' && session.name.trim().length > 0
-                                    ? session.name
-                                    : String(session.id))}
-                              </p>
-                              <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
-                                <span className="uppercase tracking-wide">{session.__provider}</span>
-                                <span aria-hidden>·</span>
-                                <span className="tabular-nums">
-                                  {formatCompactAge(
-                                    typeof session.lastActivity === 'string'
-                                      ? session.lastActivity
-                                      : typeof session.updated_at === 'string'
-                                        ? session.updated_at
-                                        : typeof session.created_at === 'string'
-                                          ? session.created_at
-                                          : null,
-                                    projectListProps.currentTime,
-                                  )}
-                                </span>
+                        {projectSessions.map((session) => {
+                          const sessionTitle = typeof session.summary === 'string' && session.summary.trim().length > 0
+                            ? session.summary
+                            : typeof session.name === 'string' && session.name.trim().length > 0
+                              ? session.name
+                              : String(session.id);
+                          return (
+                          <SidebarSessionTooltip key={String(session.id)} name={sessionTitle}>
+                            <button
+                              className="flex w-full items-center gap-2.5 border-b border-border/35 px-2.5 py-2 text-left transition-colors last:border-b-0 hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              onClick={() => onArchivedSessionClick({
+                                sessionId: String(session.id),
+                                provider: session.__provider,
+                                projectId: project.projectId,
+                                projectPath: project.fullPath,
+                                projectDisplayName: project.displayName,
+                                sessionTitle,
+                                createdAt: typeof session.created_at === 'string' ? session.created_at : null,
+                                updatedAt: typeof session.updated_at === 'string' ? session.updated_at : null,
+                                lastActivity:
+                                  typeof session.lastActivity === 'string'
+                                    ? session.lastActivity
+                                    : typeof session.updated_at === 'string'
+                                      ? session.updated_at
+                                      : typeof session.created_at === 'string'
+                                        ? session.created_at
+                                        : null,
+                                isProjectArchived: true,
+                              })}
+                            >
+                              <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
+                                <LLMProviderLogo provider={session.__provider} className="h-3.5 w-3.5" />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs text-foreground">
+                                  {sessionTitle}
+                                </p>
+                                <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                                  <span className="uppercase tracking-wide">{session.__provider}</span>
+                                  <span aria-hidden>·</span>
+                                  <span className="tabular-nums">
+                                    {formatCompactAge(
+                                      typeof session.lastActivity === 'string'
+                                        ? session.lastActivity
+                                        : typeof session.updated_at === 'string'
+                                          ? session.updated_at
+                                          : typeof session.created_at === 'string'
+                                            ? session.created_at
+                                            : null,
+                                      projectListProps.currentTime,
+                                    )}
+                                  </span>
+                                </div>
                               </div>
-                            </div>
-                          </button>
-                        ))}
+                            </button>
+                          </SidebarSessionTooltip>
+                          );
+                        })}
                       </div>
                     )}
                   </section>
@@ -631,30 +632,32 @@ export default function SidebarContent({
                         key={session.sessionId}
                         className="group/session flex items-center gap-1 border-b border-border/35 px-2.5 py-2 last:border-b-0 hover:bg-accent/35"
                       >
-                        <button
-                          className="flex min-w-0 flex-1 items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          onClick={() => onArchivedSessionClick(session)}
-                        >
-                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
-                            <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs text-foreground">
-                              {session.sessionTitle}
-                            </p>
-                            <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
-                              <span className="uppercase tracking-wide">{session.provider}</span>
-                              {session.lastActivity && (
-                                <>
-                                  <span aria-hidden>·</span>
-                                  <span className="tabular-nums">
-                                    {formatCompactAge(session.lastActivity, projectListProps.currentTime)}
-                                  </span>
-                                </>
-                              )}
+                        <SidebarSessionTooltip name={session.sessionTitle}>
+                          <button
+                            className="flex w-full min-w-0 flex-1 items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onClick={() => onArchivedSessionClick(session)}
+                          >
+                            <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-background/70">
+                              <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-xs text-foreground">
+                                {session.sessionTitle}
+                              </p>
+                              <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                                <span className="uppercase tracking-wide">{session.provider}</span>
+                                {session.lastActivity && (
+                                  <>
+                                    <span aria-hidden>·</span>
+                                    <span className="tabular-nums">
+                                      {formatCompactAge(session.lastActivity, projectListProps.currentTime)}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        </button>
+                          </button>
+                        </SidebarSessionTooltip>
                         <div className="flex flex-shrink-0 items-center gap-0.5">
                           <button
                             className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:hover:text-emerald-300"

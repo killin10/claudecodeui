@@ -10,6 +10,7 @@ type TooltipProps = {
   content?: ReactNode;
   position?: TooltipPosition;
   className?: string;
+  containerClassName?: string;
   delay?: number;
 };
 
@@ -34,6 +35,7 @@ export function Tooltip({
   content,
   position = 'top',
   className = '',
+  containerClassName,
   delay = 350,
 }: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
@@ -170,7 +172,7 @@ export function Tooltip({
   return (
     <div
       ref={containerRef}
-      className="relative inline-block"
+      className={cn('relative inline-block', containerClassName)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onTouchStart={handleTouchStart}
@@ -180,6 +182,7 @@ export function Tooltip({
       {children}
       {isVisible && typeof document !== 'undefined' && createPortal(
         <div
+          role="tooltip"
           ref={tooltipRef}
           style={tooltipStyle || { position: 'fixed', top: '-9999px', left: '-9999px', opacity: 0 }}
           className={cn(

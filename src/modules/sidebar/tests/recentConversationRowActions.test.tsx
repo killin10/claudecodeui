@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, test, vi } from 'vitest';
 
@@ -158,4 +158,24 @@ test('a session needing attention gets the amber dot', () => {
   assert.equal(dots.length, 1);
   const rows = container.querySelectorAll('[data-testid="recent-conversation-row"]');
   assert.equal(rows.length, 2);
+});
+
+
+test('hovering the conversation row shows its full name and leaving hides it', () => {
+  vi.useFakeTimers();
+  try {
+    const name = 'A full conversation name that is longer than the sidebar width';
+    const view = renderList([conversation('hover-session', { sessionTitle: name })], makeActions());
+    const row = view.getByTestId('recent-conversation-row');
+    assert.equal(view.queryByRole('tooltip'), null);
+    // Enter the row itself, not just its title text.
+    fireEvent.mouseEnter(row);
+    act(() => vi.advanceTimersByTime(400));
+    assert.equal(view.getByRole('tooltip').textContent, name);
+    fireEvent.mouseLeave(row);
+    assert.equal(view.queryByRole('tooltip'), null);
+    view.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
 });
