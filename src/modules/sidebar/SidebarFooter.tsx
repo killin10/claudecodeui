@@ -116,7 +116,7 @@ export default function SidebarFooter({
 
       {/* Desktop version brand line (OSS mode only) */}
       {!IS_PLATFORM && (
-        <div className="hidden px-3 py-2 text-center md:block">
+        <div className="hidden px-3 pb-2 text-center md:block">
           <a
             href={GITHUB_REPO_URL}
             target="_blank"
