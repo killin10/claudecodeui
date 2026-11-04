@@ -112,14 +112,17 @@ const mergeProviderModels = (
     return native ? { ...native, ...option, effort: native.effort, effortReadOnly: true } : option;
   });
   const customIds = new Set(customOptions.map((option) => option.value));
+  // OpenCode custom rows retain native variants; other providers prefer built-ins.
+  const visibleCustomOptions = provider === 'opencode'
+    ? customOptions : customOptions.filter((option) => !nativeById.has(option.value));
   const listOnlyCustomModels = customModelsOnly && customOptions.length > 0;
   return {
     OPTIONS: listOnlyCustomModels
       ? customOptions
       : [
-        ...predefined.OPTIONS.filter((option) => !customIds.has(option.value))
+        ...predefined.OPTIONS.filter((option) => provider !== 'opencode' || !customIds.has(option.value))
           .map((option) => ({ ...option, isCustom: false })),
-        ...customOptions,
+        ...visibleCustomOptions,
       ],
     DEFAULT: listOnlyCustomModels ? customOptions[0].value : predefined.DEFAULT,
     // Copied so no caller can mutate the shared capability matrix.
@@ -247,7 +250,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     currentRecordId?: number,
   ): void => {
     const existing = currentRecordId === undefined ? null : catalog.getCustomProviderModel(provider, currentRecordId);
-    const retainedNativeId = provider === 'opencode' && existing?.modelId === modelId;
+    const retainedNativeId = existing?.modelId === modelId;
     if (!retainedNativeId && predefined.OPTIONS.some((option) => option.value === modelId)) {
       throw new AppError(`A ${provider} model with this ID already exists.`, {
         code: 'MODEL_ID_ALREADY_EXISTS',

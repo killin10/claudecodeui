@@ -111,7 +111,13 @@ class CodexRun {
   }
 
   async abort(): Promise<void> {
+    if (this.stopped) return;
     this.stopped = true;
+    if (!this.reportedComplete && !this.failure) {
+      notifyRunStopped({ userId: this.writer.userId ?? null, provider: 'codex',
+        sessionId: this.sessionId as AnyRecord['sessionId'], sessionName: this.options.sessionSummary,
+        stopReason: 'aborted' });
+    }
     this.permissions?.resolved();
     try {
       await Promise.all([...this.events.activeTurns].map(([threadId, turnId]) => this.connection?.call('turn/interrupt', { threadId, turnId })));

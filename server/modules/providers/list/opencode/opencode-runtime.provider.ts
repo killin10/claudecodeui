@@ -508,14 +508,15 @@ class OpenCodeRun {
   }
 
   private async reportOutcome(): Promise<void> {
+    const details = { userId: this.writer.userId ?? null, provider: PROVIDER,
+      sessionId: this.sessionId(), sessionName: this.options.sessionSummary };
     if (this.turn.aborted) {
       // The websocket abort handler owns the terminal complete frame.
       await this.turn.abortFinished;
       await nextMacrotask();
+      reportRunStopped({ ...details, stopReason: 'aborted' });
       return;
     }
-    const details = { userId: this.writer.userId ?? null, provider: PROVIDER,
-      sessionId: this.sessionId(), sessionName: this.options.sessionSummary };
     if (!this.completeSent) this.send(createCompleteMessage({ provider: PROVIDER, sessionId: this.sessionId(), exitCode: this.error ? 1 : 0 }));
     if (!this.error) {
       reportRunStopped({ ...details, stopReason: 'completed' });
