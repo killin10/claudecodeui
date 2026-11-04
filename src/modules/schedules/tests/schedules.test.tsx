@@ -449,3 +449,60 @@ test('execution output expands beneath its row, switches safely and collapses wi
   await within(secondRow).findByText('Result unavailable');
   expect(within(firstRow).queryByRole('alert')).toBeNull();
 });
+
+test('edit opens the selected task in a dialog and cancelling preserves the list position', async () => {
+  const update = vi.spyOn(api.schedules, 'update');
+  render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
+  await screen.findByText('Daily review');
+  const list = screen.getByText('schedules.intro').parentElement!.parentElement!;
+  list.scrollTop = 800;
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.edit' }));
+  const dialog = screen.getByRole('dialog', { name: 'schedules.edit' });
+  expect(within(dialog).getByLabelText('schedules.name')).toHaveProperty('value', task.name);
+  expect(list.contains(within(dialog).getByRole('form'))).toBe(false);
+  fireEvent.change(within(dialog).getByLabelText('schedules.message'), { target: { value: 'Unsaved draft' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'schedules.close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(list.scrollTop).toBe(800);
+  expect(update).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.edit' }));
+  expect(screen.getByLabelText('schedules.message')).toHaveProperty('value', task.message);
+});
+
+test('session picker Escape closes the dropdown before the creation dialog', async () => {
+  render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.create' }));
+  fireEvent.click(screen.getByRole('combobox', { name: 'schedules.session' }));
+  await screen.findByRole('option', { name: /Target/ });
+  fireEvent.keyDown(screen.getByLabelText('schedules.searchSessions'), { key: 'Escape' });
+  expect(screen.getByRole('dialog', { name: 'schedules.create' })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: /Target/ })).toBeNull();
+  fireEvent.keyDown(screen.getByLabelText('schedules.name'), { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('save keeps the dialog open while pending, retains failed drafts, and closes after success', async () => {
+  let rejectSave!: (reason: Error) => void;
+  const update = vi.spyOn(api.schedules, 'update').mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
+  render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
+  await screen.findByText('Daily review');
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.edit' }));
+  fireEvent.change(screen.getByLabelText('schedules.message'), { target: { value: 'Updated prompt' } });
+  fireEvent.submit(screen.getByRole('form'));
+  fireEvent.keyDown(screen.getByLabelText('schedules.name'), { key: 'Escape' });
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  await act(async () => rejectSave(new Error('Save failed')));
+  expect(screen.getByRole('alert').textContent).toBe('Save failed');
+  expect(screen.getByLabelText('schedules.message')).toHaveProperty('value', 'Updated prompt');
+  update.mockResolvedValueOnce(json(task));
+  fireEvent.submit(screen.getByRole('form'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(update).toHaveBeenLastCalledWith('task', expect.objectContaining({ message: 'Updated prompt', revision: 2 }));
+});
+
+test('session navigation opens the creation dialog with its session preselected', async () => {
+  render(<MemoryRouter initialEntries={['/schedules?sessionId=session']}><SchedulesPage /></MemoryRouter>);
+  const dialog = screen.getByRole('dialog', { name: 'schedules.create' });
+  await within(dialog).findByText('Target');
+  expect(within(dialog).getByRole('combobox', { name: 'schedules.session' }).textContent).toContain('Target');
+});

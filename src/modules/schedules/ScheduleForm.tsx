@@ -8,17 +8,19 @@ import { Button, Input } from '@/shared/ui';
 import { SchedulePreview } from '@/modules/schedules/SchedulePreview';
 import { ScheduleSessionPicker } from '@/modules/schedules/ScheduleSessionPicker';
 
-/** Schedule page owns saving; form retains drafts and previews without touching live task settings. */
+/** Used by SchedulesPage inside its editor dialog; retains drafts and previews until saving succeeds. */
 export function ScheduleForm({
   task,
   initialSessionId,
   onSaved,
   onClose,
+  onBusyChange,
 }: {
   task: Schedule | null;
   initialSessionId: string;
   onSaved: () => void;
   onClose: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const { t } = useTranslation('common');
   const form = useRef<HTMLFormElement>(null);
@@ -49,6 +51,7 @@ export function ScheduleForm({
     event.preventDefault();
     if (busy) return;
     setBusy(true);
+    onBusyChange?.(true);
     setError('');
     try {
       const data = new FormData(form.current!);
@@ -82,6 +85,7 @@ export function ScheduleForm({
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
   const input =
@@ -90,132 +94,136 @@ export function ScheduleForm({
     <form
       ref={form}
       onSubmit={(e) => void save(e)}
-      className="space-y-4 rounded-lg border border-border/60 bg-card p-4 text-sm"
+      className="flex min-h-0 w-full flex-col bg-card text-sm"
       aria-label={t('schedules.form')}
     >
-      <h2 className="text-sm font-semibold">{t(task ? 'schedules.edit' : 'schedules.create')}</h2>
-      <label className="block">
-        {t('schedules.name')}
-        <Input name="name" required maxLength={200} defaultValue={task?.name} className={input} />
-      </label>
-      <label className="block">{t('schedules.session')}</label>
-      <ScheduleSessionPicker
-        initialId={task?.sessionId ?? initialSessionId}
-        disabled={Boolean(task)}
-      />
-      <label className="block">
-        {t('schedules.message')}
-        <textarea
-          name="message"
-          required
-          maxLength={1000000}
-          rows={8}
-          defaultValue={task?.message}
-          className={cn(input, 'h-48 min-h-48 resize-y py-2')}
+      <h2 className="shrink-0 border-b border-border/60 px-4 py-3 text-sm font-semibold">{t(task ? 'schedules.edit' : 'schedules.create')}</h2>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4">
+        <label className="block">
+          {t('schedules.name')}
+          <Input name="name" required maxLength={200} defaultValue={task?.name} className={input} />
+        </label>
+        <label className="block">{t('schedules.session')}</label>
+        <ScheduleSessionPicker
+          initialId={task?.sessionId ?? initialSessionId}
+          disabled={Boolean(task)}
         />
-      </label>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label>
-          {t('schedules.timing')}
-          <select value={mode} onChange={(e) => setMode(e.target.value)} className={input}>
-            <option value="cron">Cron</option>
-            <option value="once">{t('schedules.once')}</option>
-          </select>
-        </label>
-        <label>
-          {t('schedules.timezone')}
-          <Input
-            name="timezone"
-            required
-            value={timezone}
-            onChange={(event) => setTimezone(event.target.value)}
-            className={input}
-          />
-        </label>
-      </div>
-      {mode === 'cron' ? (
         <label className="block">
-          Cron
-          <Input
-            name="cron"
-            aria-label="Cron"
+          {t('schedules.message')}
+          <textarea
+            name="message"
             required
-            value={cron}
-            onChange={(event) => setCron(event.target.value)}
-            className={input}
+            maxLength={1000000}
+            rows={8}
+            defaultValue={task?.message}
+            className={cn(input, 'h-48 min-h-48 resize-y py-2')}
           />
-          <span className="text-xs text-muted-foreground">{t('schedules.cronHelp')}</span>
         </label>
-      ) : (
-        <label className="block">
-          {t('schedules.runAt')}
-          <Input
-            name="runAt"
-            type="text"
-            required
-            placeholder="2030-01-01T09:00:00+08:00"
-            value={runAt}
-            onChange={(event) => setRunAt(event.target.value)}
-            className={input}
-          />
-          <span className="text-xs text-muted-foreground">{t('schedules.onceHelp')}</span>
-        </label>
-      )}
-      <SchedulePreview
-        key={JSON.stringify([mode, mode === 'cron' ? cron : runAt, timezone])}
-        cron={mode === 'cron' ? cron : null}
-        runAt={mode === 'once' ? runAt : null}
-        timezone={timezone}
-      />
-      <label className="block">
-        {t('schedules.misfire')}
-        <select name="misfirePolicy" defaultValue={task?.misfirePolicy ?? 'skip'} className={input}>
-          <option value="skip">{t('schedules.skip')}</option>
-          <option value="latest">{t('schedules.latest')}</option>
-        </select>
-      </label>
-      <details>
-        <summary className="cursor-pointer">{t('schedules.overrides')}</summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2">
           <label>
-            {t('schedules.model')}
+            {t('schedules.timing')}
+            <select value={mode} onChange={(e) => setMode(e.target.value)} className={input}>
+              <option value="cron">Cron</option>
+              <option value="once">{t('schedules.once')}</option>
+            </select>
+          </label>
+          <label>
+            {t('schedules.timezone')}
             <Input
-              name="model"
-              defaultValue={task?.model ?? ''}
-              placeholder={t('schedules.inherit')}
+              name="timezone"
+              required
+              value={timezone}
+              onChange={(event) => setTimezone(event.target.value)}
               className={input}
             />
           </label>
-          <label>
-            {t('schedules.permission')}
-            <select
-              name="permissionMode"
-              defaultValue={task?.permissionMode ?? ''}
-              className={input}
-            >
-              <option value="">{t('schedules.inherit')}</option>
-              {['default', 'auto', 'plan', 'accept-edits', 'bypass-permissions'].map((mode) => (
-                <option key={mode} value={mode}>
-                  {t(`schedules.modes.${mode}`)}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
-      </details>
-      <p className="text-xs text-muted-foreground">{t('schedules.behavior')}</p>
-      {error && (
-        <p role="alert" className="text-destructive">
-          {error}
-        </p>
-      )}
-      <div className="flex gap-2">
-        <Button size="sm" disabled={busy} type="submit">
-          {t('schedules.save')}
-        </Button>
-        <Button size="sm" type="button" disabled={busy} onClick={onClose} variant="outline">
-          {t('schedules.close')}
-        </Button>
+        {mode === 'cron' ? (
+          <label className="block">
+            Cron
+            <Input
+              name="cron"
+              aria-label="Cron"
+              required
+              value={cron}
+              onChange={(event) => setCron(event.target.value)}
+              className={input}
+            />
+            <span className="text-xs text-muted-foreground">{t('schedules.cronHelp')}</span>
+          </label>
+        ) : (
+          <label className="block">
+            {t('schedules.runAt')}
+            <Input
+              name="runAt"
+              type="text"
+              required
+              placeholder="2030-01-01T09:00:00+08:00"
+              value={runAt}
+              onChange={(event) => setRunAt(event.target.value)}
+              className={input}
+            />
+            <span className="text-xs text-muted-foreground">{t('schedules.onceHelp')}</span>
+          </label>
+        )}
+        <SchedulePreview
+          key={JSON.stringify([mode, mode === 'cron' ? cron : runAt, timezone])}
+          cron={mode === 'cron' ? cron : null}
+          runAt={mode === 'once' ? runAt : null}
+          timezone={timezone}
+        />
+        <label className="block">
+          {t('schedules.misfire')}
+          <select name="misfirePolicy" defaultValue={task?.misfirePolicy ?? 'skip'} className={input}>
+            <option value="skip">{t('schedules.skip')}</option>
+            <option value="latest">{t('schedules.latest')}</option>
+          </select>
+        </label>
+        <details>
+          <summary className="cursor-pointer">{t('schedules.overrides')}</summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label>
+              {t('schedules.model')}
+              <Input
+                name="model"
+                defaultValue={task?.model ?? ''}
+                placeholder={t('schedules.inherit')}
+                className={input}
+              />
+            </label>
+            <label>
+              {t('schedules.permission')}
+              <select
+                name="permissionMode"
+                defaultValue={task?.permissionMode ?? ''}
+                className={input}
+              >
+                <option value="">{t('schedules.inherit')}</option>
+                {['default', 'auto', 'plan', 'accept-edits', 'bypass-permissions'].map((mode) => (
+                  <option key={mode} value={mode}>
+                    {t(`schedules.modes.${mode}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </details>
+        <p className="text-xs text-muted-foreground">{t('schedules.behavior')}</p>
+      </div>
+      <div className="shrink-0 space-y-2 border-t border-border/60 bg-card px-4 py-3">
+        {error && (
+          <p role="alert" className="text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button size="sm" disabled={busy} type="submit">
+            {t('schedules.save')}
+          </Button>
+          <Button size="sm" type="button" disabled={busy} onClick={onClose} variant="outline">
+            {t('schedules.close')}
+          </Button>
+        </div>
       </div>
     </form>
   );

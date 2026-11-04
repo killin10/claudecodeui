@@ -21,6 +21,8 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
   const [editing, setEditing] = useState<Schedule | 'new' | null>(
     params.get('sessionId') ? 'new' : null,
   );
+  // Keep the editor mounted while its save request is in flight.
+  const [editorBusy, setEditorBusy] = useState(false);
   // Selected task controls the history view independently of the editor.
   const [historyId, setHistoryId] = useState<string | null>(null);
   // Mutation failures remain visible and do not erase successful list data.
@@ -92,18 +94,6 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
               {(!pendingDelete && error) || data.error}
             </p>
           )}
-          {editing && (
-            <ScheduleForm
-              key={editing === 'new' ? 'new' : editing.scheduleId}
-              task={editing === 'new' ? null : editing}
-              initialSessionId={params.get('sessionId') ?? ''}
-              onClose={() => setEditing(null)}
-              onSaved={() => {
-                setEditing(null);
-                void data.refresh();
-              }}
-            />
-          )}
           {data.loading && <p>{t('schedules.loading')}</p>}
           {!data.loading && !data.error && data.items.length === 0 && (
             <p className="rounded border p-8 text-center text-muted-foreground">
@@ -134,6 +124,28 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
           )}
         </div>
       </div>
+      <Dialog open={editing !== null} onOpenChange={(open) => {
+        if (!open && !editorBusy) setEditing(null);
+      }}>
+        <DialogContent
+          aria-label={t(editing === 'new' ? 'schedules.create' : 'schedules.edit')}
+          className="top-[calc((100dvh-var(--keyboard-height,0px))/2)] flex max-h-[calc(100dvh-var(--keyboard-height,0px)-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-hidden p-0"
+        >
+          {editing && (
+            <ScheduleForm
+              key={editing === 'new' ? 'new' : editing.scheduleId}
+              task={editing === 'new' ? null : editing}
+              initialSessionId={params.get('sessionId') ?? ''}
+              onClose={() => setEditing(null)}
+              onBusyChange={setEditorBusy}
+              onSaved={() => {
+                setEditing(null);
+                void data.refresh();
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={pendingDelete !== null}
         onOpenChange={(open) => {
