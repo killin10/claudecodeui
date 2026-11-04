@@ -280,3 +280,10 @@ test('native denial provenance survives conversion into a tool card', () => {
   })]);
   assert.equal(rows[0].toolResult?.errorType, 'permission.rejected');
 });
+
+test('streamed text keeps its native row identity as the content changes', () => {
+  const before = normalizedToChatMessages([message('stream-row', { content: 'Starting' })]);
+  const after = normalizedToChatMessages([message('stream-row', { content: 'A different streamed response' })]);
+  assert.equal(before[0].id, 'stream-row');
+  assert.equal(after[0].id, before[0].id);
+});

@@ -126,7 +126,7 @@ export const ConfirmationActions: React.FC<ConfirmationActionsProps> = ({
   return (
     <div
       data-slot="confirmation-actions"
-      className={cn('flex items-center justify-end gap-2 self-end', className)}
+      className={cn('flex w-full flex-wrap items-center justify-end gap-2 self-end', className)}
       {...props}
     />
   );
@@ -144,6 +144,6 @@ export const ConfirmationAction: React.FC<ConfirmationActionProps> = ({
   variant = 'default',
   ...props
 }) => (
-  <Button className="h-8 px-3 text-sm" variant={variant} type="button" {...props} />
+  <Button className="h-auto min-h-8 max-w-full whitespace-normal px-3 py-1.5 text-sm" variant={variant} type="button" {...props} />
 );
 ConfirmationAction.displayName = 'ConfirmationAction';

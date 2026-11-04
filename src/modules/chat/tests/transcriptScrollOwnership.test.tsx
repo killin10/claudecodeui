@@ -257,3 +257,72 @@ describe('search jump ownership', () => {
     );
   });
 });
+
+describe('reading older messages', () => {
+  it('reveals cached history at the top even when the provider has no more pages', async () => {
+    const rows = Array.from({ length: 204 }, (_, index) => buildMessage(index, new Date(index * 1000).toISOString()));
+    const store = createStore(new Map([[SESSION_A, rows]]));
+    const { result } = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+    const container = createContainer(5000, 500);
+    (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+    container.element.scrollTop = 0;
+    assert.equal(result.current.visibleMessages.length, 100);
+    for (let index = 0; index < 6; index += 1) {
+      await act(async () => { await result.current.handleScroll(); });
+    }
+    assert.equal(result.current.visibleMessages.length, 204);
+    assert.equal(store.fetchMore.mock.calls.length, 0);
+  });
+
+  it('can fetch another page without first scrolling away from the top', async () => {
+    const rows = [buildMessage(1, '2026-01-01T00:00:01Z')];
+    const store = createStore(new Map([[SESSION_A, rows]]));
+    const slot = { fetchedAt: 1, status: 'idle' as const, total: 10, hasMore: true, offset: 1 };
+    store.fetchFromServer.mockResolvedValue(slot);
+    store.fetchMore.mockResolvedValue({ slot, prependedCount: 1 });
+    const { result } = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+    await act(async () => { await Promise.resolve(); });
+    const container = createContainer(500, 500);
+    (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+    await act(async () => { await result.current.handleScroll(); });
+    await act(async () => { await result.current.handleScroll(); });
+    assert.equal(store.fetchMore.mock.calls.length, 2);
+  });
+
+  it('retains the first visible row while new streamed rows are appended', async () => {
+    const rows = Array.from({ length: 120 }, (_, index) => buildMessage(index, new Date(index * 1000).toISOString()));
+    const messages = new Map([[SESSION_A, rows]]);
+    const store = createStore(messages);
+    const { result, rerender } = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+    const first = result.current.visibleMessages[0].id;
+    act(() => result.current.setIsUserScrolledUp(true));
+    messages.set(SESSION_A, [...rows, buildMessage(120, new Date(120000).toISOString())]);
+    act(() => rerender({ session: { id: SESSION_A } as ProjectSession }));
+    assert.equal(result.current.visibleMessages[0].id, first);
+    assert.equal(result.current.visibleMessages.length, 101);
+  });
+});
+
+it('preserves scrolling performed while an older page is still being fetched', async () => {
+  const store = createStore(new Map([[SESSION_A, [buildMessage(1, '2026-01-01T00:00:01Z')]]]));
+  const slot = { fetchedAt: 1, status: 'idle' as const, total: 10, hasMore: true, offset: 1 };
+  store.fetchFromServer.mockResolvedValue(slot);
+  let finish!: (value: { slot: typeof slot; prependedCount: number }) => void;
+  store.fetchMore.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const { result } = await renderChatSessionState({ session: { id: SESSION_A } as ProjectSession, store });
+  await act(async () => { await Promise.resolve(); });
+  const container = createContainer(5000, 500);
+  (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+  container.element.scrollTop = 0;
+  let pending!: Promise<void>;
+  act(() => { pending = result.current.handleScroll(); });
+  act(() => {
+    container.element.scrollTop = 800;
+    container.element.dispatchEvent(new Event('scroll'));
+  });
+  await act(async () => {
+    finish({ slot, prependedCount: 1 });
+    await pending;
+  });
+  assert.equal(container.element.scrollTop, 800);
+});

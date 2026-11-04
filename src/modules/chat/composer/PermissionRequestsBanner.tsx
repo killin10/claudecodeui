@@ -71,7 +71,7 @@ export default function PermissionRequestsBanner({
   }
 
   return (
-    <div className="mb-3 space-y-2">
+    <div className="mb-3 max-h-[calc((100dvh-var(--keyboard-height,0px))*0.45)] min-w-0 space-y-2 overflow-y-auto overscroll-contain [overflow-wrap:anywhere]">
       {filteredRequests.map((request) => {
         const form = (request.input as { form?: FormInfo } | undefined)?.form;
         if (form) {

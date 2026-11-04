@@ -373,6 +373,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
     const convertedStart = converted.length;
     const sharedMetadata = {
+      // Keep React row identity stable while streamed text and tool details change.
+      id: msg.id,
       displayText: msg.displayText,
       commandName: msg.commandName,
       commandMessage: msg.commandMessage,

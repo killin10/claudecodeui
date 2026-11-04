@@ -263,6 +263,9 @@ function ChatMessagesPane({
                 <span>
                   {t('session.messages.showingOf', { shown: sessionMessagesCount, total: totalMessages })}{' '}
                   <span className="text-xs">{t('session.messages.scrollToLoad')}</span>
+                  <button type="button" className="ml-2 text-blue-600 underline hover:text-blue-700" onClick={loadEarlierMessages}>
+                    {t('session.messages.loadEarlier')}
+                  </button>
                 </span>
               )}
             </div>
