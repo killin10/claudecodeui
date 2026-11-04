@@ -26,6 +26,7 @@ import type {
   ApiSuccessShape,
   AppErrorOptions,
   CliVersionProbe,
+  CompactionInfo,
   NormalizedMessage,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
@@ -43,6 +44,34 @@ import type {
  * Environment variables must be loaded before this module is evaluated.
  */
 export const IS_PLATFORM = process.env.VITE_IS_PLATFORM === 'true';
+
+// ---------------------------
+//----------------- COMPACTION DISPLAY ------------
+/**
+ * Providers use native start/end timestamps to report elapsed compaction time.
+ * Missing, invalid or reversed timestamps remain unknown, never a zero fallback.
+ */
+export function readCompactionDuration(start: unknown, end: unknown): number | undefined {
+  return typeof start === 'number' && Number.isFinite(start)
+    && typeof end === 'number' && Number.isFinite(end) && end >= start ? end - start : undefined;
+}
+
+/**
+ * Codex and OpenCode use the same compact row in live and history projections.
+ * Only reported context sizes belong in pre/postTokens; request usage is not
+ * a measurement of the context left after compaction. Summary text is preserved.
+ */
+export function createCompactionMessage(input: {
+  id: string; sessionId: string | null; provider: NormalizedMessage['provider'];
+  timestamp?: string; compact: CompactionInfo; summary?: string;
+}): NormalizedMessage {
+  const { compact, summary, ...base } = input;
+  const label = compact.phase === 'running' ? 'Compacting conversation…'
+    : compact.phase === 'failed' ? `Compaction failed: ${compact.error ?? 'Unknown error'}` : 'Context compacted';
+  const elapsed = compact.durationMs === undefined ? '' : ` · ${(compact.durationMs / 1000).toFixed(1)}s`;
+  return createNormalizedMessage({ ...base, kind: 'text', role: 'assistant', compact,
+    content: `${label}${elapsed}${summary ? `\n${summary}` : ''}` });
+}
 
 // ---------------------------
 //----------------- NORMALIZED MESSAGE HELPER INPUT TYPES ------------

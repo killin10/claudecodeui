@@ -8,6 +8,7 @@ import type {
   OpenCodeClient as OpencodeClient,
 } from '@opencode/client';
 
+import { compactionMetricsDb } from '@/modules/database/index.js';
 import {
   normalizeAttachmentDescriptors,
 } from '@/shared/image-attachments.js';
@@ -327,7 +328,18 @@ class OpenCodeRun {
   }
 
   private sessionId = () => this.appSessionId ?? this.turn.providerSessionId ?? this.turn.key;
-  private send = (message: unknown) => this.writer.send(message);
+  private send = (message: unknown) => {
+    const row = message as AnyRecord | null;
+    if (row?.compact?.durationMs !== undefined && row.compact.phase !== 'running') {
+      try {
+        compactionMetricsDb.save(this.sessionId(), row.id, row.compact.durationMs, row.timestamp);
+      } catch (error) {
+        // Timing persistence must not turn a successful provider run into a failure.
+        console.warn('[OpenCode] Could not persist compaction timing:', this.sessionId(), error);
+      }
+    }
+    this.writer.send(message);
+  };
   private notify = (event: AnyRecord) => notifyUserIfEnabled({ userId: this.writer.userId ?? null, event: notificationEvent(event) });
 
   private fail = (content: string) => {

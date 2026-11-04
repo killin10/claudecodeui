@@ -346,3 +346,35 @@ test('server timer triggers a one-time task without an open browser and never cr
   const plan = getConnection().prepare('EXPLAIN QUERY PLAN SELECT * FROM schedules WHERE enabled=1 AND deleted=0 AND next_run_at<=? ORDER BY next_run_at LIMIT 100').all(new Date().toISOString());
   assert.match(JSON.stringify(plan), /schedules_due/);
 });
+
+test('history retains ten recent records per schedule, protects unfinished runs and trims them after completion', async (t) => {
+  const { user, create } = await fixture(t);
+  const task = await create();
+  const other = await create({ name: 'Other schedule' });
+  const pending = schedulesService.run(user, task.scheduleId, { clientToken: 'retention-retry' });
+  const base = Date.parse(pending.createdAt);
+  for (let i = 1; i <= 12; i++) {
+    const at = new Date(base + i * 1000).toISOString();
+    schedulesDb.addRun({
+      ...pending, runId: `history-${i}`, state: 'skipped', submissionId: null,
+      scheduledFor: at, createdAt: at,
+    }, `occurrence-${i}`);
+  }
+  const second = schedulesService.run(user, other.scheduleId);
+  const kept = schedulesDb.runs(task.scheduleId, null, 100);
+  assert.equal(kept.length, 11);
+  assert.ok(kept.some((run) => run.runId === pending.runId));
+  assert.equal(schedulesDb.run('history-1'), null);
+  assert.equal(schedulesDb.run('history-2'), null);
+  assert.ok(schedulesDb.run('history-3'));
+  assert.ok(schedulesDb.run(second.runId));
+  schedulesService.change(user, task.scheduleId, 'pause');
+  schedulesService.change(user, other.scheduleId, 'pause');
+  sessionControlDb.transition(pending.submissionId!, ['queued'], 'succeeded');
+  dispatchSchedules();
+  assert.equal(schedulesDb.runs(task.scheduleId, null, 100).length, 10);
+  assert.equal(schedulesDb.run(pending.runId), null);
+  assert.ok(sessionControlDb.get(pending.submissionId!, user), 'retention does not remove conversation submissions');
+  assert.deepEqual(schedulesService.run(user, task.scheduleId, { clientToken: 'retention-retry' }), pending);
+  assert.ok(schedulesDb.run(second.runId), 'another schedule keeps its own history');
+});

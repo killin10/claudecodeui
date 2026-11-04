@@ -52,3 +52,37 @@ test('diff metadata does not swallow header-like file content', () => {
     oldText: '-- old comment', newText: '++ new comment',
   });
 });
+
+test('compaction updates one row with native duration and never invents context token counts', () => {
+  const { events, messages } = projection();
+  const item = { id: 'compact-1', type: 'contextCompaction', startedAtMs: 1000 };
+  events.handle('item/started', { threadId: 'root', turnId: 'turn', item });
+  assert.equal(messages[0].compact.phase, 'running');
+  events.handle('item/completed', { threadId: 'root', turnId: 'turn', item: { ...item, completedAtMs: 3500 } });
+  assert.equal(messages[1].id, messages[0].id);
+  assert.equal(messages[1].compact.phase, 'done');
+  assert.equal(messages[1].compact.durationMs, 2500);
+  assert.equal(messages[1].compact.preTokens, undefined);
+  assert.equal(messages[1].compact.postTokens, undefined);
+  const history = new CodexSessionsProvider().normalizeMessage({ type: 'compaction', uuid: item.id,
+    phase: 'done', startedAtMs: 1000, completedAtMs: 3500,
+  }, 'app')[0];
+  assert.equal(history.content, messages[1].content);
+  assert.equal(history.id, messages[1].id);
+  assert.equal(history.timestamp, messages[1].timestamp);
+  events.stopAll();
+  assert.equal(messages.length, 2);
+});
+
+test('unfinished compaction fails on interruption while child compaction stays out of the parent', () => {
+  const { events, messages } = projection();
+  const item = { id: 'compact', type: 'contextCompaction' };
+  events.handle('item/started', { threadId: 'child', turnId: 'child-turn', item });
+  assert.equal(messages.length, 0);
+  events.handle('item/started', { threadId: 'root', turnId: 'turn', item });
+  events.handle('turn/completed', { threadId: 'root', turn: { id: 'turn', status: 'interrupted' } });
+  assert.equal(messages.at(-1)?.compact.phase, 'failed');
+  assert.equal(messages.at(-1)?.compact.durationMs, undefined);
+  events.stopAll();
+  assert.equal(messages.length, 2);
+});

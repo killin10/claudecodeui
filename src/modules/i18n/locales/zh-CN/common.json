@@ -271,6 +271,17 @@
     }
   },
   "schedules": {
+    "collapseResult": "收起结果",
+    "historyRetention": "保留最近 10 次执行记录；尚未结束的执行会额外保留。",
+    "nextFive": "接下来 5 次执行时间",
+    "noSessions": "没有匹配的会话",
+    "modes": {
+      "default": "默认",
+      "auto": "自动",
+      "plan": "仅规划",
+      "accept-edits": "允许编辑",
+      "bypass-permissions": "绕过权限"
+    },
     "title": "定时任务",
     "back": "返回会话",
     "intro": "由 CloudCLI 服务执行调度，关闭页面不影响运行。任务绑定已有会话。",

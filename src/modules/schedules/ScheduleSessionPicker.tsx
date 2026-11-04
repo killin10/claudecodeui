@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { Check, ChevronsUpDown } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, readApiJson } from '@/shared/api';
+import { Button, Command, CommandInput, CommandList, CommandItem, CommandEmpty } from '@/shared/ui';
 
 /** Schedule form selects only existing active sessions, with search and explicit pagination. */
 export function ScheduleSessionPicker({
@@ -12,6 +14,21 @@ export function ScheduleSessionPicker({
   disabled: boolean;
 }) {
   const { t } = useTranslation('common');
+  // The picker opens one searchable list, retaining the selected session when it closes.
+  const [open, setOpen] = useState(false);
+  // Loading must not appear as a successful empty search.
+  const [loading, setLoading] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const listId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [open]);
   // Search text drives server filtering rather than assuming the first page contains every session.
   const [search, setSearch] = useState('');
   // Results and continuation represent the currently loaded server page(s).
@@ -31,13 +48,15 @@ export function ScheduleSessionPicker({
     provider: string;
     projectPath: string | null;
   } | null>(null);
-  // Holds the selected ID across searches; required input prevents an empty target.
-  const [value, setValue] = useState(initialId);
+  // The label and submitted ID share one selection; the initial ID remains usable during lookup.
+  const value = selected?.sessionId ?? initialId;
   // Request errors must not be presented as an empty session catalog.
   const [error, setError] = useState('');
   const generation = useRef(0);
+  const initialLookupGeneration = useRef(0);
   const loadingMore = useRef(false);
   useEffect(() => {
+    if (!open) return;
     const requestEpoch = generation;
     const current = ++generation.current;
     const timer = setTimeout(() => {
@@ -48,28 +67,33 @@ export function ScheduleSessionPicker({
           if (generation.current === current) {
             setPage(result);
             setError('');
+            setLoading(false);
           }
         })
         .catch((e: Error) => {
-          if (generation.current === current) setError(e.message);
+          if (generation.current === current) {
+            setError(e.message);
+            setLoading(false);
+          }
         });
     }, 200);
     return () => {
       clearTimeout(timer);
       requestEpoch.current++;
     };
-  }, [search]);
+  }, [search, open]);
   useEffect(() => {
     let active = true;
+    const current = ++initialLookupGeneration.current;
     if (initialId)
       void api.schedules
         .session(initialId)
         .then(readApiJson<NonNullable<typeof selected>>)
         .then((result) => {
-          if (active) setSelected(result);
+          if (active && current === initialLookupGeneration.current) setSelected(result);
         })
         .catch((e: Error) => {
-          if (active) setError(e.message);
+          if (active && current === initialLookupGeneration.current) setError(e.message);
         });
     return () => {
       active = false;
@@ -91,51 +115,119 @@ export function ScheduleSessionPicker({
       loadingMore.current = false;
     }
   }
-  const options =
-    selected && !page.items.some((s) => s.sessionId === selected.sessionId)
-      ? [selected, ...page.items]
-      : page.items;
+  const choose = (session: typeof selected) => {
+    if (!session) return;
+    initialLookupGeneration.current++;
+    setSelected(session);
+    setError('');
+    setOpen(false);
+    trigger.current?.focus();
+  };
   return (
-    <div className="space-y-2">
-      {!disabled && (
-        <input
-          aria-label={t('schedules.searchSessions')}
-          placeholder={t('schedules.searchSessions')}
-          className="w-full rounded border bg-background p-2"
-          value={search}
-          onChange={(e) => {
-            setPage({ items: [], nextToken: null });
-            setSearch(e.target.value);
-          }}
-        />
-      )}
-      <select
-        required
-        name="sessionId"
+    <div
+      ref={root}
+      className="relative"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          trigger.current?.focus();
+        }
+      }}
+    >
+      <input type="hidden" name="sessionId" value={value} />
+      <Button
+        ref={trigger}
+        type="button"
+        variant="outline"
+        size="sm"
+        role="combobox"
         aria-label={t('schedules.session')}
-        className="w-full rounded border bg-background p-2"
-        value={value}
+        aria-expanded={open}
+        aria-required="true"
+        aria-controls={listId}
+        aria-haspopup="listbox"
         disabled={disabled}
-        onChange={(e) => {
-          setValue(e.target.value);
-          setSelected(options.find((s) => s.sessionId === e.target.value) ?? null);
+        className="w-full justify-between font-normal"
+        onClick={() => {
+          setOpen(!open);
+          if (!open) setLoading(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' && !open) {
+            event.preventDefault();
+            setLoading(true);
+            setOpen(true);
+          }
         }}
       >
-        <option value="">{t('schedules.chooseSession')}</option>
-        {options.map((s) => (
-          <option key={s.sessionId} value={s.sessionId}>
-            {s.title || s.sessionId} · {s.provider} · {s.projectPath}
-          </option>
-        ))}
-      </select>
-      {disabled && <input type="hidden" name="sessionId" value={initialId} />}
-      {page.nextToken && !disabled && (
-        <button type="button" onClick={() => void more()}>
-          {t('schedules.loadMore')}
-        </button>
+        <span className="truncate">{selected?.title || value || t('schedules.chooseSession')}</span>
+        <ChevronsUpDown className="shrink-0 text-muted-foreground" />
+      </Button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md">
+          <Command shouldFilter={false}>
+            <CommandInput
+              autoFocus
+              aria-label={t('schedules.searchSessions')}
+              placeholder={t('schedules.searchSessions')}
+              value={search}
+              onValueChange={(text) => {
+                setLoading(true);
+                setPage({ items: [], nextToken: null });
+                setSearch(text);
+              }}
+            />
+            <CommandList id={listId}>
+              {loading && (
+                <p role="status" className="p-3 text-xs text-muted-foreground">
+                  {t('schedules.loading')}
+                </p>
+              )}
+              {!loading && !error && <CommandEmpty>{t('schedules.noSessions')}</CommandEmpty>}
+              {page.items.map((session) => (
+                <CommandItem
+                  key={session.sessionId}
+                  value={session.sessionId}
+                  onSelect={() => choose(session)}
+                  className="gap-2"
+                >
+                  <Check
+                    className={
+                      'h-4 w-4 shrink-0 ' + (value === session.sessionId ? '' : 'invisible')
+                    }
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm">
+                      {session.title || session.sessionId}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {session.provider} · {session.projectPath}
+                    </span>
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandList>
+            {page.nextToken && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full"
+                onClick={() => void more()}
+              >
+                {t('schedules.loadMore')}
+              </Button>
+            )}
+          </Command>
+        </div>
       )}
       {error && (
-        <p role="alert" className="text-destructive">
+        <p role="alert" className="mt-1 text-xs text-destructive">
           {error}
         </p>
       )}

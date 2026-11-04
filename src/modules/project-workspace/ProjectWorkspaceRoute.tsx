@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import { PaletteOpsProvider } from '@/modules/command-palette';
 import { ProjectsStateProvider } from '@/modules/project-workspace/context/ProjectsStateContext';
@@ -14,7 +14,7 @@ import ProjectWorkspaceShell from '@/modules/project-workspace/ProjectWorkspaceS
 
 const MemoizedProjectWorkspaceRouteContent = memo(ProjectWorkspaceRouteContent);
 
-/** This module's only public export: rendered by App for the "/" and "/session/:sessionId" routes. */
+/** This module's only public export: rendered by App for the session and schedules routes, sharing one persistent workspace shell. */
 export default function ProjectWorkspaceRoute() {
   return (
     <SessionProtectionProvider>
@@ -27,6 +27,7 @@ export default function ProjectWorkspaceRoute() {
 
 function ProjectWorkspaceRouteContent() {
   const navigate = useNavigate();
+  const isSchedules = Boolean(useMatch('/schedules'));
   const { sessionId } = useParams<{ sessionId?: string }>();
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { ws, sendMessage, subscribe } = useWebSocket();
@@ -37,6 +38,7 @@ function ProjectWorkspaceRouteContent() {
   return (
     <ProjectsStateProvider
       sessionId={sessionId}
+      isSessionViewVisible={!isSchedules}
       navigate={navigate}
       subscribe={subscribe}
       isMobile={isMobile}

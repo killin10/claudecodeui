@@ -3,7 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
 import { api, readApiJson } from '@/shared/api';
+import { Button } from '@/shared/ui';
 import type { ScheduleRun } from '@/shared/types';
+import { ScheduleTime } from '@/modules/schedules/ScheduleTime';
+import { ScheduleStatus } from '@/modules/schedules/ScheduleStatus';
+import { ScheduleRunResult } from '@/modules/schedules/ScheduleRunResult';
 
 /** Task history reports persisted trigger state and the provider's actual submission result. */
 export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
@@ -17,16 +21,14 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
   const [error, setError] = useState('');
   // Fetch failures and action failures have separate lifetimes: polling must not clear a cancellation error.
   const [fetchError, setFetchError] = useState('');
-  // Explicit detail expansion loads potentially large submission output only on demand.
-  const [detail, setDetail] = useState<string | null>(null);
+  // Only the selected execution expands its output directly beneath that record.
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   // A reload request follows load-more or cancellation, while polling also observes external changes.
   const [refresh, setRefresh] = useState(0);
   // Prevents simultaneous cancel actions in this history view.
   const [busy, setBusy] = useState(false);
   const pages = useRef(1);
-  const detailGeneration = useRef(0);
   useEffect(() => {
-    const detailEpoch = detailGeneration;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -53,31 +55,8 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
     return () => {
       disposed = true;
       clearTimeout(timer);
-      detailEpoch.current++;
     };
   }, [scheduleId, refresh]);
-  async function show(run: ScheduleRun) {
-    setError('');
-    const current = ++detailGeneration.current;
-    try {
-      const result = await readApiJson<{
-        submission: { result: { content?: string; text?: string }[]; error: string | null } | null;
-        reason: string | null;
-      }>(await api.schedules.run(scheduleId, run.runId));
-      if (current === detailGeneration.current) {
-        const output = result.submission?.result
-          ?.map((message) => message.content ?? message.text ?? '')
-          .filter(Boolean)
-          .join('\n\n');
-        setDetail(
-          [output, result.submission?.error ?? result.reason].filter(Boolean).join('\n\n') ||
-            t('schedules.noResult'),
-        );
-      }
-    } catch (e) {
-      if (current === detailGeneration.current) setError((e as Error).message);
-    }
-  }
   async function cancel(run: ScheduleRun) {
     if (busy) return;
     setError('');
@@ -93,7 +72,10 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
   }
   return (
     <section className="mt-4 space-y-3 rounded-lg border p-4" aria-label={t('schedules.history')}>
-      <h2 className="font-medium">{t('schedules.history')}</h2>
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium">{t('schedules.history')}</h3>
+        <p className="text-xs text-muted-foreground">{t('schedules.historyRetention')}</p>
+      </div>
       {(error || fetchError) && (
         <p role="alert" className="text-destructive">
           {error || fetchError}
@@ -102,41 +84,55 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
       {page.items.map((run) => (
         <div key={run.runId} className="space-y-1 border-b py-2 text-sm">
           <div className="flex flex-wrap items-center gap-3">
-            <time>{new Date(run.scheduledFor).toLocaleString()}</time>
-            <span>{t(`schedules.states.${run.state}`, { defaultValue: run.state })}</span>
+            <ScheduleTime value={run.scheduledFor} timezone={run.snapshot.timezone} />
+            <span className="text-xs text-muted-foreground">{run.snapshot.timezone}</span>
+            <ScheduleStatus state={run.state} />
             <span>{t(`schedules.${run.source}`)}</span>
           </div>
           {run.reason && <p className="break-words text-muted-foreground">{run.reason}</p>}
-          <div className="flex gap-4">
+          <div className="flex items-center gap-1">
             <Link
               className="text-primary underline"
               to={`/session/${encodeURIComponent(run.sessionId)}`}
             >
               {t('schedules.openSession')}
             </Link>
-            <button onClick={() => void show(run)}>{t('schedules.result')}</button>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-expanded={expandedRunId === run.runId}
+              onClick={() => setExpandedRunId(expandedRunId === run.runId ? null : run.runId)}
+            >
+              {t(expandedRunId === run.runId ? 'schedules.collapseResult' : 'schedules.result')}
+            </Button>
             {['queued', 'running', 'waiting-for-input'].includes(run.state) && (
-              <button disabled={busy} className="text-destructive" onClick={() => void cancel(run)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                className="text-destructive"
+                onClick={() => void cancel(run)}
+              >
                 {t('schedules.cancelRun')}
-              </button>
+              </Button>
             )}
           </div>
+          {expandedRunId === run.runId && (
+            <ScheduleRunResult key={`${scheduleId}:${run.runId}`} scheduleId={scheduleId} runId={run.runId} />
+          )}
         </div>
       ))}
       {page.nextToken && (
-        <button
+        <Button
+          size="sm"
+          variant="ghost"
           onClick={() => {
             pages.current++;
             setRefresh((v) => v + 1);
           }}
         >
           {t('schedules.loadMore')}
-        </button>
-      )}
-      {detail !== null && (
-        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-3 text-xs">
-          {detail}
-        </pre>
+        </Button>
       )}
     </section>
   );

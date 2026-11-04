@@ -31,3 +31,5 @@ export { sessionControlDb } from './repositories/session-control.db.js';
 
 // Used by the built-in schedule service for task and trigger persistence.
 export { schedulesDb } from './repositories/schedules.db.js';
+// OpenCode records compaction timings missing from native history.
+export { compactionMetricsDb } from './repositories/compaction-metrics.db.js';

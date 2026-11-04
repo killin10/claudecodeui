@@ -396,6 +396,17 @@
   },
   "cancel": "Cancel",
   "schedules": {
+    "collapseResult": "Hide result",
+    "historyRetention": "Keeps the latest 10 runs, plus any unfinished executions.",
+    "nextFive": "Next 5 runs",
+    "noSessions": "No matching sessions",
+    "modes": {
+      "default": "Default",
+      "auto": "Automatic",
+      "plan": "Plan only",
+      "accept-edits": "Accept edits",
+      "bypass-permissions": "Bypass permissions"
+    },
     "title": "Scheduled tasks",
     "back": "Back to sessions",
     "intro": "CloudCLI schedules these tasks on the server, even when this page is closed. Each task targets an existing session.",

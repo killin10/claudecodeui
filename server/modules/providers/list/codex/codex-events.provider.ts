@@ -1,5 +1,5 @@
 import type { AnyRecord, BackgroundTaskSummary, NormalizedMessage, ProviderRuntimeContext, ProviderRuntimeWriter, SubagentInfo } from '@/shared/types.js';
-import { createNormalizedMessage, readCodexContextUsage, unifiedDiffToTexts } from '@/shared/utils.js';
+import { createCompactionMessage, createNormalizedMessage, readCompactionDuration, readCodexContextUsage, unifiedDiffToTexts } from '@/shared/utils.js';
 /** Translates native app-server events into the same cards and task lifecycle used by Claude. */
 export class CodexRunEvents {
   readonly terminals = new Map<string, {
@@ -11,6 +11,7 @@ export class CodexRunEvents {
   readonly taskCards = new Map<string, NormalizedMessage>();
   private readonly pendingChildMessages = new Map<string, Map<string, NormalizedMessage>>();
   private readonly items = new Map<string, AnyRecord>();
+  private readonly compactions = new Map<string, AnyRecord>();
   hadChildren = false;
   proposedPlan?: string;
   constructor(private readonly writer: ProviderRuntimeWriter, private readonly context: ProviderRuntimeContext, private readonly sessionId: () => string, private readonly rootThread: () => string) {
@@ -27,6 +28,7 @@ export class CodexRunEvents {
       if (threadId !== this.rootThread()) this.taskState(threadId, 'running');
     }
     if (method === 'turn/completed') {
+      this.finishCompactions(threadId, params.turn.id, params.turn.status);
       this.activeTurns.delete(threadId);
       if (threadId !== this.rootThread()) {
         this.taskState(threadId, params.turn.status === 'failed' ? 'failed' : params.turn.status === 'interrupted' ? 'stopped' : 'completed');
@@ -48,6 +50,10 @@ export class CodexRunEvents {
       }
     }
     if (method === 'item/started' || method === 'item/completed') {
+      if (params.item.type === 'contextCompaction') {
+        this.compaction(method, params);
+        return;
+      }
       this.items.set(`${threadId}:${params.item.id}`, { ...params.item });
       this.item(threadId, params.item);
       if (method === 'item/completed') {
@@ -60,6 +66,32 @@ export class CodexRunEvents {
     if (method === 'turn/plan/updated') {
       this.emit({ kind: 'tool_use', id: `${params.turnId}:plan`, toolId: `${params.turnId}:plan`, toolName: 'TodoWrite',
         toolInput: { todos: (params.plan ?? []).map((step: AnyRecord) => ({ content: step.step, status: step.status === 'inProgress' ? 'in_progress' : step.status })) } });
+    }
+  }
+
+  private compaction(method: string, params: AnyRecord): void {
+    if (params.threadId !== this.rootThread()) return;
+    const previous = this.compactions.get(params.item.id);
+    const item = { ...previous, ...params.item, turnId: params.turnId };
+    if (item.startedAtMs == null) item.startedAtMs = previous?.startedAtMs;
+    const phase = method === 'item/started' ? 'running' : 'done';
+    if (phase === 'running') this.compactions.set(item.id, item);
+    else this.compactions.delete(item.id);
+    this.emit(createCompactionMessage({
+      id: item.id, sessionId: this.sessionId(), provider: 'codex',
+      ...(typeof item.startedAtMs === 'number' ? { timestamp: new Date(item.startedAtMs).toISOString() } : {}),
+      compact: { phase, durationMs: readCompactionDuration(item.startedAtMs, item.completedAtMs) },
+    }));
+  }
+
+  private finishCompactions(threadId: string, turnId?: string, status?: string): void {
+    if (threadId !== this.rootThread()) return;
+    for (const [id, item] of this.compactions) {
+      if (turnId && item.turnId !== turnId) continue;
+      this.emit(createCompactionMessage({ id, sessionId: this.sessionId(), provider: 'codex',
+        ...(typeof item.startedAtMs === 'number' ? { timestamp: new Date(item.startedAtMs).toISOString() } : {}),
+        compact: { phase: 'failed', error: status === 'interrupted' ? 'Compaction interrupted' : 'Compaction ended without a completion event' } }));
+      this.compactions.delete(id);
     }
   }
 
@@ -121,6 +153,7 @@ export class CodexRunEvents {
   }
 
   stopAll(): void {
+    this.finishCompactions(this.rootThread(), undefined, 'interrupted');
     for (const id of [...this.terminals.keys()]) {
       this.finishTerminal(id, 'stopped');
     }
@@ -158,10 +191,6 @@ export class CodexRunEvents {
     }
     if (item.type === 'fileChange') {
       this.fileChanges(threadId, item);
-      return;
-    }
-    if (item.type === 'contextCompaction') {
-      this.emit({ kind: 'status', text: 'Context compacted' });
       return;
     }
     const types: Record<string, string> = { agentMessage: 'agent_message', reasoning: 'reasoning', commandExecution: 'command_execution', mcpToolCall: 'mcp_tool_call', webSearch: 'web_search', plan: 'agent_message' };

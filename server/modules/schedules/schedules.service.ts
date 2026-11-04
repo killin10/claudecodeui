@@ -304,6 +304,9 @@ export function dispatchSchedules(now = new Date()): number {
       console.error('[Schedules] Dispatch failed', { scheduleId: candidate.scheduleId, error });
     }
   }
+  // Also trim old records whose submissions finished since the last trigger,
+  // including paused and one-time schedules which will never trigger again.
+  schedulesDb.pruneRuns();
   return count;
 }
 function dispatchOne(id: string, now: Date): number {

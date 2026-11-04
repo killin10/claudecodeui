@@ -1,15 +1,19 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Clock, Plus, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
 import { api, readApiJson } from '@/shared/api';
+import { Button, Dialog, DialogContent, DialogTitle } from '@/shared/ui';
 import type { Schedule } from '@/shared/types';
+import { createClientToken } from '@/shared/utils';
 import { ScheduleForm } from '@/modules/schedules/ScheduleForm';
-import { ScheduleHistory } from '@/modules/schedules/ScheduleHistory';
+import { ScheduleCard } from '@/modules/schedules/ScheduleCard';
 import { useSchedules } from '@/modules/schedules/hooks/useSchedules';
 
-/** App route displays the built-in scheduler across all projects; no plugin or open chat is required. */
-export function SchedulesPage() {
+/** ProjectMainRegion renders schedules in the workspace, retaining the sidebar and global controls. */
+export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
   const { t } = useTranslation('common');
   const [params] = useSearchParams();
   const data = useSchedules();
@@ -23,17 +27,20 @@ export function SchedulesPage() {
   const [error, setError] = useState('');
   // Disables concurrent actions while the server applies a mutation.
   const [busy, setBusy] = useState(false);
+  // Deletion uses the same themed dialog as the rest of the workspace.
+  const [pendingDelete, setPendingDelete] = useState<Schedule | null>(null);
   const runTokens = useRef(new Map<string, string>());
   async function action(task: Schedule, kind: 'pause' | 'resume' | 'run' | 'delete') {
     if (busy) return;
-    if (kind === 'delete' && !window.confirm(t('schedules.deleteConfirm'))) return;
     setBusy(true);
     setError('');
     try {
-      if (kind === 'delete') await readApiJson(await api.schedules.remove(task.scheduleId));
-      else {
+      if (kind === 'delete') {
+        await readApiJson(await api.schedules.remove(task.scheduleId));
+        setPendingDelete(null);
+      } else {
         if (kind === 'run' && !runTokens.current.has(task.scheduleId))
-          runTokens.current.set(task.scheduleId, crypto.randomUUID());
+          runTokens.current.set(task.scheduleId, createClientToken());
         await readApiJson(
           await api.schedules.action(
             task.scheduleId,
@@ -54,128 +61,116 @@ export function SchedulesPage() {
     }
   }
   return (
-    <main className="h-dvh overflow-auto bg-background p-4 text-foreground sm:p-6">
-      <div className="mx-auto max-w-6xl space-y-4">
-        <header className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <Link to="/" className="text-sm text-muted-foreground">
-              ← {t('schedules.back')}
-            </Link>
-            <h1 className="text-2xl font-semibold">{t('schedules.title')}</h1>
-          </div>
-          <div className="flex gap-2">
-            <button className="rounded border px-3 py-2" onClick={() => void data.refresh()}>
-              {t('schedules.refresh')}
-            </button>
-            <button
-              className="rounded bg-primary px-3 py-2 text-primary-foreground"
-              onClick={() => setEditing('new')}
-            >
-              {t('schedules.create')}
-            </button>
-          </div>
-        </header>
-        <p className="text-sm text-muted-foreground">{t('schedules.intro')}</p>
-        {(error || data.error) && (
-          <p role="alert" className="text-destructive">
-            {error || data.error}
-          </p>
-        )}
-        {editing && (
-          <ScheduleForm
-            key={editing === 'new' ? 'new' : editing.scheduleId}
-            task={editing === 'new' ? null : editing}
-            initialSessionId={params.get('sessionId') ?? ''}
-            onClose={() => setEditing(null)}
-            onSaved={() => {
-              setEditing(null);
-              void data.refresh();
-            }}
-          />
-        )}
-        {data.loading && <p>{t('schedules.loading')}</p>}
-        {!data.loading && !data.error && data.items.length === 0 && (
-          <p className="rounded border p-8 text-center text-muted-foreground">
-            {t('schedules.empty')}
-          </p>
-        )}
-        <div className="space-y-3">
-          {data.items.map((task) => (
-            <article key={task.scheduleId} className="rounded-lg border bg-card p-4">
-              <div className="flex flex-wrap justify-between gap-2">
-                <h2 className="font-medium">{task.name}</h2>
-                <span className="text-sm">
-                  {t(task.enabled ? 'schedules.enabled' : 'schedules.paused')}
-                </span>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {task.sessionTitle || task.sessionId} · {task.provider} · {task.projectPath}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {task.cron ?? task.runAt} · {task.timezone}
-              </p>
-              <p className="mt-1 text-sm">
-                {t('schedules.next')}:{' '}
-                {task.nextRunAt
-                  ? new Date(task.nextRunAt).toLocaleString(undefined, { timeZone: task.timezone })
-                  : '—'}{' '}
-                {task.nextRunAt && task.timezone}
-              </p>
-              <p className="mt-1 text-sm">
-                {t('schedules.last')}:{' '}
-                {task.lastState
-                  ? t(`schedules.states.${task.lastState}`, { defaultValue: task.lastState })
-                  : '—'}
-              </p>
-              <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-sm text-muted-foreground">
-                {task.message}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                <Link
-                  to={`/session/${encodeURIComponent(task.sessionId)}`}
-                  className="text-primary underline"
-                >
-                  {t('schedules.openSession')}
-                </Link>
-                <button disabled={busy} onClick={() => setEditing(task)}>
-                  {t('schedules.edit')}
-                </button>
-                <button
-                  disabled={busy}
-                  onClick={() => void action(task, task.enabled ? 'pause' : 'resume')}
-                >
-                  {t(task.enabled ? 'schedules.pause' : 'schedules.resume')}
-                </button>
-                <button disabled={busy} onClick={() => void action(task, 'run')}>
-                  {t('schedules.runNow')}
-                </button>
-                <button
-                  onClick={() =>
-                    setHistoryId(historyId === task.scheduleId ? null : task.scheduleId)
-                  }
-                >
-                  {t('schedules.history')}
-                </button>
-                <button
-                  disabled={busy}
-                  className="text-destructive"
-                  onClick={() => void action(task, 'delete')}
-                >
-                  {t('schedules.delete')}
-                </button>
-              </div>
-              {historyId === task.scheduleId && (
-                <ScheduleHistory key={task.scheduleId} scheduleId={task.scheduleId} />
-              )}
-            </article>
-          ))}
+    <main className="flex h-full min-h-0 flex-col bg-background text-sm text-foreground">
+      <header className="pwa-header-safe flex shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-3 py-1.5 sm:px-4 sm:py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {mobileMenu}
+          <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <h1 className="truncate text-sm font-medium">{t('schedules.title')}</h1>
         </div>
-        {data.nextToken && (
-          <button className="rounded border px-3 py-2" onClick={() => void data.more()}>
-            {t('schedules.loadMore')}
-          </button>
-        )}
+        <div className="flex shrink-0 gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void data.refresh()}
+            aria-label={t('schedules.refresh')}
+            title={t('schedules.refresh')}
+          >
+            <RefreshCw />
+          </Button>
+          <Button size="sm" onClick={() => setEditing('new')}>
+            <Plus />
+            {t('schedules.create')}
+          </Button>
+        </div>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+        <div className="mx-auto max-w-5xl space-y-4">
+          <p className="text-sm text-muted-foreground">{t('schedules.intro')}</p>
+          {((!pendingDelete && error) || data.error) && (
+            <p role="alert" className="text-destructive">
+              {(!pendingDelete && error) || data.error}
+            </p>
+          )}
+          {editing && (
+            <ScheduleForm
+              key={editing === 'new' ? 'new' : editing.scheduleId}
+              task={editing === 'new' ? null : editing}
+              initialSessionId={params.get('sessionId') ?? ''}
+              onClose={() => setEditing(null)}
+              onSaved={() => {
+                setEditing(null);
+                void data.refresh();
+              }}
+            />
+          )}
+          {data.loading && <p>{t('schedules.loading')}</p>}
+          {!data.loading && !data.error && data.items.length === 0 && (
+            <p className="rounded border p-8 text-center text-muted-foreground">
+              {t('schedules.empty')}
+            </p>
+          )}
+          <div className="space-y-3">
+            {data.items.map((task) => (
+              <ScheduleCard
+                key={task.scheduleId}
+                task={task}
+                busy={busy}
+                expanded={historyId === task.scheduleId}
+                onEdit={() => setEditing(task)}
+                onAction={(kind) => void action(task, kind)}
+                onHistory={() => setHistoryId(historyId === task.scheduleId ? null : task.scheduleId)}
+                onDelete={() => {
+                  setError('');
+                  setPendingDelete(task);
+                }}
+              />
+            ))}
+          </div>
+          {data.nextToken && (
+            <Button size="sm" variant="ghost" className="w-full" onClick={() => void data.more()}>
+              {t('schedules.loadMore')}
+            </Button>
+          )}
+        </div>
       </div>
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setPendingDelete(null);
+        }}
+      >
+        <DialogContent className="max-w-sm p-5">
+          <DialogTitle>{t('schedules.delete')}</DialogTitle>
+          <h2 className="text-sm font-semibold">
+            {t('schedules.delete')} · {pendingDelete?.name}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">{t('schedules.deleteConfirm')}</p>
+          {error && (
+            <p role="alert" className="mt-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => setPendingDelete(null)}
+            >
+              {t('buttons.cancel')}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={busy}
+              onClick={() => pendingDelete && void action(pendingDelete, 'delete')}
+            >
+              {t('schedules.delete')}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }

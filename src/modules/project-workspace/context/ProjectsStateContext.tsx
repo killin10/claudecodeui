@@ -46,6 +46,7 @@ type ProjectActiveSessionState = {
 type ProjectsStateProviderProps = {
   children: ReactNode;
   sessionId?: string;
+  isSessionViewVisible?: boolean;
   navigate: NavigateFunction;
   subscribe: (listener: (event: ServerEvent) => void) => () => void;
   isMobile: boolean;
@@ -62,6 +63,7 @@ const ProjectActiveSessionContext = createContext<ProjectActiveSessionState | nu
 export function ProjectsStateProvider({
   children,
   sessionId,
+  isSessionViewVisible = true,
   navigate,
   subscribe,
   isMobile,
@@ -69,6 +71,7 @@ export function ProjectsStateProvider({
 }: ProjectsStateProviderProps) {
   const state = useProjectsState({
     sessionId,
+    isSessionViewVisible,
     navigate,
     subscribe,
     isMobile,
@@ -143,8 +146,8 @@ export function ProjectsStateProvider({
   );
 
   const activeSessionState = useMemo<ProjectActiveSessionState>(
-    () => ({ activeSessionId: state.selectedSession?.id ?? sessionId ?? null }),
-    [sessionId, state.selectedSession?.id],
+    () => ({ activeSessionId: isSessionViewVisible ? state.selectedSession?.id ?? sessionId ?? null : null }),
+    [isSessionViewVisible, sessionId, state.selectedSession?.id],
   );
 
   return (

@@ -1,7 +1,7 @@
 import type { OpenCodeEvent } from '@opencode/client';
 
 import type { NormalizedMessage } from '@/shared/types.js';
-import { createNormalizedMessage } from '@/shared/utils.js';
+import { createCompactionMessage, createNormalizedMessage, readCompactionDuration } from '@/shared/utils.js';
 
 function specialMessage(event: OpenCodeEvent) {
   if (!('created' in event)) return null;
@@ -19,7 +19,10 @@ function specialMessage(event: OpenCodeEvent) {
     case 'session.synthetic':
       return { ...base, type: 'synthetic', text: event.data.text };
     case 'session.instructions.updated':
-      return event.data.text === undefined ? null : { ...base, type: 'system', text: event.data.text };
+      return event.data.text === undefined ? null : {
+        ...base, type: 'system', text: event.data.text,
+        metadata: { notice: 'instructions', instructionSources: Object.keys(event.data.delta ?? {}) },
+      };
     default:
       return null;
   }
@@ -31,6 +34,7 @@ export class OpenCodeEventProjector {
   private readonly finishedParts = new Set<string>();
   private readonly fingerprints = new Map<string, string>();
   private compactId: string | undefined;
+  private compactStartedAt: number | undefined;
 
   constructor(
     private readonly sessionId: () => string,
@@ -78,17 +82,21 @@ export class OpenCodeEventProjector {
       case 'session.compaction.ended':
       case 'session.compaction.failed': {
         this.compactId ??= `${('inputID' in event.data ? event.data.inputID : undefined) ?? event.id.replace(/^evt_/, 'msg_')}_0`;
+        if (event.type === 'session.compaction.started') this.compactStartedAt = event.created;
         const phase = event.type === 'session.compaction.started' ? 'running'
           : event.type === 'session.compaction.ended' ? 'done' : 'failed';
         const error = event.type === 'session.compaction.failed' ? event.data.error.message : undefined;
-        this.publish(createNormalizedMessage({
+        this.publish(createCompactionMessage({
           id: this.compactId, sessionId: this.sessionId(), provider: 'opencode',
-          kind: 'text', role: 'assistant',
-          content: phase === 'running' ? 'Compacting conversation…'
-            : phase === 'done' && event.type === 'session.compaction.ended' ? event.data.text || 'Conversation compacted' : `Compaction failed: ${error}`,
-          compact: { phase, trigger: event.data.reason, ...(error ? { error } : {}) },
+          timestamp: new Date(this.compactStartedAt ?? event.created).toISOString(),
+          summary: event.type === 'session.compaction.ended' ? event.data.text : undefined,
+          compact: { phase, trigger: event.data.reason, ...(error ? { error } : {}),
+            ...(phase !== 'running' ? { durationMs: readCompactionDuration(this.compactStartedAt, event.created) } : {}) },
         }));
-        if (phase !== 'running') this.compactId = undefined;
+        if (phase !== 'running') {
+          this.compactId = undefined;
+          this.compactStartedAt = undefined;
+        }
         return true;
       }
       case 'session.retry.scheduled':

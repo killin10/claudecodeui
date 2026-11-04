@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import { sessionsDb } from '@/modules/database/index.js';
 import { readCodexOwnedThreadIds } from '@/modules/providers/services/codex-cli-liveness.service.js';
 import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
+import { CodexCompactionHistory } from '@/modules/providers/list/codex/codex-compaction.provider.js';
 import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import { prepareTranscriptMessages } from '@/shared/message-unification.js';
@@ -21,6 +22,8 @@ import type {
 import {
   AppError,
   createNormalizedMessage,
+  createCompactionMessage,
+  readCompactionDuration,
   generateMessageId,
   readObjectRecord,
   readCodexContextUsage,
@@ -1264,6 +1267,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
 
   const messages: AnyRecord[] = [];
   let tokenUsage: AnyRecord | null = null;
+  const compactions = new CodexCompactionHistory(messages);
 
   /** Call ids whose orchestration wrapper must never reach the transcript. */
   const ignoredToolCallIds = new Set<string>();
@@ -1328,7 +1332,12 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     turns.observe(entry.type, payload);
 
     // ── event_msg ──────────────────────────────────────────────────────────
+    if (entry.type === 'compacted') {
+      compactions.observe({ type: 'context_compacted' }, timestamp, turns.getCurrentTurnId());
+      continue;
+    }
     if (entry.type === 'event_msg') {
+      if (compactions.observe(payload, timestamp, turns.getCurrentTurnId())) continue;
       if (payload.type === 'token_count' && payload.info) {
         const info = payload.info as AnyRecord;
         tokenUsage = readCodexContextUsage(info);
@@ -1397,12 +1406,6 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
         });
         continue;
       }
-
-      if (payload.type === 'context_compacted') {
-        messages.push({ type: 'status_note', timestamp, content: 'Context compacted' });
-        continue;
-      }
-
       // Paginated rollouts carry user prompts as `item_completed` /
       // `UserMessage`; wire `response_item` user rows are internal, not prompts.
       if (payload.type === 'item_completed') {
@@ -2009,6 +2012,14 @@ export class CodexSessionsProvider implements IProviderSessions {
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('codex');
 
+    if (raw.type === 'compaction') {
+      return [createCompactionMessage({ id: baseId, sessionId, provider: PROVIDER,
+        timestamp: typeof raw.startedAtMs === 'number' ? new Date(raw.startedAtMs).toISOString() : ts,
+        compact: { phase: raw.phase, error: raw.error,
+          durationMs: readCompactionDuration(raw.startedAtMs, raw.completedAtMs) },
+      })];
+    }
+
     if (raw.type === 'status_note' && typeof raw.content === 'string') {
       return [createNormalizedMessage({
         id: baseId,
@@ -2133,7 +2144,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.message?.role) {
+    if (raw.message?.role || raw.type === 'compaction') {
       return this.normalizeHistoryEntry(raw, sessionId);
     }
 

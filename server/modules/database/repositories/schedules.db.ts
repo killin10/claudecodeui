@@ -184,6 +184,24 @@ export const schedulesDb = {
         JSON.stringify(value.snapshot),
         value.createdAt,
       );
+    schedulesDb.pruneRuns(value.scheduleId);
+  },
+  /** Scheduler and run insertion retain the latest ten records per task plus unfinished work.
+   * Submission content and idempotency receipts are independent and must not be deleted here.
+   */
+  pruneRuns(scheduleId?: string) {
+    return getConnection().prepare(`
+      WITH ranked AS (
+        SELECT r.id, COALESCE(s.state, r.state) AS state,
+          ROW_NUMBER() OVER (PARTITION BY r.schedule_id ORDER BY r.created_at DESC, r.id DESC) AS position
+        FROM schedule_runs r LEFT JOIN session_submissions s ON s.id = r.submission_id
+        ${scheduleId ? 'WHERE r.schedule_id = ?' : ''}
+      )
+      DELETE FROM schedule_runs WHERE id IN (
+        SELECT id FROM ranked WHERE position > 10
+          AND state IN ('succeeded', 'failed', 'cancelled', 'interrupted', 'skipped')
+      )
+    `).run(...(scheduleId ? [scheduleId] : [])).changes;
   },
   run(id: string): ScheduleRun | null {
     const row = getConnection()

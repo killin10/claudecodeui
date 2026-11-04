@@ -3,6 +3,18 @@ import { twMerge } from 'tailwind-merge';
 
 import type { Project, ProjectSession, QuickSettingsTab, SlashCommand } from '@/shared/types';
 
+//----------------- REQUEST IDEMPOTENCY ------------
+
+/** Schedule create/run requests use a 128-bit token, supported on HTTP origins too.
+ * Call once per operation and retain it when retrying an uncertain response.
+ */
+export function createClientToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// ---------------------------
+
 //----------------- DEPLOYMENT MODE ------------
 
 /**

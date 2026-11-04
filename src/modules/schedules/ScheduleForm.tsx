@@ -1,10 +1,11 @@
-import cronstrue from 'cronstrue';
-import 'cronstrue/locales/zh_CN';
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, readApiJson } from '@/shared/api';
 import type { Schedule } from '@/shared/types';
+import { cn, createClientToken } from '@/shared/utils';
+import { Button, Input } from '@/shared/ui';
+import { SchedulePreview } from '@/modules/schedules/SchedulePreview';
 import { ScheduleSessionPicker } from '@/modules/schedules/ScheduleSessionPicker';
 
 /** Schedule page owns saving; form retains drafts and previews without touching live task settings. */
@@ -19,22 +20,23 @@ export function ScheduleForm({
   onSaved: () => void;
   onClose: () => void;
 }) {
-  const { t, i18n } = useTranslation('common');
+  const { t } = useTranslation('common');
   const form = useRef<HTMLFormElement>(null);
-  const createToken = useRef(crypto.randomUUID());
+  const createToken = useRef<string | null>(null);
   // Timing mode decides which input is submitted; the inactive rule is explicitly cleared.
   const [mode, setMode] = useState(task?.runAt ? 'once' : 'cron');
   // Prevents duplicate mutations and shows the current save operation.
   const [busy, setBusy] = useState(false);
   // Keeps failures visible while preserving the user's draft.
   const [error, setError] = useState('');
-  // Preview is invalidated when the draft changes and belongs only to the last requested rule.
-  const [preview, setPreview] = useState<{
-    times: string[];
-    summary: string;
-    timezone: string;
-  } | null>(null);
-  const previewGeneration = useRef(0);
+  // Timing drafts drive automatic preview independently of unrelated form fields.
+  const [cron, setCron] = useState(task?.cron ?? '0 9 * * 1-5');
+  // A one-time draft is retained when switching between timing modes.
+  const [runAt, setRunAt] = useState(task?.runAt ?? '');
+  // Time zone edits must recompute the same rule on the server.
+  const [timezone, setTimezone] = useState(
+    task?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
   function timing(data: FormData) {
     const local = String(data.get('runAt') ?? '');
     return {
@@ -43,25 +45,6 @@ export function ScheduleForm({
       timezone: String(data.get('timezone')),
     };
   }
-  async function showPreview() {
-    const current = ++previewGeneration.current;
-    try {
-      const rule = timing(new FormData(form.current!));
-      const result = await readApiJson<{ times: string[] }>(await api.schedules.preview(rule));
-      const summary = rule.cron
-        ? cronstrue.toString(rule.cron, {
-            locale: i18n.language.startsWith('zh') ? 'zh_CN' : 'en',
-            use24HourTimeFormat: true,
-          })
-        : rule.runAt!;
-      if (current === previewGeneration.current) {
-        setPreview({ times: result.times, summary, timezone: rule.timezone });
-        setError('');
-      }
-    } catch (e) {
-      if (current === previewGeneration.current) setError((e as Error).message);
-    }
-  }
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -69,6 +52,9 @@ export function ScheduleForm({
     setError('');
     try {
       const data = new FormData(form.current!);
+      if (!task && !String(data.get('sessionId') ?? '').trim()) {
+        throw new Error(t('schedules.chooseSession'));
+      }
       const body = {
         name: String(data.get('name')),
         message: String(data.get('message')),
@@ -81,7 +67,8 @@ export function ScheduleForm({
         await readApiJson(
           await api.schedules.update(task.scheduleId, { ...body, revision: task.revision }),
         );
-      else
+      else {
+        createToken.current ??= createClientToken();
         await readApiJson(
           await api.schedules.create({
             ...body,
@@ -89,6 +76,7 @@ export function ScheduleForm({
             clientToken: createToken.current,
           }),
         );
+      }
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -96,22 +84,19 @@ export function ScheduleForm({
       setBusy(false);
     }
   }
-  const input = 'w-full rounded border bg-background p-2';
+  const input =
+    'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50';
   return (
     <form
       ref={form}
       onSubmit={(e) => void save(e)}
-      onChange={() => {
-        previewGeneration.current++;
-        setPreview(null);
-      }}
-      className="space-y-4 rounded-lg border bg-card p-4"
+      className="space-y-4 rounded-lg border border-border/60 bg-card p-4 text-sm"
       aria-label={t('schedules.form')}
     >
-      <h2 className="text-lg font-medium">{t(task ? 'schedules.edit' : 'schedules.create')}</h2>
+      <h2 className="text-sm font-semibold">{t(task ? 'schedules.edit' : 'schedules.create')}</h2>
       <label className="block">
         {t('schedules.name')}
-        <input name="name" required maxLength={200} defaultValue={task?.name} className={input} />
+        <Input name="name" required maxLength={200} defaultValue={task?.name} className={input} />
       </label>
       <label className="block">{t('schedules.session')}</label>
       <ScheduleSessionPicker
@@ -124,9 +109,9 @@ export function ScheduleForm({
           name="message"
           required
           maxLength={1000000}
-          rows={4}
+          rows={8}
           defaultValue={task?.message}
-          className={input}
+          className={cn(input, 'h-48 min-h-48 resize-y py-2')}
         />
       </label>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -139,10 +124,11 @@ export function ScheduleForm({
         </label>
         <label>
           {t('schedules.timezone')}
-          <input
+          <Input
             name="timezone"
             required
-            defaultValue={task?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}
+            value={timezone}
+            onChange={(event) => setTimezone(event.target.value)}
             className={input}
           />
         </label>
@@ -150,11 +136,12 @@ export function ScheduleForm({
       {mode === 'cron' ? (
         <label className="block">
           Cron
-          <input
+          <Input
             name="cron"
             aria-label="Cron"
             required
-            defaultValue={task?.cron ?? '0 9 * * 1-5'}
+            value={cron}
+            onChange={(event) => setCron(event.target.value)}
             className={input}
           />
           <span className="text-xs text-muted-foreground">{t('schedules.cronHelp')}</span>
@@ -162,17 +149,24 @@ export function ScheduleForm({
       ) : (
         <label className="block">
           {t('schedules.runAt')}
-          <input
+          <Input
             name="runAt"
             type="text"
             required
             placeholder="2030-01-01T09:00:00+08:00"
-            defaultValue={task?.runAt ?? ''}
+            value={runAt}
+            onChange={(event) => setRunAt(event.target.value)}
             className={input}
           />
           <span className="text-xs text-muted-foreground">{t('schedules.onceHelp')}</span>
         </label>
       )}
+      <SchedulePreview
+        key={JSON.stringify([mode, mode === 'cron' ? cron : runAt, timezone])}
+        cron={mode === 'cron' ? cron : null}
+        runAt={mode === 'once' ? runAt : null}
+        timezone={timezone}
+      />
       <label className="block">
         {t('schedules.misfire')}
         <select name="misfirePolicy" defaultValue={task?.misfirePolicy ?? 'skip'} className={input}>
@@ -185,7 +179,7 @@ export function ScheduleForm({
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label>
             {t('schedules.model')}
-            <input
+            <Input
               name="model"
               defaultValue={task?.model ?? ''}
               placeholder={t('schedules.inherit')}
@@ -202,7 +196,7 @@ export function ScheduleForm({
               <option value="">{t('schedules.inherit')}</option>
               {['default', 'auto', 'plan', 'accept-edits', 'bypass-permissions'].map((mode) => (
                 <option key={mode} value={mode}>
-                  {mode}
+                  {t(`schedules.modes.${mode}`)}
                 </option>
               ))}
             </select>
@@ -210,53 +204,18 @@ export function ScheduleForm({
         </div>
       </details>
       <p className="text-xs text-muted-foreground">{t('schedules.behavior')}</p>
-      <button
-        type="button"
-        className="rounded border px-3 py-1.5"
-        onClick={() => void showPreview()}
-      >
-        {t('schedules.preview')}
-      </button>
-      {preview && (
-        <div className="text-sm">
-          <p>
-            {preview.summary} · {preview.timezone}
-          </p>
-          {preview.times.length === 0 ? (
-            <p>{t('schedules.noFuture')}</p>
-          ) : (
-            <ol>
-              {preview.times.map((time) => (
-                <li key={time}>
-                  {new Date(time).toLocaleString(undefined, { timeZone: preview.timezone })} (
-                  {preview.timezone})
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      )}
       {error && (
         <p role="alert" className="text-destructive">
           {error}
         </p>
       )}
       <div className="flex gap-2">
-        <button
-          disabled={busy}
-          type="submit"
-          className="rounded bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
-        >
+        <Button size="sm" disabled={busy} type="submit">
           {t('schedules.save')}
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onClose}
-          className="rounded border px-4 py-2"
-        >
+        </Button>
+        <Button size="sm" type="button" disabled={busy} onClick={onClose} variant="outline">
           {t('schedules.close')}
-        </button>
+        </Button>
       </div>
     </form>
   );

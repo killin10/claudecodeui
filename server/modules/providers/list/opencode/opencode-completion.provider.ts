@@ -37,3 +37,18 @@ export function readOpenCodeDelivery(db: Database.Database, childId: string, sta
       AND json_extract(m.data, '$.time.created') >= ?
     ORDER BY m.seq DESC LIMIT 1`).get(childId, childId, startedAt) as { parentId: string; at: number } | undefined;
 }
+
+/** Background reconciliation recovers missed shell notifications from their owning session only.
+ * A shell's persisted tool metadata remains `running` after exit; its synthetic notification
+ * is the authoritative delivery evidence, just as in the live event handler.
+ */
+export function readOpenCodeShellDelivery(db: Database.Database, sessionId: string, shellId: string, startedAt: number) {
+  return db.prepare(`SELECT session_id AS parentId, json_extract(data, '$.time.created') AS at
+    FROM session_message
+    WHERE session_id = ? AND type = 'synthetic'
+      AND json_extract(data, '$.metadata.source') = 'shell'
+      AND json_extract(data, '$.metadata.shellID') = ?
+      AND json_type(data, '$.time.created') IN ('integer', 'real')
+      AND json_extract(data, '$.time.created') >= ?
+    ORDER BY seq DESC LIMIT 1`).get(sessionId, shellId, startedAt) as { parentId: string; at: number } | undefined;
+}

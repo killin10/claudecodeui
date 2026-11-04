@@ -1,4 +1,8 @@
 import { memo, useCallback } from 'react';
+import { useLocation, useMatch } from 'react-router-dom';
+
+import { SchedulesPage } from '@/modules/schedules';
+import MobileMenuButton from '@/modules/project-workspace/MobileMenuButton';
 
 import { useProjectMainState } from '@/modules/project-workspace/context/ProjectsStateContext';
 import type { SessionEstablishedContext, SessionNavigationOptions,ProjectWorkspaceShellProps } from '@/shared/types';
@@ -11,6 +15,8 @@ function ProjectMainRegion({
   sendMessage,
   navigate,
 }: ProjectWorkspaceShellProps) {
+  const location = useLocation();
+  const isSchedules = Boolean(useMatch('/schedules'));
   const {
     selectedProject,
     selectedSession,
@@ -48,6 +54,15 @@ function ProjectMainRegion({
   const handleProjectsRefresh = useCallback(() => {
     void refreshProjectsSilently();
   }, [refreshProjectsSilently]);
+
+  if (isSchedules) {
+    return (
+      <SchedulesPage
+        key={location.search}
+        mobileMenu={isMobile ? <MobileMenuButton onMenuClick={handleOpenSidebar} /> : undefined}
+      />
+    );
+  }
 
   return (
     <WorkspaceMain

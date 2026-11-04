@@ -134,7 +134,7 @@ export class OpenCodeTurnEvents {
       }, { signal: this.host.abortController.signal });
       this.applyToolProgress(message);
       this.trackSpawnedChildren(message, messageID, nativeSessionId);
-      this.host.work.track(message, nativeSessionId !== this.host.providerSessionId);
+      this.host.work.track(message, nativeSessionId !== this.host.providerSessionId, nativeSessionId);
       for (const normalized of this.context.normalize({ type: 'session.message', message }, this.context.sessionId())) {
         this.projector.publish(parentToolUseId ? { ...normalized, parentToolUseId } : normalized);
       }

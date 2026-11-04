@@ -4,7 +4,7 @@ import { cn } from '@/shared/utils';
 
 type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
 
-/** The application-wide text input, used by the chat, file-tree, mcp, project-creation-wizard, settings, sidebar and skills modules. */
+/** The application-wide text input, used by the chat, file-tree, mcp, project-creation-wizard, settings, sidebar, skills and schedules modules. */
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
   ({ className, type, ...props }, ref) => {
     return (

@@ -13,6 +13,8 @@ import { readSelectedProvider } from '@/shared/selectedProvider';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
+  /** Keep the selection while global pages are open, but do not treat it as being read. */
+  isSessionViewVisible?: boolean;
   navigate: NavigateFunction;
   /** Subscription to the unified websocket event stream. */
   subscribe: (listener: (event: ServerEvent) => void) => () => void;
@@ -381,6 +383,7 @@ const readPersistedTab = (): AppTab => {
 
 export function useProjectsState({
   sessionId,
+  isSessionViewVisible = true,
   navigate,
   subscribe,
   isMobile,
@@ -476,7 +479,9 @@ export function useProjectsState({
       return;
     }
 
-    const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
+    const viewedSessionId = isSessionViewVisible
+      ? selectedSessionRef.current?.id ?? sessionId ?? null
+      : null;
     if (targetSessionId === viewedSessionId) {
       return;
     }
@@ -490,7 +495,7 @@ export function useProjectsState({
       next.add(targetSessionId);
       return next;
     });
-  }, [sessionId]);
+  }, [isSessionViewVisible, sessionId]);
 
   const clearSessionAttention = useCallback((targetSessionId?: string | null) => {
     if (!targetSessionId) {
@@ -753,7 +758,9 @@ export function useProjectsState({
       const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
         ? event.sessionId
         : null;
-      const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
+      const viewedSessionId = isSessionViewVisible
+        ? selectedSessionRef.current?.id ?? sessionId ?? null
+        : null;
 
       if (
         eventSessionId
@@ -786,7 +793,8 @@ export function useProjectsState({
       // signal the chat view to reload its messages.
       const currentSelectedSession = selectedSessionRef.current;
       if (
-        currentSelectedSession
+        isSessionViewVisible
+        && currentSelectedSession
         && upsert.sessionId === currentSelectedSession.id
         && !isSessionProcessing(upsert.sessionId)
       ) {
@@ -876,7 +884,7 @@ export function useProjectsState({
     };
 
     return subscribe(handleEvent);
-  }, [isSessionProcessing, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
+  }, [isSessionProcessing, isSessionViewVisible, markSessionAttention, navigate, refreshProjectsSilently, sessionId, subscribe]);
 
   useEffect(() => {
     return () => {
@@ -888,8 +896,8 @@ export function useProjectsState({
   }, []);
 
   useEffect(() => {
-    clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
-  }, [clearSessionAttention, selectedSession?.id, sessionId]);
+    if (isSessionViewVisible) clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
+  }, [clearSessionAttention, isSessionViewVisible, selectedSession?.id, sessionId]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1082,14 +1090,14 @@ export function useProjectsState({
 
       if (selectedSession?.id === sessionIdToDelete) {
         setSelectedSession(null);
-        navigate('/');
+        if (isSessionViewVisible) navigate('/');
       }
 
       setProjects((prevProjects) =>
         prevProjects.map((project) => removeSessionFromProject(project, sessionIdToDelete)),
       );
     },
-    [clearSessionAttention, navigate, selectedSession?.id],
+    [clearSessionAttention, isSessionViewVisible, navigate, selectedSession?.id],
   );
 
   const handleSidebarRefresh = useCallback(async () => {
@@ -1242,19 +1250,19 @@ export function useProjectsState({
       if (selectedProject?.projectId === projectId) {
         setSelectedProject(null);
         setSelectedSession(null);
-        navigate('/');
+        if (isSessionViewVisible) navigate('/');
       }
 
       setProjects((prevProjects) => prevProjects.filter((project) => project.projectId !== projectId));
     },
-    [navigate, selectedProject?.projectId],
+    [isSessionViewVisible, navigate, selectedProject?.projectId],
   );
 
   const sidebarSharedProps = useMemo(
     () => ({
       projects,
       selectedProject,
-      selectedSession,
+      selectedSession: isSessionViewVisible ? selectedSession : null,
       attentionSessionIds,
       onProjectSelect: handleProjectSelect,
       onSessionSelect: handleSessionSelect,
@@ -1282,6 +1290,7 @@ export function useProjectsState({
       handleSidebarRefresh,
       isLoadingProjects,
       isMobile,
+      isSessionViewVisible,
       loadingProgress,
       projects,
       settingsInitialTab,

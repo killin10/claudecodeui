@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useLocation, useMatch } from 'react-router-dom';
 
 import { usePaletteOpsRegister } from '@/modules/command-palette';
 import { writeSelectedProvider } from '@/shared/selectedProvider';
@@ -15,6 +16,12 @@ export default function ProjectEffects({
     setActiveTab,
     setSidebarOpen,
   } = useProjectEffectsState();
+
+  const location = useLocation();
+  const isSchedules = Boolean(useMatch('/schedules'));
+  useEffect(() => {
+    if (isSchedules) setSidebarOpen(false);
+  }, [isSchedules, location.search, setSidebarOpen]);
 
   usePaletteOpsRegister({
     openSettings,

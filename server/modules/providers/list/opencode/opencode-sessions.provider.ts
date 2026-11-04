@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { isSessionNotFoundError } from '@opencode/client';
 
+import { compactionMetricsDb } from '@/modules/database/index.js';
 import { readOpenCodeUsage } from '@/modules/providers/list/opencode/opencode-usage.provider.js';
 import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { isOpenCodeSessionActive } from '@/modules/providers/list/opencode/opencode-runtime.provider.js';
@@ -21,6 +22,7 @@ import type {
 } from '@/shared/types.js';
 import {
   createNormalizedMessage,
+  createCompactionMessage,
   getOpenCodeDatabasePath,
   normalizeProviderTimestamp,
   readObjectRecord,
@@ -52,6 +54,13 @@ type OpenCodeHistoryRow = {
 
 /** Projects V2 message content onto the display rows shared by live and history rendering. */
 function messageRows(message: AnyRecord): OpenCodeHistoryRow[] {
+  const sources = message.metadata?.instructionSources;
+  // Code Mode catalogs instruct the model, not the user. Keep native storage intact
+  // and retain mixed-source notices and errors rather than hiding unrelated content.
+  if (message.type === 'system' && !message.error && message.metadata?.notice === 'instructions'
+    && Array.isArray(sources) && sources.length > 0 && sources.every((source) => source === 'core/codemode')) {
+    return [];
+  }
   const created = message.time?.created ?? 0;
   const messageInfo = JSON.stringify({ role: message.type, error: message.error });
   const base = { message_id: message.id, message_time_created: created, message_data: messageInfo };
@@ -114,10 +123,8 @@ function normalizeSpecialMessage(part: AnyRecord, base: Pick<NormalizedMessage, 
     case 'compaction': {
       const phase = part.status === 'running' ? 'running' : part.status === 'failed' ? 'failed' : 'done';
       const error = readEventError(part.error);
-      return createNormalizedMessage({
-        ...base, kind: 'text', role: 'assistant',
-        content: phase === 'running' ? 'Compacting conversation…'
-          : phase === 'failed' ? `Compaction failed: ${error ?? 'Unknown error'}` : part.summary || 'Conversation compacted',
+      return createCompactionMessage({
+        ...base, summary: part.summary,
         compact: { phase, trigger: part.reason, ...(error ? { error } : {}) },
       });
     }
@@ -415,6 +422,18 @@ const openOpenCodeDatabaseForLiveEvent = (): Database.Database | null => {
 
 /** Used by the OpenCode provider to render V2 messages consistently in live chat and history. */
 export class OpenCodeSessionsProvider implements IProviderSessions {
+  private restoreCompactionTimings(messages: NormalizedMessage[], sessionId: string): NormalizedMessage[] {
+    if (!messages.some(message => message.compact?.phase === 'done' || message.compact?.phase === 'failed')) return messages;
+    const metrics = compactionMetricsDb.list(sessionId);
+    return messages.map(message => {
+      const timing = metrics.get(message.id);
+      if (!timing || !message.compact || message.compact.phase === 'running') return message;
+      return { ...message, timestamp: timing.startedAt,
+        compact: { ...message.compact, durationMs: timing.durationMs },
+        content: message.content?.replace(/\n|$/, match => ` · ${(timing.durationMs / 1000).toFixed(1)}s${match}`),
+      };
+    });
+  }
   private readonly branches = new OpenCodeForkProvider();
 
   resolveEditAnchor(sessionId: string, anchorId: string) {
@@ -447,7 +466,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     // Text-only search already has a reader and must not open a new database per row.
     const db = options.hydrateSubagents === false ? null : openOpenCodeDatabaseForLiveEvent();
     try {
-      return this.normalizeHistoryRows(messageRows(raw.message), sessionId ?? '', db);
+      return this.restoreCompactionTimings(this.normalizeHistoryRows(messageRows(raw.message), sessionId ?? '', db), sessionId ?? '');
     } finally {
       db?.close();
     }
@@ -472,7 +491,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     try {
       const rows = readHistoryRows(db, providerSessionId);
 
-      const normalized = this.normalizeHistoryRows(rows, sessionId, db);
+      const normalized = this.restoreCompactionTimings(this.normalizeHistoryRows(rows, sessionId, db), sessionId);
       const tokenUsage = readOpenCodeUsage(db, providerSessionId);
 
       const normalizedOffset = Math.max(0, offset);

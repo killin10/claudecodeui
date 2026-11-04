@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Link, useInRouterContext } from 'react-router-dom';
+import { NavLink, useInRouterContext } from 'react-router-dom';
 
 /** Sidebar uses this link to preserve the host router's basename, including embedded deployments. */
 export function ScheduleLink({
@@ -16,9 +16,16 @@ export function ScheduleLink({
   const inRouter = useInRouterContext();
   const to = '/schedules' + (sessionId ? '?sessionId=' + encodeURIComponent(sessionId) : '');
   return inRouter ? (
-    <Link to={to} className={className} title={title} aria-label={title}>
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        [className, isActive ? 'bg-accent text-foreground' : ''].filter(Boolean).join(' ')
+      }
+      title={title}
+      aria-label={title}
+    >
       {children}
-    </Link>
+    </NavLink>
   ) : (
     <a href={to} className={className} title={title} aria-label={title}>
       {children}

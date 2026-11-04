@@ -4,7 +4,7 @@ import { Search } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
 
-/** Used by the command-palette module and by chat's provider picker for keyboard-driven filtered lists. */
+/** Used by command-palette, chat and schedules for keyboard-driven filtered lists. */
 export const Command = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive>
@@ -17,7 +17,7 @@ export const Command = React.forwardRef<
 ));
 Command.displayName = CommandPrimitive.displayName;
 
-/** Search input of Command, used by the command-palette and chat modules. */
+/** Search input of Command, used by the command-palette, chat and schedules modules. */
 export const CommandInput = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Input>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
@@ -37,7 +37,7 @@ export const CommandInput = React.forwardRef<
 ));
 CommandInput.displayName = CommandPrimitive.Input.displayName;
 
-/** Scrollable result list of Command, used by the command-palette and chat modules. */
+/** Scrollable result list of Command, used by the command-palette, chat and schedules modules. */
 export const CommandList = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.List>
@@ -50,7 +50,7 @@ export const CommandList = React.forwardRef<
 ));
 CommandList.displayName = CommandPrimitive.List.displayName;
 
-/** Empty-result slot of Command, used by the command-palette and chat modules. */
+/** Empty-result slot of Command, used by the command-palette, chat and schedules modules. */
 export const CommandEmpty = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Empty>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Empty>
@@ -80,7 +80,7 @@ export const CommandGroup = React.forwardRef<
 ));
 CommandGroup.displayName = CommandPrimitive.Group.displayName;
 
-/** Selectable row of Command, used by the command-palette and chat modules. */
+/** Selectable row of Command, used by the command-palette, chat and schedules modules. */
 export const CommandItem = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Item>

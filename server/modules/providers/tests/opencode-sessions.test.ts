@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import Database from 'better-sqlite3';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, compactionMetricsDb, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { OpenCodeSessionSynchronizer } from '@/modules/providers/list/opencode/opencode-session-synchronizer.provider.js';
 import { OpenCodeForkProvider } from '@/modules/providers/list/opencode/opencode-fork.provider.js';
 import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/opencode-sessions.provider.js';
@@ -80,6 +80,39 @@ const createOpenCodeDatabase = async (homeDir: string, workspacePath: string): P
     db.close();
   }
 };
+
+test('observed compaction duration survives history reload and is removed with its app session', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-compaction-metrics-'));
+  const restore = patchHomeDir(root);
+  try {
+    await createOpenCodeDatabase(root, root);
+    const native = new Database(path.join(root, '.local/share/opencode/opencode.db'));
+    native.prepare('INSERT INTO session_message(id,session_id,type,seq,data) VALUES(?,?,?,?,?)')
+      .run('compact-1', 'open-session-1', 'compaction', 3, JSON.stringify({
+        status: 'completed', reason: 'auto', summary: 'Summary', time: { created: 1000 },
+        tokens: { input: 50000, output: 1000, reasoning: 0, cache: { read: 0, write: 0 } },
+      }));
+    native.close();
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-compact', 'opencode', root);
+      sessionsDb.assignProviderSessionId('app-compact', 'open-session-1');
+      compactionMetricsDb.save('app-compact', 'compact-1_0', 2500, new Date(1000).toISOString());
+      closeConnection();
+      const history = await new OpenCodeSessionsProvider().fetchHistory('app-compact', { providerSessionId: 'open-session-1' });
+      const compact = history.messages.find(message => message.compact)!;
+      assert.equal(compact.compact?.durationMs, 2500);
+      assert.equal(compact.content, 'Context compacted · 2.5s\nSummary');
+      assert.equal(compact.compact?.preTokens, undefined);
+      assert.equal(compact.compact?.postTokens, undefined);
+      assert.equal(compactionMetricsDb.list('open-session-1').size, 1);
+      sessionsDb.deleteSessionById('app-compact');
+      assert.equal(compactionMetricsDb.list('app-compact').size, 0);
+    });
+  } finally {
+    restore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('V2 tools use the same command, checklist and file diff shapes in live and history messages', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-tool-display-'));

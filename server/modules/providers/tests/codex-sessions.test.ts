@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -63,6 +63,37 @@ const writeCodexTranscript = async (
   await writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
   return filePath;
 };
+
+test('native compaction rollout records restore the same phase, identity and duration without duplicate legacy notices', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-compaction-'));
+  const restore = patchHomeDir(root);
+  try {
+    const file = await writeCodexTranscript(root, 'compact-session', root);
+    const rows = [
+      { type: 'item_started', turn_id: 'turn', item: { type: 'ContextCompaction', id: 'compact-1' }, started_at_ms: 1000 },
+      { type: 'context_compacted', turn_id: 'turn' },
+      { type: 'item_completed', turn_id: 'turn', item: { type: 'ContextCompaction', id: 'compact-1' }, started_at_ms: 1000, completed_at_ms: 3500 },
+      { type: 'context_compacted', turn_id: 'turn' },
+      { type: 'item_started', turn_id: 'next', item: { type: 'ContextCompaction', id: 'compact-2' }, started_at_ms: 4000 },
+      { type: 'turn_aborted', turn_id: 'next', reason: 'interrupted' },
+    ];
+    await appendFile(file, rows.map(payload => JSON.stringify({ type: 'event_msg', timestamp: '2026-11-04T00:00:00Z', payload })).join('\n') + '\n');
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createSession('compact-session', 'codex', root, 'Compaction', undefined, undefined, file);
+      const history = await new CodexSessionsProvider().fetchHistory('compact-session');
+      const compactions = history.messages.filter(message => message.compact);
+      assert.equal(compactions.length, 2);
+      assert.equal(compactions[0].id, 'compact-1');
+      assert.equal(compactions[0].content, 'Context compacted · 2.5s');
+      assert.equal(compactions[0].compact?.durationMs, 2500);
+      assert.equal(compactions[0].compact?.postTokens, undefined);
+      assert.equal(compactions[1].compact?.phase, 'failed');
+    });
+  } finally {
+    restore();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('Codex synchronizer preserves the title assigned when CloudCLI creates a session', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-app-'));
