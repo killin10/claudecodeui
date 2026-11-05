@@ -9,6 +9,7 @@ import {
   broadcastSessionUpserted,
   broadcastSessionUpsertedBatch,
 } from '@/modules/websocket/services/session-upsert-broadcast.service.js';
+import { sessionsService } from '@/modules/providers/index.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 
 class FakeConnection {
@@ -91,6 +92,16 @@ test('a session with no provider id yet reports null rather than omitting the fi
   });
 });
 
+test('metadata mutations explicitly avoid announcing transcript activity', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('metadata', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+    await broadcastSessionUpserted('metadata', true);
+    assert.equal(connection.frames[0].metadataOnly, true);
+  });
+});
+
 test('an unresolvable id broadcasts nothing', async () => {
   await withIsolatedDatabase(async () => {
     const connection = new FakeConnection();
@@ -134,5 +145,34 @@ test('a closed socket is skipped', async () => {
 
     assert.equal(open.frames.length, 1);
     assert.deepEqual(closing.frames, []);
+  });
+});
+
+test('upserts report authoritative counts even when an existing unseen row gets activity', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('count-old', 'claude', '/counts');
+    sessionsDb.createAppSession('count-new', 'claude', '/counts');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+    await broadcastSessionUpserted('count-old');
+    await broadcastSessionUpserted('count-old');
+    assert.equal(connection.frames[0].projectTotal, 2);
+    assert.equal(connection.frames[1].projectTotal, 2);
+    assert.equal(connection.frames[1].total, sessionsDb.getRecentSessionsPage(0, 0).total);
+  });
+});
+
+
+test('archive and permanent delete announce removals with the remaining project count', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('remove-a', 'claude', '/removals');
+    sessionsDb.createAppSession('remove-b', 'claude', '/removals');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+    await sessionsService.deleteOrArchiveSessionById('remove-a');
+    await sessionsService.deleteOrArchiveSessionById('remove-b', { force: true });
+    assert.deepEqual(connection.frames.map(frame => [frame.kind, frame.sessionId, frame.projectTotal]), [
+      ['session_removed', 'remove-a', 1], ['session_removed', 'remove-b', 0],
+    ]);
   });
 });

@@ -9,3 +9,5 @@ export { broadcastSessionUpserted, broadcastSessionUpsertedBatch } from './servi
 // from a timer, with no socket to stream to or report errors on.
 export { runDetachedChatTurn } from './services/chat-websocket.service.js';
 export type { ProviderRuntimeGateway } from './services/chat-websocket.service.js';
+
+export { broadcastSessionRemoved, broadcastSidebarInvalidated } from '@/modules/websocket/services/session-upsert-broadcast.service.js';

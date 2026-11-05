@@ -157,7 +157,7 @@ function SidebarSessionItem({
   };
 
   return (
-    <div className="group relative">
+    <div className="group relative" data-sidebar-session-id={session.id}>
       {(showAttentionIndicator || showBackgroundIndicator || showRecentIndicator) && (
         <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2 transform">
           <Tooltip content={indicatorLabel} position="right">

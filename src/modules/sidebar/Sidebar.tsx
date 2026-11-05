@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useWebSocket } from '@/shared/context/WebSocketContext';
 import { useDeviceSettings } from '@/shared/hooks/useDeviceSettings';
 import { useVersionCheck } from '@/shared/hooks/useVersionCheck';
 import { useUiPreferences, useSetUiPreference } from '@/shared/context/UiPreferencesContext';
@@ -79,6 +80,7 @@ function Sidebar({
   const activeSessions = useBusySessionIdSet();
   const backgroundSessionIds = useBackgroundSessionIdSet();
 
+  const { subscribe } = useWebSocket();
   const {
     isSidebarCollapsed,
     isProjectExpanded,
@@ -147,6 +149,7 @@ function Sidebar({
     setPendingDeletion,
     setShowVersionModal,
   } = useSidebarController({
+    subscribe,
     projects,
     selectedProject,
     selectedSession,

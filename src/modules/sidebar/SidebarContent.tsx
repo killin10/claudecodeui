@@ -2,6 +2,7 @@ import { type ReactNode } from 'react';
 import { Activity, Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { useSidebarScrollAnchor } from '@/modules/sidebar/hooks/useSidebarScrollAnchor';
 import { SidebarSessionTooltip } from '@/modules/sidebar/SidebarSessionTooltip';
 import { LLMProviderLogo, ScrollArea } from '@/shared/ui';
 import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
@@ -176,6 +177,7 @@ export default function SidebarContent({
   projectListProps,
   t,
 }: SidebarContentProps) {
+  const scrollRef = useSidebarScrollAnchor(`${searchMode}:${searchFilter}`);
   const showConversationSearch = searchMode === 'conversations' && searchFilter.trim().length >= 2;
   const hasSearchResults = Boolean(
     conversationResults
@@ -210,7 +212,7 @@ export default function SidebarContent({
         t={t}
       />
 
-      <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
+      <ScrollArea ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
         {showConversationSearch ? (
           isSearching && !conversationResults ? (
             <div className="px-4 py-12 text-center md:py-8">

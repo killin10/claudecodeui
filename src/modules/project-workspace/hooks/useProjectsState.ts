@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
 import { api } from '@/shared/api';
+import { fetchSessionListPrefix } from '@/shared/utils';
 import type { ServerEvent,
   AppTab,
   LLMProvider,
@@ -34,6 +35,7 @@ type UseProjectsStateArgs = {
 type SessionUpsertedEvent = ServerEvent & {
   sessionId: string;
   providerSessionId?: string | null;
+  projectTotal?: number;
   provider: LLMProvider;
   session: ProjectSession;
   project: {
@@ -154,77 +156,18 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
 
 const countLoadedProjectSessions = (project: Project): number => getProjectSessions(project).length;
 
-const mergeSessionProviderLists = (baseSessions: ProjectSession[], additionalSessions: ProjectSession[]): ProjectSession[] => {
-  const merged = [...baseSessions];
-  const seenSessionIds = new Set(baseSessions.map((session) => String(session.id)));
-
-  for (const session of additionalSessions) {
-    const sessionId = String(session.id);
-    if (seenSessionIds.has(sessionId)) {
-      continue;
+async function readProjectPrefix(projectId: string, count: number, revision?: () => number): Promise<ProjectSessionPage> {
+  const page = await fetchSessionListPrefix(count, async (limit, offset) => {
+    const response = await api.projectSessions(projectId, { limit, offset });
+    if (!response.ok) throw new Error(`Cannot load project sessions: ${response.status}`);
+    const payload = await response.json() as ProjectSessionPage;
+    if (!Array.isArray(payload.sessions) || typeof payload.sessionMeta?.total !== 'number') {
+      throw new Error('Invalid project session page');
     }
-
-    merged.push(session);
-    seenSessionIds.add(sessionId);
-  }
-
-  return merged;
-};
-
-const mergeExpandedSessionPages = (previousProjects: Project[], incomingProjects: Project[]): Project[] => {
-  if (previousProjects.length === 0) {
-    return incomingProjects;
-  }
-
-  const previousByProjectId = new Map(previousProjects.map((project) => [project.projectId, project]));
-
-  return incomingProjects.map((incomingProject) => {
-    const previousProject = previousByProjectId.get(incomingProject.projectId);
-    if (!previousProject) {
-      return incomingProject;
-    }
-
-    const previousLoadedCount = countLoadedProjectSessions(previousProject);
-    const incomingLoadedCount = countLoadedProjectSessions(incomingProject);
-    if (previousLoadedCount <= incomingLoadedCount) {
-      return incomingProject;
-    }
-
-    const mergedProject: Project = {
-      ...incomingProject,
-      sessions: mergeSessionProviderLists(incomingProject.sessions ?? [], previousProject.sessions ?? []),
-    };
-
-    const totalSessions = Number(incomingProject.sessionMeta?.total ?? previousLoadedCount);
-    mergedProject.sessionMeta = {
-      ...incomingProject.sessionMeta,
-      total: totalSessions,
-      hasMore: countLoadedProjectSessions(mergedProject) < totalSessions,
-    };
-
-    return mergedProject;
-  });
-};
-
-const mergeProjectSessionPage = (
-  existingProject: Project,
-  sessionsPage: ProjectSessionPage,
-): Project => {
-  const mergedProject: Project = {
-    ...existingProject,
-    sessions: mergeSessionProviderLists(existingProject.sessions ?? [], sessionsPage.sessions ?? []),
-  };
-
-  const totalSessions = Number(sessionsPage.sessionMeta?.total ?? existingProject.sessionMeta?.total ?? 0);
-  mergedProject.sessionMeta = {
-    ...existingProject.sessionMeta,
-    ...sessionsPage.sessionMeta,
-    total: totalSessions,
-    hasMore: countLoadedProjectSessions(mergedProject) < totalSessions,
-  };
-
-  return mergedProject;
-};
+    return { items: payload.sessions, total: payload.sessionMeta.total };
+  }, revision);
+  return { sessions: page.items, sessionMeta: { total: page.total, hasMore: page.items.length < page.total } };
+}
 
 const getSessionAliasIds = (event: SessionUpsertedEvent): Set<string> => {
   const ids = new Set<string>();
@@ -251,7 +194,7 @@ const getSessionAliasIds = (event: SessionUpsertedEvent): Set<string> => {
  *
  * Existing rows are updated in place (summary/lastActivity changes from the
  * watcher); new rows are prepended since the watcher only fires for sessions
- * with fresh activity. `sessionMeta.total` grows only on insert.
+ * with fresh activity. Counts come from the server, never from local membership.
  */
 const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent): Project => {
   const sessions = project.sessions ?? [];
@@ -294,7 +237,7 @@ const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent)
       nextSessions.push(session);
     }
 
-    if (!changed) {
+    if (!changed && (event.projectTotal === undefined || event.projectTotal === project.sessionMeta?.total)) {
       return project;
     }
   } else {
@@ -302,9 +245,13 @@ const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent)
     inserted = true;
   }
 
+  // Keep the loaded window bounded when activity brings later-page rows forward.
+  nextSessions.sort((a, b) => new Date(b.lastActivity ?? 0).getTime() - new Date(a.lastActivity ?? 0).getTime()
+    || (String(a.id) < String(b.id) ? 1 : String(a.id) > String(b.id) ? -1 : 0));
+  nextSessions = nextSessions.slice(0, Math.max(20, sessions.length));
   const next: Project = { ...project, sessions: nextSessions };
-  if (inserted) {
-    const total = Number(project.sessionMeta?.total ?? 0) + 1;
+  if (inserted || event.projectTotal !== undefined) {
+    const total = event.projectTotal ?? Math.max(Number(project.sessionMeta?.total ?? 0), nextSessions.length);
     next.sessionMeta = {
       ...project.sessionMeta,
       total,
@@ -314,6 +261,24 @@ const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent)
 
   return next;
 };
+
+function applySidebarDelta(projects: Project[], event: ServerEvent): Project[] {
+  if (event.kind === 'session_removed') {
+    return projects.map(project => {
+      const sessions = (project.sessions ?? []).filter(session => session.id !== event.sessionId);
+      const total = event.projectId === project.projectId && typeof event.projectTotal === 'number'
+        ? event.projectTotal : project.sessionMeta?.total ?? sessions.length;
+      return sessions.length === project.sessions?.length && total === project.sessionMeta?.total
+        ? project : { ...project, sessions, sessionMeta: { total, hasMore: sessions.length < total } };
+    });
+  }
+  const upsert = event as SessionUpsertedEvent;
+  if (!upsert.session || !upsert.project) return projects;
+  const existing = projects.some(project => project.projectId === upsert.project!.projectId);
+  const next = existing ? projects : [...projects, { ...upsert.project, sessions: [] } as Project];
+  return next.map(project => project.projectId === upsert.project!.projectId
+    ? upsertSessionIntoProject(project, upsert) : project);
+}
 
 const projectFromRegistration = (project: Project): Project => ({
   projectId: project.projectId,
@@ -469,6 +434,9 @@ export function useProjectsState({
    * same payload — the workspace header and document title.
    */
   const projectsRequestIdRef = useRef(0);
+  // Replay deltas received during a snapshot so HTTP cannot overwrite live state.
+  const sidebarSnapshotsRef = useRef(new Set<ServerEvent[]>());
+  const projectPageRequestsRef = useRef(new Map<string, number>());
 
   useEffect(() => {
     sessionLookupRef.current = null;
@@ -518,21 +486,29 @@ export function useProjectsState({
     // loading flag is only ever cleared by the response that actually wrote
     // `projects`.
     const requestId = (projectsRequestIdRef.current += 1);
+    const deltas: ServerEvent[] = [];
+    sidebarSnapshotsRef.current.add(deltas);
 
     try {
       if (showLoadingState) {
         setIsLoadingProjects(true);
       }
       const response = await api.projects();
+      if (!response.ok) throw new Error(`Cannot load projects: ${response.status}`);
       const projectData = (await response.json()) as Project[];
+      const expandedData = await Promise.all(projectData.map(async project => {
+        const loaded = projectsRef.current.find(row => row.projectId === project.projectId)?.sessions?.length ?? 0;
+        return loaded > (project.sessions?.length ?? 0)
+          ? { ...project, ...await readProjectPrefix(project.projectId, loaded, () => deltas.length) } : project;
+      }));
 
       if (projectsRequestIdRef.current !== requestId) {
         return;
       }
 
+      const freshProjects = deltas.reduce(applySidebarDelta, expandedData);
       setProjects((prevProjects) => {
-        const projectsWithTaskMaster = mergeTaskMasterCache(projectData, prevProjects);
-        const mergedProjects = mergeExpandedSessionPages(prevProjects, projectsWithTaskMaster);
+        const mergedProjects = mergeTaskMasterCache(freshProjects, prevProjects);
 
         if (prevProjects.length === 0) {
           return mergedProjects;
@@ -555,16 +531,27 @@ export function useProjectsState({
           return previousProject;
         }
 
-        const refreshedProject = projectData.find(
+        const refreshedProject = freshProjects.find(
           (project) => project.projectId === previousProject.projectId,
         );
         return refreshedProject
           ? mergeProjectSelectionMetadata(previousProject, refreshedProject)
           : previousProject;
       });
+      // Preserve manual refresh's selected-session metadata update, using the
+      // same replayed snapshot as the list instead of an older HTTP response.
+      setSelectedSession(previous => {
+        if (!previous) return previous;
+        const refreshed = freshProjects.flatMap(project => project.sessions ?? [])
+          .find(session => session.id === previous.id);
+        if (!refreshed) return previous;
+        const next = { ...previous, ...refreshed, __provider: refreshed.__provider ?? previous.__provider };
+        return serialize(next) === serialize(previous) ? previous : next;
+      });
     } catch (error) {
       console.error('Error fetching projects:', error);
     } finally {
+      sidebarSnapshotsRef.current.delete(deltas);
       // Only the newest request clears the flag, and it clears it whether or not
       // it asked for the spinner, because by now it has written the list.
       //
@@ -732,7 +719,7 @@ export function useProjectsState({
       // deltas, so anything that happened while the socket was down is missing
       // from it until something else forces a refresh. Chat re-syncs itself on
       // this event; the sidebar has to as well.
-      if (event.kind === 'websocket_reconnected') {
+      if (event.kind === 'websocket_reconnected' || event.kind === 'sidebar_invalidated') {
         void refreshProjectsSilently();
         return;
       }
@@ -752,6 +739,14 @@ export function useProjectsState({
           }, 500);
         }
 
+        return;
+      }
+
+      if (event.kind === 'session_upserted' || event.kind === 'session_removed') {
+        for (const deltas of sidebarSnapshotsRef.current) deltas.push(event);
+      }
+      if (event.kind === 'session_removed') {
+        setProjects(previous => applySidebarDelta(previous, event));
         return;
       }
 
@@ -792,14 +787,14 @@ export function useProjectsState({
       // no run is active here (e.g. edited from another client or the CLI):
       // signal the chat view to reload its messages.
       const currentSelectedSession = selectedSessionRef.current;
-      if (
+      if (!upsert.metadataOnly && (
         isSessionViewVisible
         && currentSelectedSession
         && upsert.sessionId === currentSelectedSession.id
         && !isSessionProcessing(upsert.sessionId)
-      ) {
+      )) {
         setExternalMessageUpdate((prev) => prev + 1);
-      } else {
+      } else if (!upsert.metadataOnly) {
         markSessionAttention(upsert.sessionId);
       }
 
@@ -1101,61 +1096,14 @@ export function useProjectsState({
   );
 
   const handleSidebarRefresh = useCallback(async () => {
-    try {
-      const response = await api.projects();
-      const freshProjects = (await response.json()) as Project[];
-      const projectsWithTaskMaster = mergeTaskMasterCache(freshProjects, projects);
-      const mergedProjects = mergeExpandedSessionPages(projects, projectsWithTaskMaster);
-
-      setProjects((prevProjects) =>
-        projectsHaveChanges(prevProjects, mergedProjects) ? mergedProjects : prevProjects,
-      );
-
-      if (!selectedProject) {
-        return;
-      }
-
-      const refreshedProject = mergedProjects.find((project) => project.projectId === selectedProject.projectId);
-      if (!refreshedProject) {
-        return;
-      }
-
-      setSelectedProject((previousProject) => (
-        previousProject?.projectId === refreshedProject.projectId
-          ? mergeProjectSelectionMetadata(previousProject, refreshedProject)
-          : previousProject
-      ));
-
-      if (!selectedSession) {
-        return;
-      }
-
-      const refreshedSession = getProjectSessions(refreshedProject).find(
-        (session) => session.id === selectedSession.id,
-      );
-
-      if (refreshedSession) {
-        // Keep provider metadata stable when refreshed payload doesn't include __provider.
-        const normalizedRefreshedSession =
-          refreshedSession.__provider || !selectedSession.__provider
-            ? refreshedSession
-            : { ...refreshedSession, __provider: selectedSession.__provider };
-
-        if (serialize(normalizedRefreshedSession) !== serialize(selectedSession)) {
-          setSelectedSession(normalizedRefreshedSession);
-        }
-      }
-    } catch (error) {
-      console.error('Error refreshing sidebar:', error);
-    }
-  }, [projects, selectedProject, selectedSession]);
+    await fetchProjects({ showLoadingState: false });
+  }, [fetchProjects]);
 
   /**
    * Persists a new title for one session and writes it onto both local copies
    * — the sidebar row in `projects` and the workspace header's `selectedSession`
-   * — the moment the backend confirms. The rename route only updates the DB; it
-   * does not broadcast a `session_upserted`, so nothing else would refresh the
-   * header. Patching in place rather than refetching also keeps every session
+   * — the moment the backend confirms, without waiting for its websocket event.
+   * Patching in place rather than refetching also keeps every session
    * page the sidebar has loaded past the first. The sidebar's Conversations
    * list folds the new title in from `projects` itself.
    *
@@ -1207,40 +1155,22 @@ export function useProjectsState({
       return;
     }
 
-    const loadedCount = countLoadedProjectSessions(project);
-    const totalCount = Number(project.sessionMeta?.total ?? 0);
-    if (totalCount > 0 && loadedCount >= totalCount) {
-      return;
+    // A whole-list snapshot started earlier must not collapse this larger window.
+    projectsRequestIdRef.current += 1;
+    setIsLoadingProjects(false);
+    const request = (projectPageRequestsRef.current.get(projectId) ?? 0) + 1;
+    projectPageRequestsRef.current.set(projectId, request);
+    const deltas: ServerEvent[] = [];
+    sidebarSnapshotsRef.current.add(deltas);
+    try {
+      const page = await readProjectPrefix(projectId, countLoadedProjectSessions(project) + 20, () => deltas.length);
+      if (projectPageRequestsRef.current.get(projectId) !== request) return;
+      setProjects(previous => deltas.reduce(applySidebarDelta,
+        previous.map(candidate => candidate.projectId === projectId ? { ...candidate, ...page } : candidate)));
+    } finally {
+      sidebarSnapshotsRef.current.delete(deltas);
     }
 
-    const response = await api.projectSessions(projectId, {
-      limit: 20,
-      offset: loadedCount,
-    });
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string | { message?: string } };
-      const errorPayload = payload.error;
-      const message =
-        typeof errorPayload === 'string'
-          ? errorPayload
-          : errorPayload && typeof errorPayload === 'object' && errorPayload.message
-            ? errorPayload.message
-            : `Failed to load more sessions for project ${projectId}`;
-      throw new Error(message);
-    }
-
-    const sessionsPage = (await response.json()) as ProjectSessionPage;
-
-    setProjects((previousProjects) =>
-      previousProjects.map((candidate) => {
-        if (candidate.projectId !== projectId) {
-          return candidate;
-        }
-
-        return mergeProjectSessionPage(candidate, sessionsPage);
-      }),
-    );
   }, [projects]);
 
   // `projectId` is the DB identifier passed from the sidebar's delete flow

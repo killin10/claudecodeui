@@ -136,6 +136,23 @@ test('repository reads normalize SQLite UTC timestamps to ISO strings', async ()
   });
 });
 
+test('project pagination preserves millisecond activity order and stable ties', async () => {
+  await withIsolatedDatabase(() => {
+    const projectPath = '/workspace/pagination';
+    for (const [id, timestamp] of [
+      ['z-older', '2026-11-05T00:00:00.100Z'],
+      ['a-newer', '2026-11-05T00:00:00.900Z'],
+      ['b-newer', '2026-11-05T00:00:00.900Z'],
+    ]) {
+      sessionsDb.createSession(id, 'claude', projectPath, id, timestamp, timestamp);
+    }
+    assert.deepEqual(sessionsDb.getSessionsByProjectPathPage(projectPath, 2, 0)
+      .map(row => row.session_id), ['b-newer', 'a-newer']);
+    assert.deepEqual(sessionsDb.getSessionsByProjectPathPage(projectPath, 2, 2)
+      .map(row => row.session_id), ['z-older']);
+  });
+});
+
 test('recent sessions are globally ordered, paginated, and limited to visible conversations', async () => {
   await withIsolatedDatabase(() => {
     const fixtures: Array<Parameters<typeof sessionsDb.createSession>> = [

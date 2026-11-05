@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 
 import { api } from '@/shared/api';
+import { fetchSessionListPrefix } from '@/shared/utils';
 import { subscribeToUserPreferences } from '@/shared/userSettings';
 import { usePaletteOps } from '@/modules/command-palette';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationProjectResult, ConversationSearchResults, LLMProvider, Project, ProjectSession, ProjectSortOrder, RecentConversationListItem, SearchProgress, ActiveSidebarRename, PendingSidebarDeletion, SessionTitleSearchResult, SessionWithProvider, SidebarSearchMode, SidebarSessionSelection } from '@/shared/types';
+import type { ServerEvent, ArchivedProjectListItem, ArchivedSessionListItem, ConversationProjectResult, ConversationSearchResults, LLMProvider, Project, ProjectSession, ProjectSortOrder, RecentConversationListItem, SearchProgress, ActiveSidebarRename, PendingSidebarDeletion, SessionTitleSearchResult, SessionWithProvider, SidebarSearchMode, SidebarSessionSelection } from '@/shared/types';
 import {
   filterProjects,
   getAllSessions,
@@ -54,7 +55,25 @@ type RecentConversationsApiPayload = {
   };
 };
 
+function applyConversationDelta(rows: RecentConversationListItem[], event: ServerEvent): RecentConversationListItem[] {
+  if (event.kind === 'session_removed') return rows.filter(row => row.sessionId !== event.sessionId);
+  const session = event.session as ProjectSession | undefined;
+  const project = event.project as { projectId: string; displayName: string } | null;
+  if (!session || typeof event.sessionId !== 'string' || typeof event.provider !== 'string') return rows;
+  const existing = rows.find(row => row.sessionId === event.sessionId);
+  const next = rows.filter(row => row.sessionId !== event.sessionId && row.sessionId !== event.providerSessionId);
+  next.push({
+    sessionId: event.sessionId, provider: event.provider as LLMProvider,
+    projectId: project?.projectId ?? null, projectDisplayName: project?.displayName ?? '',
+    sessionTitle: session.summary?.trim() || existing?.sessionTitle || event.sessionId,
+    lastActivity: session.lastActivity ?? null,
+  });
+  return next.sort((a, b) => new Date(b.lastActivity ?? 0).getTime() - new Date(a.lastActivity ?? 0).getTime()
+    || (a.sessionId < b.sessionId ? 1 : a.sessionId > b.sessionId ? -1 : 0)).slice(0, Math.max(40, rows.length));
+}
+
 type UseSidebarControllerArgs = {
+  subscribe?: (listener: (event: ServerEvent) => void) => () => void;
   projects: Project[];
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -79,6 +98,7 @@ type UseSidebarControllerArgs = {
 
 /** Used by Sidebar to coordinate project navigation, expansion and session actions. */
 export function useSidebarController({
+  subscribe,
   projects,
   selectedProject,
   selectedSession: _selectedSession,
@@ -169,7 +189,7 @@ export function useSidebarController({
   const [isArchivedSessionsLoading, setIsArchivedSessionsLoading] = useState(false);
   const [recentConversations, setRecentConversations] = useState<RecentConversationListItem[]>([]);
   const [recentConversationsTotal, setRecentConversationsTotal] = useState(0);
-  const [recentConversationsHasMore, setRecentConversationsHasMore] = useState(false);
+  const recentConversationsHasMore = recentConversations.length < recentConversationsTotal;
   const [isRecentConversationsLoading, setIsRecentConversationsLoading] = useState(false);
   const [isLoadingMoreRecentConversations, setIsLoadingMoreRecentConversations] = useState(false);
   const [recentConversationsError, setRecentConversationsError] = useState(false);
@@ -183,6 +203,10 @@ export function useSidebarController({
   const projectIdsLoadingMoreSessionsRef = useRef<Set<string>>(new Set());
   const searchSeqRef = useRef(0);
   const recentConversationsSeqRef = useRef(0);
+  // Snapshot requests replay events received in flight, preserving newer updates.
+  const recentSnapshotsRef = useRef(new Set<ServerEvent[]>());
+  const recentRowsRef = useRef(recentConversations);
+  useLayoutEffect(() => { recentRowsRef.current = recentConversations; }, [recentConversations]);
   const eventSourceRef = useRef<EventSource | null>(null);
   const starToggleSequenceByProjectRef = useRef<Map<string, number>>(new Map());
   const migrationStartedRef = useRef(false);
@@ -289,50 +313,43 @@ export function useSidebarController({
     }
   }, []);
 
-  const fetchRecentConversationsPage = useCallback(async (offset: number, append: boolean) => {
+  const fetchRecentConversationsPage = useCallback(async (offset: number, append: boolean, silent = false) => {
     const requestSequence = ++recentConversationsSeqRef.current;
     if (append) {
       setIsLoadingMoreRecentConversations(true);
-    } else {
+    } else if (!silent) {
       setIsRecentConversationsLoading(true);
     }
-    setRecentConversationsError(false);
+    if (!silent) setRecentConversationsError(false);
+    const deltas: ServerEvent[] = [];
+    recentSnapshotsRef.current.add(deltas);
 
     try {
-      const response = await api.recentConversations({ limit: 40, offset });
-      if (!response.ok) {
-        throw new Error(`Failed to load recent conversations: ${response.status}`);
-      }
-
-      const payload = (await response.json()) as RecentConversationsApiPayload;
-      const conversations = Array.isArray(payload.data?.conversations)
-        ? payload.data.conversations
-        : [];
-
-      if (requestSequence !== recentConversationsSeqRef.current) {
-        return;
-      }
-
-      setRecentConversations((previous) => {
-        if (!append) {
-          return conversations;
+      const count = append ? offset + 40 : Math.max(40, recentRowsRef.current.length);
+      const page = await fetchSessionListPrefix(count, async (limit, pageOffset) => {
+        const response = await api.recentConversations({ limit, offset: pageOffset });
+        if (!response.ok) throw new Error(`Failed to load recent conversations: ${response.status}`);
+        const payload = await response.json() as RecentConversationsApiPayload;
+        if (!Array.isArray(payload.data?.conversations) || typeof payload.data.total !== 'number') {
+          throw new Error('Invalid recent conversations page');
         }
-
-        const existingIds = new Set(previous.map((conversation) => conversation.sessionId));
-        return [
-          ...previous,
-          ...conversations.filter((conversation) => !existingIds.has(conversation.sessionId)),
-        ];
-      });
-      setRecentConversationsTotal(Number(payload.data?.total ?? conversations.length));
-      setRecentConversationsHasMore(Boolean(payload.data?.hasMore));
+        return { items: payload.data.conversations, total: payload.data.total };
+      }, () => deltas.length);
+      if (requestSequence !== recentConversationsSeqRef.current) return;
+      const conversations = deltas.reduce(applyConversationDelta, page.items);
+      const total = [...deltas].reverse().find(event => typeof event.total === 'number')?.total as number | undefined;
+      recentRowsRef.current = conversations;
+      setRecentConversations(conversations);
+      setRecentConversationsTotal(total ?? page.total);
+      setRecentConversationsError(false);
     } catch (error) {
       if (requestSequence !== recentConversationsSeqRef.current) {
         return;
       }
       console.error('[Sidebar] Failed to load recent conversations:', error);
-      setRecentConversationsError(true);
+      if (!silent) setRecentConversationsError(true);
     } finally {
+      recentSnapshotsRef.current.delete(deltas);
       if (requestSequence === recentConversationsSeqRef.current) {
         setIsRecentConversationsLoading(false);
         setIsLoadingMoreRecentConversations(false);
@@ -394,7 +411,32 @@ export function useSidebarController({
     reloadRecentConversations();
   }, [debouncedSearchQuery, reloadRecentConversations, searchMode]);
 
-  // The Conversations list is only fetched when its tab opens, while `projects`
+  useEffect(() => {
+    if (!subscribe) return;
+    return subscribe(event => {
+      if (event.kind === 'websocket_reconnected' || event.kind === 'sidebar_invalidated') {
+        if (searchMode === 'conversations' && debouncedSearchQuery.length < 2) {
+          void fetchRecentConversationsPage(0, false, true);
+        }
+        return;
+      }
+      if (event.kind !== 'session_upserted' && event.kind !== 'session_removed') return;
+      if (event.kind === 'session_removed') {
+        setSessionSelection(previous => {
+          if (!previous || !previous.sessionIds.has(String(event.sessionId))) return previous;
+          const sessionIds = new Set(previous.sessionIds);
+          sessionIds.delete(String(event.sessionId));
+          return { ...previous, sessionIds };
+        });
+      }
+      for (const deltas of recentSnapshotsRef.current) deltas.push(event);
+      recentRowsRef.current = applyConversationDelta(recentRowsRef.current, event);
+      setRecentConversations(recentRowsRef.current);
+      if (typeof event.total === 'number') setRecentConversationsTotal(event.total);
+    });
+  }, [subscribe, searchMode, debouncedSearchQuery, fetchRecentConversationsPage]);
+
+  // The Conversations list also receives live deltas, while `projects`
   // is patched the moment a session is renamed from the workspace header. Fold
   // those title changes into the rows already loaded, or a header rename would
   // leave the highlighted conversation on its old name. The loaded rows are
@@ -1054,7 +1096,7 @@ export function useSidebarController({
       // refetched here, so the rows that just went are pruned from it by hand.
       // Counted outside the updater so both updaters stay pure: React may run an
       // updater twice, which would take the rows off the total twice.
-      const removed = recentConversations.filter((conversation) => deletedIdSet.has(conversation.sessionId)).length;
+      const removed = recentRowsRef.current.filter((conversation) => deletedIdSet.has(conversation.sessionId)).length;
       setRecentConversations((previous) =>
         previous.filter((conversation) => !deletedIdSet.has(conversation.sessionId)),
       );
@@ -1079,7 +1121,7 @@ export function useSidebarController({
         }),
       );
     }
-  }, [activeSessions, backgroundSessionIds, fetchArchivedSessions, onSessionDelete, pendingDeletion, recentConversations, sessionSelection, t]);
+  }, [activeSessions, backgroundSessionIds, fetchArchivedSessions, onSessionDelete, pendingDeletion, sessionSelection, t]);
 
   const requestProjectDelete = useCallback(
     (project: Project) => {

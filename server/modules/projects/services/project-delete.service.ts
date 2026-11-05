@@ -1,5 +1,6 @@
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
+import { broadcastSidebarInvalidated } from '@/modules/websocket/index.js';
 import { AppError } from '@/shared/utils.js';
 
 /**
@@ -19,6 +20,7 @@ export async function deleteOrArchiveProject(projectId: string, force: boolean):
 
   if (!force) {
     projectsDb.updateProjectIsArchivedById(projectId, true);
+    broadcastSidebarInvalidated();
     return;
   }
 
@@ -30,6 +32,7 @@ export async function deleteOrArchiveProject(projectId: string, force: boolean):
     });
   }
   projectsDb.deleteProjectById(projectId);
+  broadcastSidebarInvalidated();
 }
 
 /**
@@ -45,4 +48,5 @@ export function restoreArchivedProject(projectId: string): void {
   }
 
   projectsDb.updateProjectIsArchivedById(projectId, false);
+  broadcastSidebarInvalidated();
 }

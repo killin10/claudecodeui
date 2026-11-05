@@ -99,7 +99,8 @@ export const getAllSessions = (project: Project): SessionWithProvider[] => {
     ...session,
     __provider: getSessionProvider(session),
   })).sort(
-    (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
+    (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime()
+      || (String(a.id) < String(b.id) ? 1 : String(a.id) > String(b.id) ? -1 : 0),
   );
 
   sortedSessionsByProject.set(project, sessions);

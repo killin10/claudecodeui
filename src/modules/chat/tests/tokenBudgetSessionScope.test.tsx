@@ -66,3 +66,12 @@ test('ignores token budgets from other running sessions', () => {
 
   assert.equal(budgets.length, 0);
 });
+
+test('sidebar mutation events do not enter the transcript or change its processing state', () => {
+  const { budgets, dispatch } = renderHandlers();
+  // The fixture deliberately supplies no transcript append method: forwarding
+  // either gateway event into the chat store would throw here.
+  dispatch({ kind: 'session_removed', sessionId: 'viewed' } as ServerEvent);
+  dispatch({ kind: 'sidebar_invalidated' } as ServerEvent);
+  assert.deepEqual(budgets, []);
+});

@@ -25,7 +25,7 @@ async function buildSessionUpsertedEvent(
   // the id written in the transcript. For a row where the two ids are equal
   // — legacy rows, and any session indexed from disk before its mapping
   // existed — both lookups land on the same row anyway.
-  const row = sessionsDb.getSessionByProviderSessionId(sessionIdOrProviderSessionId)
+  let row = sessionsDb.getSessionByProviderSessionId(sessionIdOrProviderSessionId)
     ?? sessionsDb.getSessionById(sessionIdOrProviderSessionId);
   if (!row || row.isArchived) {
     return null;
@@ -33,12 +33,19 @@ async function buildSessionUpsertedEvent(
 
   const projectPath = row.project_path;
   const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+  if (project?.isArchived) return null;
   const displayName = project?.custom_project_name?.trim()
     ? project.custom_project_name
     : await generateDisplayName(path.basename(projectPath ?? '') || (projectPath ?? ''), projectPath);
 
+  // Display-name discovery may yield; do not resurrect a row archived/deleted meanwhile.
+  row = sessionsDb.getSessionById(row.session_id);
+  if (!row || row.isArchived || (project && projectsDb.getProjectById(project.project_id)?.isArchived)) return null;
+
   return {
     kind: 'session_upserted',
+    total: sessionsDb.getRecentSessionsPage(0, 0).total,
+    projectTotal: projectPath ? sessionsDb.countSessionsByProjectPath(projectPath) : 0,
     sessionId: row.session_id,
     providerSessionId: row.provider_session_id ?? null,
     // The column is a plain TEXT and typed as `string` on the row, but only
@@ -78,31 +85,42 @@ function sendToConnectedClients(payloads: string[]): void {
 }
 
 /** Announces one session. Used by the chat run registry when a run reports its provider-native id. */
-export async function broadcastSessionUpserted(sessionIdOrProviderSessionId: string): Promise<void> {
+export async function broadcastSessionUpserted(sessionIdOrProviderSessionId: string, metadataOnly = false): Promise<void> {
+  if (connectedClients.size === 0) return;
   const event = await buildSessionUpsertedEvent(sessionIdOrProviderSessionId);
   if (event) {
-    sendToConnectedClients([JSON.stringify(event)]);
+    sendToConnectedClients([JSON.stringify({ ...event, metadataOnly })]);
   }
 }
 
 /**
  * Announces a batch of sessions. Used by the providers module's sessions
- * watcher, whose debounced flush can carry dozens of ids at once — the client
- * set is walked once for the whole batch rather than once per session.
+ * watcher, whose debounced flush can carry dozens of ids at once.
+ * Each event is sent before building the next one, so a mutation during async
+ * display-name discovery cannot overtake an older buffered event.
  */
 export async function broadcastSessionUpsertedBatch(
   sessionIds: Iterable<string>,
 ): Promise<void> {
-  const payloads: string[] = [];
   for (const sessionId of sessionIds) {
-    const event = await buildSessionUpsertedEvent(sessionId);
-    if (event) {
-      payloads.push(JSON.stringify(event));
-    }
+    await broadcastSessionUpserted(sessionId);
   }
-
-  sendToConnectedClients(payloads);
 }
 
 /** @internal Exported for the broadcast tests, which assert the payload shape directly. */
 export { buildSessionUpsertedEvent };
+
+/** Used by session mutations to remove rows from every connected sidebar. */
+export function broadcastSessionRemoved(sessionId: string, projectPath: string | null): void {
+  const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+  sendToConnectedClients([JSON.stringify({
+    kind: 'session_removed', sessionId, projectId: project?.project_id ?? null,
+    total: sessionsDb.getRecentSessionsPage(0, 0).total,
+    projectTotal: projectPath ? sessionsDb.countSessionsByProjectPath(projectPath) : 0,
+  })]);
+}
+
+/** Project archive/restore/delete changes list membership beyond a single row. */
+export function broadcastSidebarInvalidated(): void {
+  sendToConnectedClients([JSON.stringify({ kind: 'sidebar_invalidated' })]);
+}

@@ -190,3 +190,32 @@ test('an upsert for a session that is already canonical does not renavigate', as
   assert.equal(result.current.selectedSession?.id, APP_SESSION_ID);
   assert.deepEqual(navigate.mock.calls, []);
 });
+
+test('metadata-only upserts update lists without marking attention or reloading chat', async () => {
+  respondWith([buildProject([{ id: APP_SESSION_ID, summary: 'Before' }])]);
+  const { result } = await renderProjectsState(vi.fn(), '');
+  await waitFor(() => assert.equal(result.current.projects.length, 1));
+  act(() => emit({ ...buildUpsert(null), metadataOnly: true }));
+  assert.equal(result.current.projects[0].sessions?.[0].summary, 'merged session');
+  assert.equal(result.current.sidebarSharedProps.attentionSessionIds.size, 0);
+  act(() => result.current.handleSessionSelect({ id: APP_SESSION_ID } as ProjectSession));
+  const before = result.current.externalMessageUpdate;
+  act(() => emit({ ...buildUpsert(null), metadataOnly: true }));
+  assert.equal(result.current.externalMessageUpdate, before);
+});
+
+test('an unseen existing session does not inflate the project total and removal uses server totals', async () => {
+  const project = buildProject([{ id: 'first', summary: 'First' }]);
+  project.sessionMeta = { total: 50, hasMore: true };
+  respondWith([project]);
+  const { result } = await renderProjectsState(vi.fn(), '');
+  await waitFor(() => assert.equal(result.current.projects.length, 1));
+  act(() => emit({ ...buildUpsert(null), projectTotal: 50 }));
+  assert.equal(result.current.projects[0].sessions?.length, 2);
+  assert.equal(result.current.projects[0].sessionMeta?.total, 50);
+  act(() => emit({ ...buildUpsert(null), projectTotal: 51 }));
+  assert.equal(result.current.projects[0].sessionMeta?.total, 51);
+  act(() => emit({ kind: 'session_removed', sessionId: APP_SESSION_ID, projectId: 'project-1', projectTotal: 49 }));
+  assert.equal(result.current.projects[0].sessions?.length, 1);
+  assert.equal(result.current.projects[0].sessionMeta?.total, 49);
+});

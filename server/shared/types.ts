@@ -248,6 +248,8 @@ export type MessageKind =
 export type GatewayEventKind =
   | 'chat_subscribed'
   | 'session_upserted'
+  | 'session_removed'
+  | 'sidebar_invalidated'
   | 'loading_progress'
   | 'protocol_error'
   | 'scheduled_messages_changed';
@@ -283,7 +285,12 @@ export type SessionUpsertedProject = {
  * present — `null` only while the provider has not reported an id yet.
  */
 export type SessionUpsertedEvent = {
+  /** Metadata mutations update lists without announcing new transcript activity. */
+  metadataOnly?: boolean;
   kind: 'session_upserted';
+  /** Authoritative visible counts; an unseen row may already exist on a later page. */
+  total: number;
+  projectTotal: number;
   sessionId: string;
   providerSessionId: string | null;
   provider: LLMProvider;

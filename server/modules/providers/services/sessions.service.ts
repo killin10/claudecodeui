@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
-import { broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
+import { broadcastSessionRemoved, broadcastSessionUpserted, chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { listBusyCodexCliSessions } from '@/modules/providers/services/codex-cli-liveness.service.js';
 import { listBusyClaudeCliSessions } from '@/modules/providers/services/claude-cli-liveness.service.js';
@@ -335,6 +335,7 @@ export const sessionsService = {
     const sessionId = randomUUID();
     const sessionName = buildCloudCliSessionName(initialMessage);
     sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, sessionName);
+    void broadcastSessionUpserted(sessionId, true).catch(error => console.error('[Sidebar] Failed to announce session creation', error));
 
     return {
       sessionId,
@@ -726,6 +727,7 @@ export const sessionsService = {
 
     if (!options.force) {
       sessionsDb.updateSessionIsArchived(sessionId, true);
+      broadcastSessionRemoved(sessionId, session.project_path);
       return {
         sessionId,
         action: 'archived',
@@ -757,6 +759,7 @@ export const sessionsService = {
     }
 
     sessionHistoryCache.invalidate(sessionId);
+    broadcastSessionRemoved(sessionId, session.project_path);
 
     return {
       sessionId,
@@ -778,6 +781,7 @@ export const sessionsService = {
     }
 
     sessionsDb.updateSessionIsArchived(sessionId, false);
+    void broadcastSessionUpserted(sessionId, true).catch(error => console.error('[Sidebar] Failed to announce restored session', error));
     return { sessionId, isArchived: false };
   },
 
@@ -794,6 +798,7 @@ export const sessionsService = {
     }
 
     sessionsDb.updateSessionCustomName(sessionId, summary);
+    void broadcastSessionUpserted(sessionId, true).catch(error => console.error('[Sidebar] Failed to announce renamed session', error));
     return { sessionId, summary };
   },
 };

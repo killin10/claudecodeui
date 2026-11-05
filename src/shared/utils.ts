@@ -266,3 +266,30 @@ export const getQuickSettingsTabId = (tab: QuickSettingsTab): string => `quick-s
 
 /** DOM id of the tabpanel a quick settings tab controls; pairs with `getQuickSettingsTabId`. */
 export const getQuickSettingsTabPanelId = (tab: QuickSettingsTab): string => `quick-settings-tabpanel-${tab}`;
+
+/**
+ * Used by sidebar and project-workspace to replace a loaded prefix from page zero.
+ * Re-reading the prefix avoids gaps from using a locally mutated list length as
+ * an offset. Each HTTP request respects the existing 100-row endpoint limit.
+ * Failure propagates so callers retain the last complete view.
+ */
+export async function fetchSessionListPrefix<T>(
+  count: number,
+  load: (limit: number, offset: number) => Promise<{ items: T[]; total: number }>,
+  revision: () => number = () => 0,
+): Promise<{ items: T[]; total: number }> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const started = revision();
+    const items: T[] = [];
+    let total = 0;
+    do {
+      const limit = Math.min(100, Math.max(1, count - items.length));
+      const page = await load(limit, items.length);
+      items.push(...page.items);
+      total = page.total;
+      if (page.items.length < limit) break;
+    } while (items.length < count && items.length < total);
+    if (started === revision()) return { items, total };
+  }
+  throw new Error('Session list kept changing during pagination; retry the snapshot');
+}

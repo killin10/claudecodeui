@@ -261,10 +261,12 @@ test('within a project, a keystroke changes props on the renamed session row onl
   const { rerender } = render(
     React.createElement(SidebarProjectSessions, sessionsProps('a1', 'N')),
   );
-  const [firstA1, firstA2] = recordedSessionRowProps;
+  const firstA1 = recordedSessionRowProps.find(row => (row.session as { id: string }).id === 'a1')!;
+  const firstA2 = recordedSessionRowProps.find(row => (row.session as { id: string }).id === 'a2')!;
 
   rerender(React.createElement(SidebarProjectSessions, sessionsProps('a1', 'Ne')));
-  const [, , secondA1, secondA2] = recordedSessionRowProps;
+  const secondA1 = recordedSessionRowProps.slice(2).find(row => (row.session as { id: string }).id === 'a1')!;
+  const secondA2 = recordedSessionRowProps.slice(2).find(row => (row.session as { id: string }).id === 'a2')!;
 
   assert.deepEqual(changedProps(firstA1, secondA1), ['renameDraft']);
   assert.deepEqual(
@@ -278,12 +280,14 @@ test('ticking one session row changes props on that row only', () => {
   const { rerender } = render(
     React.createElement(SidebarProjectSessions, sessionsProps(null, '', new Set())),
   );
-  const [firstA1, firstA2] = recordedSessionRowProps;
+  const firstA1 = recordedSessionRowProps.find(row => (row.session as { id: string }).id === 'a1')!;
+  const firstA2 = recordedSessionRowProps.find(row => (row.session as { id: string }).id === 'a2')!;
 
   rerender(
     React.createElement(SidebarProjectSessions, sessionsProps(null, '', new Set(['a1']))),
   );
-  const [, , secondA1, secondA2] = recordedSessionRowProps;
+  const secondA1 = recordedSessionRowProps.slice(2).find(row => (row.session as { id: string }).id === 'a1')!;
+  const secondA2 = recordedSessionRowProps.slice(2).find(row => (row.session as { id: string }).id === 'a2')!;
 
   assert.deepEqual(changedProps(firstA1, secondA1), ['isChecked']);
   assert.deepEqual(

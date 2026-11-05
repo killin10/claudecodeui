@@ -113,3 +113,43 @@ test('rows keep their identity, and an unnamed session keeps its id, when nothin
 
   assert.equal(result.current.recentConversations, rowsBefore);
 });
+
+test('live deltas add, reorder and remove conversations without fetching the feed', async () => {
+  let listener: (event: any) => void = () => {};
+  const subscribe = (fn: typeof listener) => { listener = fn; return () => {}; };
+  const projects: Project[] = [];
+  const { result } = renderHook(() => useSidebarController({
+    subscribe, projects, selectedProject: null, selectedSession: null,
+    activeSessions: new Set<string>(), backgroundSessionIds: new Set<string>(),
+    isLoading: false, isMobile: false, t, onRefresh: vi.fn(), onProjectSelect: vi.fn(),
+    onSessionSelect: vi.fn(), setCurrentProject: vi.fn(), setSidebarVisible: vi.fn(), sidebarVisible: true,
+  }));
+  await waitFor(() => assert.equal(result.current.recentConversations.length, 2));
+  const calls = recentConversationsResponse.mock.calls.length;
+  act(() => listener({ kind: 'session_upserted', sessionId: 'fresh', provider: 'opencode', total: 3,
+    project: { projectId: 'project-1', displayName: 'repo' },
+    session: { id: 'fresh', summary: 'New session', lastActivity: '2026-11-05T00:00:00Z' } }));
+  assert.equal(result.current.recentConversations[0].sessionId, 'fresh');
+  assert.equal(result.current.recentConversationsTotal, 3);
+  act(() => listener({ kind: 'session_upserted', sessionId: 'fresh', provider: 'opencode', total: 3,
+    project: { projectId: 'project-1', displayName: 'repo' },
+    session: { id: 'fresh', summary: 'Renamed', lastActivity: '2026-11-05T00:01:00Z' } }));
+  assert.equal(result.current.recentConversations.length, 3);
+  assert.equal(result.current.recentConversations[0].sessionTitle, 'Renamed');
+  act(() => listener({ kind: 'session_removed', sessionId: 'fresh', total: 2 }));
+  assert.equal(result.current.recentConversations.length, 2);
+  assert.equal(result.current.recentConversationsTotal, 2);
+  assert.equal(recentConversationsResponse.mock.calls.length, calls);
+
+  // A reconnect snapshot arriving after a live deletion must not resurrect it.
+  const staleResponse = { ok: true, json: async () => ({ data: {
+    conversations: [conversation('session-1', 'Original title'), conversation('session-2', 'session-2')], total: 2,
+  } }) };
+  let resolveSnapshot!: (response: typeof staleResponse) => void;
+  recentConversationsResponse.mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve; }));
+  act(() => listener({ kind: 'websocket_reconnected' }));
+  act(() => listener({ kind: 'session_removed', sessionId: 'session-1', total: 1 }));
+  await act(async () => { resolveSnapshot(staleResponse); });
+  assert.deepEqual(result.current.recentConversations.map(row => row.sessionId), ['session-2']);
+  assert.equal(result.current.recentConversationsTotal, 1);
+});

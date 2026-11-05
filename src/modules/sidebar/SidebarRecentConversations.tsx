@@ -132,7 +132,7 @@ export default function SidebarRecentConversations({
           };
 
           return (
-            <div key={conversation.sessionId} className="group relative">
+            <div key={conversation.sessionId} className="group relative" data-sidebar-session-id={conversation.sessionId}>
               {/*
                 * Only the amber "needs attention" dot, and the spinner below. The
                 * Projects row also has a green dot for a session touched recently,

@@ -8,9 +8,8 @@ import type { Project, ProjectSession } from '@/shared/types';
 /**
  * A rename confirmed by the backend has to land on both local copies of the
  * session at once: the row in `projects` the sidebar renders, and the
- * `selectedSession` the workspace header and document title read. The rename
- * route does not broadcast a `session_upserted`, so nothing else would bring
- * the header up to date.
+ * `selectedSession` the workspace header and document title read, without
+ * depending on the rename's websocket event arriving first.
  */
 
 const projectsResponse = vi.fn();
