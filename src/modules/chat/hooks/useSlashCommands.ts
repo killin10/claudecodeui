@@ -211,7 +211,7 @@ export function useSlashCommands({
 
   const selectCommandFromKeyboard = useCallback(
     (command: SlashCommand) => {
-      if (isProviderCommand(command)) {
+      if (isProviderCommand(command) || command.metadata?.inputOnly === true) {
         insertCommandIntoInput(command);
         return;
       }
@@ -233,7 +233,7 @@ export function useSlashCommands({
       }
 
       trackCommandUsage(command);
-      if (isProviderCommand(command)) {
+      if (isProviderCommand(command) || command.metadata?.inputOnly === true) {
         insertCommandIntoInput(command);
         return;
       }

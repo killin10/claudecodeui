@@ -24,7 +24,10 @@ const listSkills = vi.fn();
 vi.mock('@/shared/api', () => ({
   api: {
     commands: { list: (...args: unknown[]) => listCommands(...args) },
-    providers: { skills: (...args: unknown[]) => listSkills(...args) },
+    providers: {
+      skills: (...args: unknown[]) => listSkills(...args),
+      capabilities: async () => jsonResponse({ success: true, data: { providers: [] } }),
+    },
   },
 }));
 

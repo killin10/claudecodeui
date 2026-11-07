@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { loadCapabilities } from '@/shared/hooks/useProviderCapabilities';
 import { api } from '@/shared/api';
 import type { LLMProvider, Project, SlashCommand } from '@/shared/types';
 
@@ -127,7 +128,13 @@ export function useProjectSlashCommands(
         }));
         const skillCommands = dedupeProviderSkills(skillsData?.data?.skills || [])
           .map(mapSkillToSlashCommand);
+        const capabilities = await loadCapabilities();
+        const appCommands: SlashCommand[] = capabilities[provider]?.supportsSideQuestions ? [{
+          name: '/btw', description: 'Ask a side question without interrupting the current task',
+          namespace: 'builtin', type: 'built-in', metadata: { type: 'builtin', inputOnly: true },
+        }] : [];
         const allCommands: SlashCommand[] = [
+          ...appCommands,
           ...((data.builtIn || []) as SlashCommand[]).filter((command) => !nativeCommands?.some((entry) => entry.name === command.name)).map((command) => ({
             ...command,
             type: 'built-in',
@@ -140,7 +147,8 @@ export function useProjectSlashCommands(
         ];
 
         if (!cancelled) {
-          setCommands(allCommands);
+          // CloudCLI intercepts /btw before provider commands. Show that same precedence in both lists.
+          setCommands(allCommands.filter(command => command.name !== '/btw' || appCommands.includes(command)));
           setIsLoading(false);
         }
       } catch (fetchError) {

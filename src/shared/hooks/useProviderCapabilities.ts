@@ -12,6 +12,7 @@ import type { LLMProvider } from '@/shared/types';
 type ProviderCapabilityRow = {
   provider: LLMProvider;
   supportsSessionForking?: boolean;
+  supportsSideQuestions?: boolean;
 };
 
 /**
@@ -22,7 +23,8 @@ type ProviderCapabilityRow = {
 let cachedCapabilities: Partial<Record<LLMProvider, ProviderCapabilityRow>> | null = null;
 let inFlightRequest: Promise<Partial<Record<LLMProvider, ProviderCapabilityRow>>> | null = null;
 
-async function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabilityRow>>> {
+/** Shared by capability hooks and the project command list to reuse the backend capability matrix. */
+export async function loadCapabilities(): Promise<Partial<Record<LLMProvider, ProviderCapabilityRow>>> {
   if (cachedCapabilities) {
     return cachedCapabilities;
   }

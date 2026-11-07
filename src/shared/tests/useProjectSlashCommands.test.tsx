@@ -15,6 +15,10 @@ import type { Project } from '@/shared/types';
 
 const listCommands = vi.fn();
 const listSkills = vi.fn();
+const capabilities = vi.fn();
+vi.mock('@/shared/hooks/useProviderCapabilities', () => ({
+  loadCapabilities: () => capabilities(),
+}));
 
 vi.mock('@/shared/api', () => ({
   api: {
@@ -34,6 +38,8 @@ const jsonResponse = (body: unknown, ok = true) => ({ ok, json: async () => body
 beforeEach(() => {
   listCommands.mockReset();
   listSkills.mockReset();
+  capabilities.mockReset();
+  capabilities.mockResolvedValue({});
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
@@ -140,3 +146,20 @@ test('OpenCode uses its native catalog and overrides compact without offering Cl
   assert.deepEqual(result.current.commands.map((command) => [command.name, command.type]),
     [['/help', 'built-in'], ['/compact', 'native'], ['/review', 'skill']]);
 });
+
+for (const provider of ['claude', 'codex', 'opencode', 'cursor'] as const) {
+  test(`/btw is listed once according to ${provider} capabilities`, async () => {
+    const supported = provider !== 'cursor';
+    capabilities.mockResolvedValue({ [provider]: { supportsSideQuestions: supported } });
+    listCommands.mockResolvedValue(jsonResponse({ builtIn: [], custom: [{ name: '/btw' }] }));
+    listSkills.mockResolvedValue(jsonResponse({ success: true, data: { skills: [
+      { name: 'btw', command: '/btw', scope: 'user' },
+    ] } }));
+    const { useProjectSlashCommands } = await import('@/shared/hooks/useProjectSlashCommands');
+    const { result } = renderHook(() => useProjectSlashCommands(project, provider));
+    await waitFor(() => assert.equal(result.current.isLoading, false));
+    const commands = result.current.commands.filter(command => command.name === '/btw');
+    assert.equal(commands.length, supported ? 1 : 0);
+    if (supported) assert.equal(commands[0].metadata?.inputOnly, true);
+  });
+}
