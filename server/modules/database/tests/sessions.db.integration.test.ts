@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initializeDatabase } from '@/modules/database/init-db.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
@@ -181,5 +181,72 @@ test('recent sessions are globally ordered, paginated, and limited to visible co
       secondPage.sessions.map((session) => session.session_id),
       ['session-middle', 'session-oldest'],
     );
+  });
+});
+
+
+test('runtime permissions migrate atomically into sessions and survive reinitialization', async () => {
+  await withIsolatedDatabase(async () => {
+    const db = getConnection();
+    for (const id of ['explicit-default', 'bypass', 'inherit']) {
+      sessionsDb.createAppSession(id, 'codex', '/workspace/migration');
+    }
+    // Reproduce the previous schema, including a row with no explicit setting.
+    db.exec(`
+      ALTER TABLE sessions DROP COLUMN permission_mode;
+      CREATE TABLE session_runtime_settings (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+        permission_mode TEXT NOT NULL
+      );
+      INSERT INTO session_runtime_settings VALUES ('explicit-default', 'default'), ('bypass', 'bypassPermissions');
+    `);
+    await initializeDatabase();
+    assert.equal(sessionsDb.getPermissionMode('explicit-default'), 'default');
+    assert.equal(sessionsDb.getPermissionMode('bypass'), 'bypassPermissions');
+    assert.equal(sessionsDb.getSessionById('inherit')?.permission_mode, null);
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='session_runtime_settings'").get(), undefined);
+    sessionsDb.setPermissionMode('bypass', 'plan');
+    await initializeDatabase();
+    assert.equal(sessionsDb.getPermissionMode('bypass'), 'plan');
+    assert.equal(sessionsDb.getPermissionMode('explicit-default'), 'default');
+    assert.equal(sessionsDb.getPermissionMode('inherit'), null);
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='session_runtime_settings'").get(), undefined);
+  });
+});
+
+test('new databases store permission settings on sessions without changing activity', async () => {
+  await withIsolatedDatabase(() => {
+    const db = getConnection();
+    sessionsDb.createAppSession('new', 'claude', '/workspace/fresh');
+    const before = sessionsDb.getSessionById('new')!;
+    assert.equal(before.permission_mode, null);
+    sessionsDb.setPermissionMode('new', 'default');
+    assert.equal(sessionsDb.getSessionById('new')?.permission_mode, 'default');
+    assert.equal(sessionsDb.getSessionById('new')?.updated_at, before.updated_at);
+    sessionsDb.setPermissionMode('new', null);
+    assert.equal(sessionsDb.getPermissionMode('new'), null);
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='session_runtime_settings'").get(), undefined);
+  });
+});
+
+
+test('failed permission migration retains the legacy table and rolls back the new column', async () => {
+  await withIsolatedDatabase(async () => {
+    const db = getConnection();
+    sessionsDb.createAppSession('rollback', 'codex', '/workspace/migration');
+    db.exec(`
+      ALTER TABLE sessions DROP COLUMN permission_mode;
+      CREATE TABLE session_runtime_settings (session_id TEXT PRIMARY KEY, permission_mode TEXT NOT NULL);
+      INSERT INTO session_runtime_settings VALUES ('rollback', 'plan');
+      CREATE TRIGGER reject_permission_copy BEFORE UPDATE OF permission_mode ON sessions
+      BEGIN SELECT RAISE(ABORT, 'injected copy failure'); END;
+    `);
+    await assert.rejects(initializeDatabase(), /injected copy failure/);
+    assert.equal(db.prepare('SELECT permission_mode FROM session_runtime_settings').pluck().get(), 'plan');
+    const columns = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+    assert.equal(columns.some(column => column.name === 'permission_mode'), false);
+    db.exec('DROP TRIGGER reject_permission_copy');
+    await initializeDatabase();
+    assert.equal(sessionsDb.getPermissionMode('rollback'), 'plan');
   });
 });

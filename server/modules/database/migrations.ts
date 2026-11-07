@@ -522,6 +522,23 @@ const addSessionRestartFields = (db: Database): void => {
   })();
 };
 
+// Move the former one-to-one settings row into the session atomically.
+const mergeSessionRuntimeSettings = (db: Database): void => {
+  db.transaction(() => {
+    const columns = getTableInfo(db, 'sessions').map(column => column.name);
+    addColumnToTableIfNotExists(db, 'sessions', columns, 'permission_mode', 'TEXT');
+    if (!tableExists(db, 'session_runtime_settings')) return;
+    db.exec(`
+      UPDATE sessions SET permission_mode = (
+        SELECT permission_mode FROM session_runtime_settings WHERE session_id = sessions.session_id
+      ) WHERE permission_mode IS NULL AND EXISTS (
+        SELECT 1 FROM session_runtime_settings WHERE session_id = sessions.session_id
+      );
+      DROP TABLE session_runtime_settings;
+    `);
+  })();
+};
+
 export const runMigrations = (db: Database) => {
   try {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
@@ -567,6 +584,7 @@ export const runMigrations = (db: Database) => {
     addSessionEffortColumn(db);
     addForkedFromSessionIdColumn(db);
     addSessionRestartFields(db);
+    mergeSessionRuntimeSettings(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

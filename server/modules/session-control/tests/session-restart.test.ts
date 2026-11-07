@@ -171,7 +171,7 @@ test('continuation executes through existing dispatcher without a browser, prese
   const { create, userId } = await fixture(t);
   create('resume');
   sessionsDb.setSessionModel('resume', 'test-model');
-  sessionControlDb.setPermission('resume', 'bypassPermissions');
+  sessionsDb.setPermissionMode('resume', 'bypassPermissions');
   sessionsDb.setResumeAfterRestart('resume', true);
   await resumeSessionsAfterRestart();
   const row = sessionControlDb.queued()[0];

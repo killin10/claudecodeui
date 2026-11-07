@@ -260,12 +260,13 @@ test('queue preserves FIFO order for multiple submissions and snapshots permissi
     } }));
   const a = await sessionControlService.send(userId, session.sessionId, { message: 'first' });
   const b = await sessionControlService.send(userId, session.sessionId, { message: 'second' });
-  sessionControlDb.setPermission(session.sessionId, 'default');
+  sessionsDb.setPermissionMode(session.sessionId, 'default');
   await dispatcher.poll();
   await eventually(() => sessionControlDb.get(a.submissionId, userId)?.state === 'succeeded');
   await dispatcher.poll();
   await eventually(async () => { await dispatcher.poll(); return sessionControlDb.get(b.submissionId, userId)?.state === 'succeeded'; });
   assert.deepEqual(order, ['first', 'second']);
+  assert.equal(sessionsDb.getPermissionMode(session.sessionId), 'default');
 });
 
 test('overlapping approval requests stay waiting until all have resolved', async (t) => {
@@ -285,4 +286,30 @@ test('overlapping approval requests stay waiting until all have resolved', async
   assert.equal(sessionControlDb.get(row.submissionId, userId)?.state, 'waiting-for-input');
   respond();
   await eventually(() => sessionControlDb.get(row.submissionId, userId)?.state === 'succeeded');
+});
+
+
+test('temporary submission overrides execute without changing session defaults', async (t) => {
+  const { create, userId } = await fixture(t);
+  const session = await create({ permissionMode: 'default' });
+  sessionsDb.setSessionEffort(session.sessionId, 'high');
+  const base = fakeRuntime();
+  const dispatcher = createSubmissionDispatcher(fakeRuntime({ run: async (...args) => {
+    assert.equal(args[2].permissionMode, 'plan');
+    assert.equal(args[2].model, 'temporary-model');
+    return base.run(...args);
+  } }));
+  const submission = sessionControlService.enqueue(userId, session.sessionId, 'temporary run', {
+    permissionMode: 'plan', model: 'temporary-model',
+  });
+  await dispatcher.poll();
+  await eventually(() => sessionControlDb.get(submission.submissionId, userId)?.state === 'succeeded');
+  const saved = sessionsDb.getSessionById(session.sessionId)!;
+  assert.equal(saved.permission_mode, 'default');
+  assert.equal(saved.model, 'test-model');
+  assert.equal(saved.effort, 'high');
+  const next = sessionControlService.enqueue(userId, session.sessionId, 'inherit');
+  assert.deepEqual(sessionControlDb.get(next.submissionId, userId)?.options, {
+    permissionMode: 'default', model: 'test-model',
+  });
 });

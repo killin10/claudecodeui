@@ -10,10 +10,6 @@ CREATE TABLE IF NOT EXISTS session_control_receipts (
  fingerprint TEXT NOT NULL, response TEXT NOT NULL,
  PRIMARY KEY(user_id, operation, token)
 );
-CREATE TABLE IF NOT EXISTS session_runtime_settings (
- session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
- permission_mode TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS session_submissions (
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
  user_id INTEGER NOT NULL, content TEXT NOT NULL, options TEXT NOT NULL,
@@ -124,15 +120,6 @@ export const sessionControlDb = {
   saveReceipt(userId: number, operation: string, token: string, fingerprint: string, response: unknown) {
     getConnection().prepare('INSERT INTO session_control_receipts VALUES (?, ?, ?, ?, ?)')
       .run(userId, operation, token, fingerprint, JSON.stringify(response));
-  },
-  permission(sessionId: string): string | null {
-    const row = getConnection().prepare('SELECT permission_mode FROM session_runtime_settings WHERE session_id=?').get(sessionId) as {
-      permission_mode: string;
-    } | undefined;
-    return row?.permission_mode ?? null;
-  },
-  setPermission(sessionId: string, mode: string) {
-    getConnection().prepare('INSERT INTO session_runtime_settings VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET permission_mode=excluded.permission_mode').run(sessionId, mode);
   },
   insert(row: SessionSubmission) {
     getConnection().prepare('INSERT INTO session_submissions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')

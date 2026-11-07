@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import type { WebSocket } from 'ws';
 
-import { sessionControlDb, sessionsDb } from '@/modules/database/index.js';
+import { sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
@@ -159,7 +159,7 @@ async function handleChatSend(
     return;
   }
 
-  await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies);
+  await dispatchRun(ws, userId, resolved.sessionId, resolved.session, data, dependencies, 'persist');
 }
 
 type ResolvedSendTarget = {
@@ -217,6 +217,7 @@ async function dispatchRun(
   session: NonNullable<ReturnType<typeof sessionsDb.getSessionById>>,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies,
+  settingsPolicy: 'persist' | 'snapshot',
   extraRuntimeOptions: AnyRecord = {},
   beforeRun?: (run: NonNullable<ReturnType<typeof chatRunRegistry.startRun>>) => void | Promise<void>,
 ): Promise<{ started: boolean; error: string | null }> {
@@ -253,13 +254,15 @@ async function dispatchRun(
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 
-  // Record what this turn runs with so reopening the session later restores the
+  // Only interactive sends save defaults. Detached turns consume captured or
+  // temporary settings and must not overwrite newer session preferences.
+  // Record interactive choices so reopening the session later restores the
   // same model and reasoning effort, and so the resume path has a
   // session-scoped model answer to use.
-  if (typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
+  if (settingsPolicy === 'persist' && typeof clientOptions.model === 'string' && clientOptions.model.trim()) {
     providerModelsService.setSessionModel(provider, sessionId, clientOptions.model);
   }
-  if (typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
+  if (settingsPolicy === 'persist' && typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
 
@@ -298,8 +301,8 @@ async function dispatchRun(
     // conversation here and a rewind for a run that was never admitted cannot
     // be taken back. Inside the try so a rewind that throws still releases the
     // run instead of leaving the session processing forever.
-    if (typeof clientOptions.permissionMode === 'string') {
-      sessionControlDb.setPermission(sessionId, clientOptions.permissionMode);
+    if (settingsPolicy === 'persist' && typeof clientOptions.permissionMode === 'string') {
+      sessionsDb.setPermissionMode(sessionId, clientOptions.permissionMode);
     }
     await beforeRun?.(run);
     if (!chatRunRegistry.isAcceptingRuns()) return { started: false, error: 'Server is restarting.' };
@@ -384,6 +387,7 @@ async function handleChatEditSend(
     session,
     data,
     dependencies,
+    'persist',
     // `null` is meaningful: the edited turn was the first prompt, so the
     // conversation starts over instead of resuming.
     rewinds
@@ -682,6 +686,7 @@ export async function runDetachedChatTurn(
     session,
     { sessionId: input.sessionId, content: input.content, options: input.options ?? {} },
     dependencies,
+    'snapshot',
   );
 }
 

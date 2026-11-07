@@ -20,7 +20,7 @@ function session(id: string) {
 }
 
 function permission(userId: number, provider: LLMProvider, id?: string, preferences = userPreferencesDb.getPreferences(userId)): string {
-  const stored = id ? sessionControlDb.permission(id) : null;
+  const stored = id ? sessionsDb.getPermissionMode(id) : null;
   const settings = preferences[`${provider}Permissions`] as {
     permissionMode?: string;
   } | undefined;
@@ -139,7 +139,7 @@ export const sessionControlService = {
         sessionsService.renameSessionById(created.sessionId, title);
       }
       providerModelsService.setSessionModel(provider, created.sessionId, model);
-      sessionControlDb.setPermission(created.sessionId, nativeMode);
+      sessionsDb.setPermissionMode(created.sessionId, nativeMode);
       return describe(created.sessionId, userId, new Set());
     })());
     void broadcastSessionUpserted(result.sessionId).catch((error) => console.error('[SessionControl] Broadcast failed', error));

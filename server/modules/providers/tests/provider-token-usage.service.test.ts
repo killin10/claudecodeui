@@ -17,6 +17,7 @@ function createSessionRow(overrides: Record<string, unknown> = {}) {
     session_id: 'app-session',
     user_id: null,
     resume_after_restart: 0,
+    permission_mode: null,
     provider: 'claude',
     provider_session_id: 'provider-session',
     project_path: null,

@@ -8,6 +8,8 @@ type SessionRow = {
   user_id: number | null;
   /** One-shot continuation intent saved only during graceful shutdown. */
   resume_after_restart: number;
+  /** NULL inherits user defaults; explicit default is a provider mode. */
+  permission_mode: string | null;
   provider: string;
   provider_session_id: string | null;
   project_path: string | null;
@@ -30,7 +32,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, user_id, resume_after_restart, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, user_id, resume_after_restart, permission_mode, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, forked_from_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -74,6 +76,16 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
 }
 
 export const sessionsDb = {
+  /** Session-control reads the saved mode; NULL means inherit user preferences. */
+  getPermissionMode(sessionId: string): string | null {
+    const row = getConnection().prepare('SELECT permission_mode FROM sessions WHERE session_id = ?')
+      .get(sessionId) as { permission_mode: string | null } | undefined;
+    return row?.permission_mode ?? null;
+  },
+  /** Gateway and session creation save explicit defaults without changing activity timestamps. */
+  setPermissionMode(sessionId: string, mode: string | null): void {
+    getConnection().prepare('UPDATE sessions SET permission_mode = ? WHERE session_id = ?').run(mode, sessionId);
+  },
   /** Restart service reads only markers, including archived rows so they can be cleared. */
   listRestartSessions(): SessionRow[] {
     return getConnection().prepare(`SELECT ${SESSION_ROW_COLUMNS} FROM sessions WHERE resume_after_restart = 1`).all() as SessionRow[];

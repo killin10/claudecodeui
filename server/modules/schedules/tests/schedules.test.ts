@@ -98,7 +98,7 @@ test('trigger is atomic, deduplicated and snapshots settings; next overlap is re
   const submission = sessionControlDb.get(first.submissionId!, user)!;
   assert.equal(submission.options.model, 'fixture');
   assert.equal(submission.options.permissionMode, 'plan');
-  assert.equal(sessionControlDb.permission(id), null);
+  assert.equal(sessionsDb.getPermissionMode(id), null);
   const edited = await schedulesService.update(user, task.scheduleId, {
     revision: schedulesDb.get(task.scheduleId)!.revision,
     message: 'Changed future message',

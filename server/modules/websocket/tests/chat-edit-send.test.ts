@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
-import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
+import { handleChatConnection, runDetachedChatTurn } from '@/modules/websocket/services/chat-websocket.service.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 
@@ -306,4 +306,47 @@ test('a provider that has to branch to rewind is rewound before the run, not dur
     assert.ok(socket.frames.some((frame) => frame.kind === 'history_truncated'));
     assert.equal(truncatedBeforeRewind, true);
   }, CODEX_TRANSCRIPT_ROWS);
+});
+
+
+for (const type of ['chat.send', 'chat.edit-send']) {
+  test(`${type} persists explicit interactive settings`, async () => {
+    await withGateway('claude', async ({ socket, runs }) => {
+      socket.emit('message', JSON.stringify({
+        type, sessionId: SESSION_ID, anchorId: 'e-u2', content: 'interactive choice',
+        options: { permissionMode: 'bypassPermissions', model: 'chosen-model', effort: 'high' },
+      }));
+      await settle();
+      assert.equal(runs.length, 1);
+      const saved = sessionsDb.getSessionById(SESSION_ID)!;
+      assert.equal(saved.permission_mode, 'bypassPermissions');
+      assert.equal(saved.model, 'chosen-model');
+      assert.equal(saved.effort, 'high');
+    });
+  });
+}
+
+
+test('detached turns use model, effort and permission snapshots without persisting them', async () => {
+  await withGateway('claude', async () => {
+    sessionsDb.setSessionModel(SESSION_ID, 'saved-model');
+    sessionsDb.setSessionEffort(SESSION_ID, 'high');
+    sessionsDb.setPermissionMode(SESSION_ID, 'default');
+    let received: Record<string, unknown> = {};
+    const outcome = await runDetachedChatTurn({
+      sessionId: SESSION_ID, userId: null, content: 'temporary settings',
+      options: { model: 'temporary-model', effort: 'low', permissionMode: 'plan' },
+    }, { runtime: {
+      hasRuntime: () => true,
+      run: async (_provider: string, _content: string, options: Record<string, unknown>) => { received = options; },
+    } as never });
+    assert.equal(outcome.started, true);
+    assert.equal(received.model, 'temporary-model');
+    assert.equal(received.effort, 'low');
+    assert.equal(received.permissionMode, 'plan');
+    const saved = sessionsDb.getSessionById(SESSION_ID)!;
+    assert.equal(saved.model, 'saved-model');
+    assert.equal(saved.effort, 'high');
+    assert.equal(saved.permission_mode, 'default');
+  });
 });
