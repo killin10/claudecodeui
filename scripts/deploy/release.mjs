@@ -61,7 +61,7 @@ export async function stageRelease(source, p, runtime, { skipTypecheck = false }
   const testHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudcli-test-home-'));
   try {
     for (const script of ['test', 'test:client']) {
-      await run('npm', ['run', script], { cwd: source, env: { ...env, HOME: testHome } });
+      await run('npm', testArguments(script), { cwd: source, env: { ...env, HOME: testHome } });
     }
   } finally { await fs.rm(testHome, { recursive: true, force: true }); }
   const git = (...args) => execFileSync('git', args, { cwd: source, encoding: 'utf8' }).trim();
@@ -88,6 +88,13 @@ export async function stageRelease(source, p, runtime, { skipTypecheck = false }
     await fs.rm(release, { recursive: true, force: true });
     throw error;
   }
+}
+
+export function testArguments(script, platform = process.platform, arch = process.arch) {
+  const args = ['run', script];
+  if (platform !== 'linux' || arch !== 'arm64') return args;
+  // Keep the full suite while limiting parallel memory use on Raspberry Pi.
+  return [...args, '--', ...(script === 'test' ? ['--test-concurrency=1'] : ['--maxWorkers=1', '--minWorkers=1'])];
 }
 
 export async function pruneReleases(p, keep = 3) {

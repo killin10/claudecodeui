@@ -1,17 +1,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { renderUnit } from './systemd-unit.mjs';
 
 const OWNER = 'cloudcli-local-deployment-v1';
 export const LABEL = 'local.cloudcli';
 
-export function paths(home) {
+export function paths(home, platform = process.platform) {
+  if (!['darwin', 'linux'].includes(platform)) throw new Error('Local deployment requires macOS or Linux with systemd');
   if (!path.isAbsolute(home)) throw new Error('Home must be an absolute path');
   const root = path.join(home, '.local/share/cloudcli');
   const config = path.join(home, '.config/cloudcli');
   return {
-    home, root, config, bin: path.join(root, 'bin'), releases: path.join(root, 'releases'),
+    home, root, config, platform, bin: path.join(root, 'bin'), releases: path.join(root, 'releases'),
     backups: path.join(root, 'backups'), run: path.join(root, 'run'),
-    logs: path.join(home, 'Library/Logs/cloudcli'),
+    logs: path.join(home, platform === 'linux' ? '.local/state/cloudcli/logs' : 'Library/Logs/cloudcli'),
+    unit: path.join(home, '.config/systemd/user/local.cloudcli.service'),
+    serviceFile: path.join(home, platform === 'linux' ? '.config/systemd/user/local.cloudcli.service' : 'Library/LaunchAgents/local.cloudcli.plist'),
     plist: path.join(home, 'Library/LaunchAgents/local.cloudcli.plist'),
     env: path.join(config, 'server.env'), service: path.join(config, 'service.json'),
   };
@@ -68,15 +72,23 @@ export async function verifyPlist(p) {
   }
 }
 
+export async function verifyServiceFile(p) {
+  if (p.platform === 'darwin') return verifyPlist(p);
+  await noSymlink(p.unit);
+  if (await exists(p.unit) && await fs.readFile(p.unit, 'utf8') !== renderUnit(p)) {
+    throw new Error(`Systemd unit is not managed or was edited: ${p.unit}`);
+  }
+}
+
 export async function initialize(p, runtime, { setupLocal = false } = {}) {
-  await verifyPlist(p);
+  await verifyServiceFile(p);
   if (await exists(p.root)) await assertOwned(p);
   for (const target of [p.config, p.env, p.service, p.logs]) await noSymlink(target);
   await fs.mkdir(p.root, { recursive: true, mode: 0o700 });
   if (!await exists(path.join(p.root, '.managed.json'))) {
     await fs.writeFile(path.join(p.root, '.managed.json'), JSON.stringify({ owner: OWNER, home: p.home }), { flag: 'wx', mode: 0o600 });
   }
-  for (const dir of [p.bin, p.releases, p.backups, p.run, p.config, p.logs, path.dirname(p.plist)]) {
+  for (const dir of [p.bin, p.releases, p.backups, p.run, p.config, p.logs, path.dirname(p.serviceFile)]) {
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   }
   if (!await exists(p.env)) {

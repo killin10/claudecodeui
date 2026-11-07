@@ -1,6 +1,8 @@
-# macOS 本机部署
+# 本机部署（macOS / Linux）
 
-从当前工作区构建，将产物安装到独立版本目录，由用户级 LaunchAgent 后台运行。服务不引用开发仓库的文件或 `node_modules`；移动仓库、切换分支不会改变已安装版本。
+从当前工作区构建，将产物安装到独立版本目录，在 macOS 上由用户级 LaunchAgent 后台运行，在 Linux 上由 systemd 用户服务运行。服务不引用开发仓库的文件或 `node_modules`；移动仓库、切换分支不会改变已安装版本。
+
+树莓派上的 clone、开发、首次安装和后台更新步骤见 [Raspberry Pi 开发与部署](raspberry-pi.md)。支持 64 位 Raspberry Pi OS（Debian 12/13）；不支持 32 位 ARM 系统。
 
 ## 安装
 
@@ -24,20 +26,14 @@ npm run deploy:local -- --node /absolute/path/to/node
 2. 在工作区执行 `npm ci --include=dev`，设置 `HUSKY=0`，不改 Git hooks。
 3. 执行部署测试、typecheck、lint、build，以及前后端测试。应用测试使用临时 HOME，避免写入本机应用数据。
 4. 将产物复制到新 release，单独执行 `npm ci --omit=dev`，检查 SQLite、bcrypt 和实际 PTY 操作。
-5. 停止本工具管理的旧服务，备份数据库，切换 `current`，加载 LaunchAgent。
-6. 校验 launchd PID、应用 marker、`/health` 版本、首页和 JS 资源；成功后保留前一版本。
+5. 停止本工具管理的旧服务，备份数据库，切换 `current`，启动对应平台的服务。
+6. 校验服务 PID、应用 marker、`/health` 版本、首页和 JS 资源；成功后保留前一版本。
 
 构建或依赖安装失败不会停止现有服务。构建输入是**当前工作区**，包括参与构建的未提交修改；元数据记录 commit、dirty 状态、文件状态列表、锁文件摘要和 Node 版本，但 dirty 构建不能仅凭 commit 复现。
 
-### 已知上游 typecheck 问题
+只有明确排查类型检查故障时才使用 `--skip-typecheck`。该参数只跳过 typecheck，仍执行其他检查，并在 `release.json` 记录例外；正常部署不要使用。
 
-当前基线 `13e9ef6` 的 `src/modules/sidebar/tests/recentConversationTitleSync.test.ts:50` 缺少必填参数 `backgroundSessionIds`，会使 `npm run typecheck` 失败。部署脚本不修改业务代码。确认仍是这个既有问题时，可以显式执行：
-
-```bash
-npm run deploy:local -- --skip-typecheck
-```
-
-该参数**只跳过 typecheck**，仍执行构建、lint、部署测试和前后端测试，并在 `release.json` 记录例外。不要用它掩盖新引入的类型错误。
+Linux 首次部署前需以普通用户 SSH 登录，并执行 `sudo loginctl enable-linger "$USER"`，使用户服务在开机后和退出 SSH 后继续运行。安装器检查用户服务管理器和 linger，缺少时会报出操作提示，不会自动执行 sudo。ARM64 部署的前后端测试使用单 worker，测试范围不变。
 
 ## 首次账号初始化与全地址监听
 
@@ -65,8 +61,10 @@ npm run deploy:local -- --skip-typecheck
 | `~/.local/share/cloudcli/run` | 操作锁和最近切换记录 |
 | `~/.config/cloudcli/server.env` | 应用环境配置 |
 | `~/.config/cloudcli/service.json` | Node 绝对路径、版本、服务 PATH |
-| `~/Library/Logs/cloudcli` | 标准输出、错误日志 |
-| `~/Library/LaunchAgents/local.cloudcli.plist` | 用户级 LaunchAgent |
+| `~/Library/Logs/cloudcli` | macOS 标准输出、错误日志 |
+| `~/.local/state/cloudcli/logs` | Linux 标准输出、错误日志及后台部署记录 |
+| `~/Library/LaunchAgents/local.cloudcli.plist` | macOS 用户级 LaunchAgent |
+| `~/.config/systemd/user/local.cloudcli.service` | Linux systemd 用户服务 |
 | `~/.cloudcli` | 应用默认数据；部署不搬迁、不清空 |
 
 `server.env` 示例（完成账号初始化后）：
@@ -79,7 +77,7 @@ SERVER_PORT=3001
 # DATABASE_PATH=/absolute/path/to/auth.db
 ```
 
-配置使用项目现有的简单解析规则：`KEY=value`，不支持 shell 展开，也不去除引号。不要写 `DATABASE_PATH=~/.cloudcli/auth.db`、`$HOME/...` 或给值添加 shell 引号。文档与终端命令可以正常使用 `~`；安装器写入 plist、启动脚本的路径会自动转成绝对路径。
+配置使用项目现有的简单解析规则：`KEY=value`，不支持 shell 展开，也不去除引号。不要写 `DATABASE_PATH=~/.cloudcli/auth.db`、`$HOME/...` 或给值添加 shell 引号。文档与终端命令可以正常使用 `~`；安装器写入服务定义、启动脚本的路径会自动转成绝对路径。
 
 每个 release 的 `.env` 链接到固定 `server.env`。后续部署保留已有配置。两份配置文件初次创建时权限为 `0600`。
 
@@ -100,13 +98,13 @@ SERVER_PORT=3001
 ~/.local/share/cloudcli/bin/cloudcli-service releases
 ```
 
-- `stop`：卸载当前 job，防止 KeepAlive 立即拉起；下次登录仍可自启。
-- `disable`：停止服务并持久关闭登录自启。
+- `stop`：停止当前服务，防止自动重启立即拉起；保留下一次登录/开机自启设置。
+- `disable`：停止服务并持久关闭自动启动。
 - `start` / `enable`：启动服务并恢复自启；服务已运行时验证健康状态。
 - `restart`：停止再启动，配置改动在此时生效。
 - `logs`：显示末尾 100 行后持续跟随，按 Ctrl-C 退出。
 
-LaunchAgent 在**用户登录后**启动，不保证注销后运行，也不阻止系统睡眠。启动命令直接运行编译后的后端，不运行 `npm start`、Vite 或构建命令。
+macOS LaunchAgent 在**用户登录后**启动，不保证注销后运行，也不阻止系统睡眠。Linux 使用 systemd 用户服务及 linger，在开机后自动启动，不依赖 SSH 会话存活。启动命令直接运行编译后的后端，不运行 `npm start`、Vite 或构建命令。
 
 发生版本更新或重启时，活动终端、WebSocket 和 agent 任务可能中断，建议先等待任务结束。
 
@@ -138,7 +136,7 @@ LaunchAgent 在**用户登录后**启动，不保证注销后运行，也不阻�
 ~/.local/share/cloudcli/bin/cloudcli-service uninstall --yes
 ```
 
-删除 LaunchAgent、管理脚本、版本目录和版本链接。保留配置、日志、数据库备份以及 `~/.cloudcli` 和其他 CLI 的数据。卸载后仍保留安装归属标记，便于使用原配置重新安装。
+删除对应平台的服务定义、管理脚本、版本目录和版本链接。保留配置、日志、数据库备份以及 `~/.cloudcli` 和其他 CLI 的数据。卸载后仍保留安装归属标记，便于使用原配置重新安装。
 
 ## 验证与限制
 
@@ -146,9 +144,12 @@ LaunchAgent 在**用户登录后**启动，不保证注销后运行，也不阻�
 ~/.local/share/cloudcli/bin/cloudcli-service status
 curl --fail http://127.0.0.1:3001/health
 lsof -nP -iTCP:3001 -sTCP:LISTEN
+# macOS
 launchctl print gui/$(id -u)/local.cloudcli
+# Linux
+systemctl --user status local.cloudcli.service
 ```
 
-首次部署还应人工检查账号登录，以及所使用 provider 的一次实际调用。安装器的 PTY 检查证明终端原生模块可用，不等于所有 CLI 已认证。登录自启需要实际注销登录或重启后确认。
+首次部署还应人工检查账号登录，以及所使用 provider 的一次实际调用。安装器的 PTY 检查证明终端原生模块可用，不等于所有 CLI 已认证。自动启动需要实际注销登录或重启后确认。
 
 应用原有 Web/CLI 更新入口保持不变，仍可能安装上游 npm 包。**本安装的更新使用仓库里的 `npm run deploy:local`，不要使用应用自带的上游更新按钮。**

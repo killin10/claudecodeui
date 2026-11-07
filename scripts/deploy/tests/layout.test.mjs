@@ -8,7 +8,7 @@ import { initialize, paths, readConfig, renderPlist, resolveRelease, runtimeMani
 async function fixture(t) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudcli home & '));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  return paths(home);
+  return paths(home, 'darwin');
 }
 const runtime = { node: process.execPath, nodeVersion: process.version, path: '/usr/bin:/bin' };
 

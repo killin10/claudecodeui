@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { userBusEnvironment } from './systemd.mjs';
 import { assertOwned, exists, readConfig, resolveRelease } from './layout.mjs';
 
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -43,9 +44,10 @@ export async function launch(p) {
   const env = {
     HOME: p.home, PATH: runtime.path,
     USER: path.basename(p.home), LOGNAME: path.basename(p.home),
-    LANG: 'en_US.UTF-8', TMPDIR: process.env.TMPDIR || '/tmp',
+    LANG: p.platform === 'linux' ? 'C.UTF-8' : 'en_US.UTF-8', TMPDIR: process.env.TMPDIR || '/tmp',
     // Keep access to the login session's SSH agent, not arbitrary terminal secrets.
     ...(process.env.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK } : {}),
+    ...(p.platform === 'linux' ? linuxSessionEnvironment() : {}),
     ...environment, HOST: host, SERVER_PORT: String(port), DATABASE_PATH: database,
   };
   // Do not permit server.env to move the process away from its configured user/runtime.
@@ -72,4 +74,9 @@ async function installCliLink(p) {
   await fs.mkdir(directory, { recursive: true });
   const file = path.join(directory, 'cloudcli');
   if (!await exists(file)) await fs.symlink(path.join(p.bin, 'cloudcli'), file);
+}
+
+function linuxSessionEnvironment() {
+  const env = userBusEnvironment();
+  return { XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: env.DBUS_SESSION_BUS_ADDRESS };
 }

@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { assertOwned, exists, paths, readConfig, resolveRelease, withLock } from './layout.mjs';
-import { createLaunchdAdapter, disableService, jobStatus, localUrl } from './launchd.mjs';
+import { createServiceAdapter, disableService, jobStatus, removeService } from './service-manager.mjs';
+import { localUrl } from './service-health.mjs';
+import { assertOutsideService, systemctl } from './systemd.mjs';
 import { activate } from './activation.mjs';
 import { run } from './release.mjs';
 
@@ -11,7 +13,6 @@ async function main() {
   const p = paths(process.argv[2]);
   const [command = 'status', argument] = process.argv.slice(3);
   if (!commands.includes(command)) throw new Error(`Commands: ${commands.join(', ')}`);
-  if (process.platform !== 'darwin') throw new Error('This deployment manager requires macOS');
   await assertOwned(p);
   const config = await readConfig(p);
   if (command === 'logs') {
@@ -39,14 +40,15 @@ async function main() {
     console.log(JSON.stringify({ ...state, listen: `${config.host}:${config.port}`, current: release, previous: await resolveRelease(p, 'previous'), runtime: config.runtime, health, config: p.config, logs: p.logs }, null, 2));
     return;
   }
+  if (p.platform === 'linux') await assertOutsideService();
   await withLock(p, async () => {
     const current = await resolveRelease(p);
     if (command === 'uninstall') {
       if (argument !== '--yes') throw new Error('Use uninstall --yes. Configuration, logs, backups and ~/.cloudcli data are retained.');
-      const adapter = await createLaunchdAdapter(p, current || p.root);
+      const adapter = await createServiceAdapter(p, current || p.root);
       await adapter.stop();
-      await disableService();
-      await fs.rm(p.plist, { force: true });
+      await disableService(p);
+      await removeService(p);
       await resolveRelease(p, 'previous');
       for (const name of ['current', 'previous']) await fs.rm(path.join(p.root, name), { force: true });
       const cliLink = path.join(p.home, '.local/bin/cloudcli');
@@ -56,10 +58,10 @@ async function main() {
       return;
     }
     if (command === 'stop' || command === 'disable') {
-      const adapter = await createLaunchdAdapter(p, current || p.root);
+      const adapter = await createServiceAdapter(p, current || p.root);
       await adapter.stop();
-      if (command === 'disable') await disableService();
-      console.log(command === 'disable' ? 'Stopped; login startup disabled.' : 'Stopped for this login session. Use disable to turn off login startup.');
+      if (command === 'disable') await disableService(p);
+      console.log(command === 'disable' ? 'Stopped; automatic startup disabled.' : 'Stopped. Use disable to turn off automatic startup.');
       return;
     }
     if (command === 'rollback') {
@@ -67,15 +69,16 @@ async function main() {
       const target = argument ? path.join(p.releases, argument) : await resolveRelease(p, 'previous');
       if (!target) throw new Error('No previous release');
       if (path.dirname(await fs.realpath(target)) !== await fs.realpath(p.releases)) throw new Error('Rollback target is outside managed releases');
-      await activate(p, await fs.realpath(target), await createLaunchdAdapter(p, target), { rollback: true });
+      await activate(p, await fs.realpath(target), await createServiceAdapter(p, target), { rollback: true });
       console.log(`Rolled back to ${target}`);
       return;
     }
     if (!current) throw new Error('No installed release. Run npm run deploy:local first.');
-    const adapter = await createLaunchdAdapter(p, current);
+    const adapter = await createServiceAdapter(p, current);
     await adapter.preflight();
     if (command === 'restart') await adapter.stop();
     if (!(await jobStatus(p)).loaded) await adapter.start();
+    if (p.platform === 'linux') await systemctl(['enable', 'local.cloudcli.service']);
     await adapter.check(current);
     console.log(`Running ${current} at ${config.host}:${config.port}`);
   });

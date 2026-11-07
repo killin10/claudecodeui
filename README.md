@@ -76,6 +76,8 @@ The fastest way to get started — no local setup required. Get a fully managed,
 
 ### Self-Hosted (Open source)
 
+For development and deployment from this fork's `develop` branch, see the [local deployment guide](docs/local-deployment.md) and [Raspberry Pi guide](docs/raspberry-pi.md). The source workflow supports macOS and 64-bit Linux with systemd.
+
 #### npm
 
 Try CloudCLI UI instantly with **npx** (requires **Node.js** v22+):
