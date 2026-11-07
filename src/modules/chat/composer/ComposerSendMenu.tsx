@@ -130,7 +130,7 @@ export default function ComposerSendMenu({ state, hasInput, hasText = hasInput, 
               isSelected={false}
               role="menuitem"
               label={t('sendMenu.steer.label', { defaultValue: 'Steer' })}
-              description={t('sendMenu.steer.description', { defaultValue: 'Send into this turn; read at the next tool call' })}
+              description={t('sendMenu.steer.description', { defaultValue: 'Guide the running task without stopping it' })}
               onSelect={() => select('steer')}
             />
           )}

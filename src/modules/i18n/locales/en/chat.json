@@ -198,7 +198,11 @@
       "sending": "Sending…",
       "willRead": "{{provider}} reads it at its next tool call",
       "attachments_one": "{{count}} file attached",
-      "attachments_other": "{{count}} files attached"
+      "attachments_other": "{{count}} files attached",
+      "awaitingDelivery": "Waiting for {{provider}} to receive it",
+      "uncertain": "Delivery unconfirmed; check the conversation before resending",
+      "disconnected": "Reconnect before sending a steering message.",
+      "cancelled": "Cancelled before delivery"
     }
   },
   "composer": {
@@ -281,7 +285,7 @@
     },
     "steer": {
       "label": "Steer",
-      "description": "Send into this turn; read at the next tool call"
+      "description": "Guide the running task without stopping it"
     },
     "sideQuestion": {
       "label": "Side question",

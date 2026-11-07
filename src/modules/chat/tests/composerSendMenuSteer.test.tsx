@@ -54,7 +54,7 @@ test('while a turn is written, Steer sits right under Queue and reports its choi
   const menu = open();
 
   assert.deepEqual(labels(menu), ['Queue', 'Steer', 'Side question', 'Stop']);
-  assert.match(row(menu, 'Steer').textContent ?? '', /Send into this turn; read at the next tool call/);
+  assert.match(row(menu, 'Steer').textContent ?? '', /Guide the running task without stopping it/);
 
   fireEvent.click(row(menu, 'Steer'));
   assert.deepEqual(onSelect.mock.calls, [['steer']]);

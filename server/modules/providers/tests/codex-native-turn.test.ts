@@ -86,6 +86,8 @@ test('native Codex runs, resumes and forks a persisted thread through app-server
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
-    await rm(directory, { recursive: true, force: true });
+    // The auxiliary fork process can finish its final file writes during shutdown.
+    // Retry only transient removal errors within this test-owned temporary directory.
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

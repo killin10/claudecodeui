@@ -27,9 +27,13 @@ export default function SteeredMessageCard({ steer, providerLabel }: SteeredMess
           <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-primary/80">
             <span>{t('input.steer.label', { defaultValue: 'Steering' })}</span>
             <span className="normal-case text-muted-foreground/70" role="status">
-              · {steer.status === 'sending'
+              · {steer.status === 'cancelled'
+                ? t('input.steer.cancelled', { defaultValue: 'Cancelled before delivery' })
+                : steer.status === 'uncertain'
+                ? t('input.steer.uncertain', { defaultValue: 'Delivery unconfirmed; check the conversation before resending' })
+                : steer.status === 'sending'
                 ? t('input.steer.sending', { defaultValue: 'Sending…' })
-                : t('input.steer.willRead', { provider: providerLabel, defaultValue: '{{provider}} reads it at its next tool call' })}
+                : t('input.steer.awaitingDelivery', { provider: providerLabel, defaultValue: 'Waiting for {{provider}} to receive it' })}
             </span>
           </div>
           <p className="mt-0.5 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-sm text-foreground/90">

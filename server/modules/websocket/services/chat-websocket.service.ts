@@ -641,13 +641,20 @@ async function handleChatSteer(
   }
 
   const run = chatRunRegistry.getRun(sessionId);
-  const steered = run?.status === 'running'
-    ? await dependencies.runtime.steer(provider, sessionId, content, {
-      images: attachments.filter(isImageAttachmentDescriptor),
-      files: attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
-      messageId,
-    })
-    : false;
+  let steered = false;
+  try {
+    steered = run?.status === 'running'
+      ? await dependencies.runtime.steer(provider, sessionId, content, {
+        images: attachments.filter(isImageAttachmentDescriptor),
+        files: attachments.filter((descriptor) => !isImageAttachmentDescriptor(descriptor)),
+        messageId,
+      })
+      : false;
+  } catch (error) {
+    console.error('[Chat] Steering delivery unconfirmed:', { sessionId, messageId, provider }, error);
+    sendProtocolError(ws, 'STEER_UNCERTAIN', 'Delivery could not be confirmed. Check the conversation before resending.', sessionId, { messageId });
+    return;
+  }
 
   if (!steered) {
     sendProtocolError(

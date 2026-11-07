@@ -417,6 +417,8 @@ export function useChatComposerState({
   // renders: a refusal can follow an acceptance before React re-renders.
   // Written only through `updatePendingSteers` below, with the state.
   const pendingSteersRef = useRef(pendingSteers);
+  // Async attachment uploads must check the latest connection before sending.
+  const steeringConnectedRef = useRef(isConnected);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -997,12 +999,23 @@ export function useChatComposerState({
     setPendingSteers(next);
   }, []);
 
+  useEffect(() => {
+    steeringConnectedRef.current = isConnected;
+    if (!isConnected) {
+      updatePendingSteers(current => current.map(steer => steer.status === 'cancelled' ? steer : { ...steer, status: 'uncertain' }));
+    }
+  }, [isConnected, updatePendingSteers]);
+
   // Sends a message into the session's running turn (`chat.steer`): the agent
   // reads it at its next tool call, without the turn stopping. It leaves the
   // composer at once, as a sent message does, and waits as a card until the
   // agent reads it. Attachments must already be uploaded.
   const steerIntoRunningTurn = useCallback(
     (message: { content: string; attachments: File[]; uploadedAttachments: unknown[] }, steerSessionKey: string) => {
+      if (!steeringConnectedRef.current) {
+        addMessage({ type: 'error', content: t('input.steer.disconnected', { defaultValue: 'Reconnect before sending a steering message.' }), timestamp: Date.now() });
+        return;
+      }
       const messageId = createSteerMessageId();
       updatePendingSteers((current) => [...current, {
         messageId,
@@ -1040,7 +1053,7 @@ export function useChatComposerState({
         writeDraftText(steerSessionKey, '');
       }
     },
-    [recordSentMessage, resetCommandMenuState, sendMessage, setInput, updatePendingSteers],
+    [addMessage, recordSentMessage, resetCommandMenuState, sendMessage, setInput, t, updatePendingSteers],
   );
 
   /**
@@ -1060,10 +1073,13 @@ export function useChatComposerState({
       if (!steer) {
         return;
       }
-      if (outcome === 'accepted') {
-        updatePendingSteers((current) => current.map((candidate) => (
-          candidate.messageId === messageId ? { ...candidate, status: 'accepted' } : candidate
-        )));
+      if (outcome === 'accepted' || outcome === 'uncertain' || outcome === 'cancelled') {
+        updatePendingSteers((current) => current.map((candidate) => {
+          if (candidate.messageId !== messageId) return candidate;
+          // A late submission ACK cannot undo a cancellation or uncertainty notice.
+          if (outcome === 'accepted' && (candidate.status === 'cancelled' || candidate.status === 'uncertain')) return candidate;
+          return { ...candidate, status: outcome };
+        }));
         return;
       }
 

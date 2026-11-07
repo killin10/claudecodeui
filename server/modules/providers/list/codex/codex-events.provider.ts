@@ -54,6 +54,10 @@ export class CodexRunEvents {
         this.compaction(method, params);
         return;
       }
+      if (params.item.type === 'userMessage') {
+        this.userMessage(method, threadId, params.item);
+        return;
+      }
       this.items.set(`${threadId}:${params.item.id}`, { ...params.item });
       this.item(threadId, params.item);
       if (method === 'item/completed') {
@@ -66,6 +70,17 @@ export class CodexRunEvents {
     if (method === 'turn/plan/updated') {
       this.emit({ kind: 'tool_use', id: `${params.turnId}:plan`, toolId: `${params.turnId}:plan`, toolName: 'TodoWrite',
         toolInput: { todos: (params.plan ?? []).map((step: AnyRecord) => ({ content: step.step, status: step.status === 'inProgress' ? 'in_progress' : step.status })) } });
+    }
+  }
+
+  private userMessage(method: string, threadId: string, item: AnyRecord): void {
+    if (threadId !== this.rootThread() || !item.clientId || method !== 'item/completed') return;
+    const images = (item.content ?? []).filter((part: AnyRecord) => part.type === 'localImage')
+      .map((part: AnyRecord) => ({ path: part.path }));
+    for (const row of this.context.normalizeMessage({
+      uuid: item.id, message: { role: 'user', content: item.content }, images,
+    }, this.sessionId())) {
+      this.emit({ ...row, steerMessageId: item.clientId });
     }
   }
 

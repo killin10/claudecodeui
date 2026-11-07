@@ -1281,3 +1281,30 @@ test('missed background completion and delivery events reconcile cards, release 
     await rm(dbPath, { force: true });
   }
 });
+
+for (const steering of ['normal', 'stranded'] as const) {
+  test(`V2 steering ${steering}: native inbox reaches the transcript before completion`, async () => {
+    let sent: Promise<boolean> | undefined;
+    const messageId = 'eac02933-7e87-4ad7-8d38-c1a8f7fe1dc4';
+    const result = await runTurn({
+      scenario: { steps: [], steering },
+      onFrame(frame) {
+        if (frame.kind === 'text' && frame.content === 'ready to steer' && !sent) {
+          sent = opencodeRuntime.steer('app-session', 'change course', { messageId });
+        }
+      },
+    });
+    assert.ok(sent);
+    assert.equal(await sent, true);
+    assert.equal(result.error, null);
+    assert.equal(result.frames.filter(frame => frame.kind === 'error').length, 0);
+    const echo = result.frames.findIndex(frame => frame.steerMessageId === messageId && frame.role === 'user');
+    const completed = result.frames.findIndex(frame => frame.kind === 'complete');
+    assert.ok(echo >= 0 && completed > echo, JSON.stringify(result.frames));
+    assert.equal(result.frames[echo].content, 'change course');
+    assert.equal(result.requests.filter(request => request.body?.delivery === 'steer' && request.method === 'POST').length, 1);
+    const wakes = result.requests.filter(request => request.method === 'PATCH' && request.path.includes('/inbox/'));
+    assert.equal(wakes.length, steering === 'stranded' ? 1 : 0);
+    assert.equal(await opencodeRuntime.steer('app-session', 'late', { messageId: 'late' }), false);
+  });
+}

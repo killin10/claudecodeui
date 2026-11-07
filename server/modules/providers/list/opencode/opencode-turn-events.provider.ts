@@ -49,6 +49,8 @@ export class OpenCodeTurnEvents {
     send: ProviderRuntimeWriter['send'];
     finished(): boolean;
     fail(message: string): void;
+    inboxDelivered?(id: string): void;
+    inboxCancelled?(id: string): void;
     foregroundBusy(): void;
     foregroundFinished(): void;
     settleBackground(): void;
@@ -204,6 +206,13 @@ export class OpenCodeTurnEvents {
   private handleRootEvent = async (event: OpenCodeEvent) => {
     const data = event.data as AnyRecord;
     switch (event.type) {
+      case 'session.inbox.delivered':
+        this.context.inboxDelivered?.(event.data.inboxID);
+        this.forwardMessage(event.data.inboxID);
+        return;
+      case 'session.inbox.cancelled':
+        this.context.inboxCancelled?.(event.data.inboxID);
+        return;
       case 'session.shell.started':
       case 'session.shell.ended':
         this.forwardShell(event);
@@ -242,7 +251,10 @@ export class OpenCodeTurnEvents {
         return;
       case 'session.status':
         if (data.sessionID !== this.host.providerSessionId) return;
-        if (event.data.status.type === 'busy') this.sawBusy = true;
+        if (event.data.status.type === 'busy') {
+          this.sawBusy = true;
+          this.context.foregroundBusy();
+        }
         if (event.data.status.type === 'idle' && this.sawBusy) this.context.foregroundFinished();
         return;
       default:

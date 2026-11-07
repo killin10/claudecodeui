@@ -156,6 +156,16 @@
       "willSend": "将在当前完成后发送",
       "edit": "编辑排队消息",
       "delete": "删除排队消息"
+    },
+    "steer": {
+      "label": "引导消息",
+      "sending": "发送中…",
+      "awaitingDelivery": "等待 {{provider}} 接收",
+      "uncertain": "接收结果未确认，请核对会话后再决定是否重发",
+      "attachments_one": "已附加 {{count}} 个文件",
+      "attachments_other": "已附加 {{count}} 个文件",
+      "disconnected": "请恢复连接后再发送引导消息。",
+      "cancelled": "消息在接收前已取消"
     }
   },
   "providerSelection": {
@@ -318,5 +328,11 @@
     "customModelsOnlyHint": "在所有模型选择器中隐藏 {{provider}} 的内置模型，并将您的第一个模型设为默认模型。在您添加模型之前，内置模型仍会显示。",
     "builtInModelsHidden": "开启“仅使用我的模型”时，这些模型不会出现在模型选择器中。",
     "customModelsOnlyFailed": "无法更改此设置。"
+  },
+  "sendMenu": {
+    "steer": {
+      "label": "引导当前任务",
+      "description": "追加指导消息，不中断正在执行的任务"
+    }
   }
 }

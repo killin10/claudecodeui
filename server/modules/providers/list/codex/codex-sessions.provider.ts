@@ -1425,6 +1425,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
             }
             const row: AnyRecord = {
               type: 'user',
+              ...(typeof item.id === 'string' ? { uuid: item.id } : {}),
               timestamp,
               message: { role: 'user', content },
               ...(images ? { images } : {}),

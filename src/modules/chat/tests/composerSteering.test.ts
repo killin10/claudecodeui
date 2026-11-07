@@ -53,12 +53,12 @@ const fakeServer = async (url: RequestInfo | URL, init?: RequestInit): Promise<R
   return json([]);
 };
 
-type Props = { isLoading: boolean; supportsSteering: boolean };
+type Props = { isLoading: boolean; supportsSteering: boolean; isConnected?: boolean };
 
 const render = (initialProps: Partial<Props> = {}) => {
   const sent: Array<Record<string, unknown>> = [];
   const view = renderHook(
-    ({ isLoading, supportsSteering }: Props) => useChatComposerState({
+    ({ isLoading, supportsSteering, isConnected = true }: Props) => useChatComposerState({
       selectedProject: PROJECT,
       selectedSession: SESSION,
       currentSessionId: SESSION.id ?? null,
@@ -73,6 +73,7 @@ const render = (initialProps: Partial<Props> = {}) => {
       tokenBudget: null,
       sendMessage: (message) => { sent.push(message as Record<string, unknown>); },
       supportsSteering,
+      isConnected,
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
       setIsUserScrolledUp: () => undefined,
@@ -239,4 +240,32 @@ test('Steer chosen just as the turn ended sends the message as the next turn', a
 
   assert.equal(steerFrames(sent).length, 0);
   assert.equal(sent.filter((frame) => frame.type === 'chat.send').length, 1);
+});
+
+test('unconfirmed delivery stays visible after completion without queueing or restoring a duplicate draft', async () => {
+  const { view, sent } = render();
+  await steer(view, 'possibly delivered');
+  const messageId = steerFrames(sent)[0].messageId as string;
+  act(() => view.result.current.handleSteerOutcome('session-1', messageId, 'uncertain'));
+  act(() => view.result.current.handleSteerOutcome('session-1', messageId, 'accepted'));
+  view.rerender({ isLoading: false, supportsSteering: true });
+  assert.equal(view.result.current.pendingSteers[0].status, 'uncertain');
+  assert.equal(view.result.current.input, '');
+  assert.equal(queued.size, 0);
+  act(() => view.result.current.handleSteerOutcome('session-1', messageId, 'delivered'));
+  assert.equal(view.result.current.pendingSteers.length, 0);
+});
+
+test('disconnected steering keeps the draft, while an in-flight disconnect marks delivery uncertain', async () => {
+  const { view, sent } = render({ isConnected: false });
+  await steer(view, 'keep my message');
+  assert.equal(steerFrames(sent).length, 0);
+  assert.equal(view.result.current.input, 'keep my message');
+  view.rerender({ isLoading: true, supportsSteering: true, isConnected: true });
+  await steer(view, 'sent once');
+  view.rerender({ isLoading: true, supportsSteering: true, isConnected: false });
+  assert.equal(view.result.current.pendingSteers[0].status, 'uncertain');
+  view.rerender({ isLoading: false, supportsSteering: true, isConnected: true });
+  assert.equal(steerFrames(sent).length, 1);
+  assert.equal(queued.size, 0);
 });

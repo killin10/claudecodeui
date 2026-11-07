@@ -1,4 +1,3 @@
-import { askOpenCodeSideQuestion } from './opencode-side-question.provider.js';
 import fsSync from 'node:fs';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -30,12 +29,14 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 
+import { askOpenCodeSideQuestion } from './opencode-side-question.provider.js';
 import { prepareOpenCodeSession } from './opencode-agent.provider.js';
 import { sendOpenCodeInput } from './opencode-inputs.provider.js';
 import { readOpenCodeCompletion } from './opencode-completion.provider.js';
 import { OpenCodeBackgroundWork } from './opencode-background.provider.js';
 import { startOpenCodeServer } from './opencode-server.provider.js';
 import { readOpenCodeUsage, recordOpenCodeContextWindows } from './opencode-usage.provider.js';
+import { OpenCodeSteering } from './opencode-steering.provider.js';
 import { OpenCodeTurnEvents } from './opencode-turn-events.provider.js';
 import { OpenCodePermissionGateway, resolveOpenCodePrompt, getPendingOpenCodePrompts, cancelOpenCodePrompts } from './opencode-permissions.provider.js';
 
@@ -92,6 +93,7 @@ type OpenCodeTurn = {
   finish(): void;
   work: OpenCodeBackgroundWork;
   directory: string;
+  steer(command: string, options: AnyRecord): Promise<boolean>;
 };
 
 // A completed foreground turn can retain its server while child sessions run.
@@ -263,11 +265,13 @@ class OpenCodeRun {
   private readonly turn: OpenCodeTurn;
   private readonly gateway: OpenCodePermissionGateway;
   private readonly events: OpenCodeTurnEvents;
+  private readonly steering: OpenCodeSteering;
   private readonly errors = new Set<string>();
   private projectId: string | undefined;
   private ended = false;
   private error: string | null = null;
   private rootIdle = false;
+  private foregroundStarted = false;
   private completeSent = false;
   private backgroundTimer: ReturnType<typeof setTimeout> | undefined;
   private reconciliationTimer: ReturnType<typeof setInterval> | undefined;
@@ -288,8 +292,22 @@ class OpenCodeRun {
       key: this.appSessionId ?? nativeId ?? `opencode-${Date.now()}`,
       abortController: new AbortController(), server: null, client: null,
       providerSessionId: nativeId, aborted: false, abortFinished: null,
+      steer: (command, options) => this.steer(command, options),
       finish: this.finish, work: new OpenCodeBackgroundWork(), directory: this.directory,
     };
+    this.steering = new OpenCodeSteering({
+      client: () => this.turn.client!, sessionId: () => this.turn.providerSessionId!,
+      directory: this.directory, signal: this.turn.abortController.signal,
+      settled: () => { if (this.rootIdle && !this.ended && !this.error && !this.turn.aborted) this.finishForeground(); },
+      fail: error => {
+        console.error('[OpenCode] Steering failed:', this.sessionId(), error);
+        this.fail(`OpenCode steering: ${readOpenCodeErrorMessage(error)}`);
+      },
+      notice: (messageId, state) => this.send(createNormalizedMessage({
+        kind: 'status', text: `steer_${state}`, steerMessageId: messageId,
+        sessionId: this.sessionId(), provider: PROVIDER,
+      })),
+    });
     this.gateway = new OpenCodePermissionGateway(this.turn, {
       appSessionId: this.appSessionId, directory: this.directory,
       permissionMode: options.permissionMode, sessionSummary: options.sessionSummary,
@@ -298,8 +316,13 @@ class OpenCodeRun {
     });
     this.events = new OpenCodeTurnEvents(this.turn, {
       directory: this.directory, gateway: this.gateway, sessionId: this.sessionId,
-      normalize: context.normalizeMessage, send: this.send, finished: () => this.ended, fail: this.fail,
-      foregroundBusy: () => { this.rootIdle = false; }, foregroundFinished: this.finishForeground,
+      normalize: (raw, sessionId) => context.normalizeMessage(raw, sessionId).map(row => ({
+        ...row, steerMessageId: this.steering.messageId(row.id),
+      })),
+      inboxDelivered: id => this.steering.delivered(id),
+      inboxCancelled: id => this.steering.cancelled(id),
+      send: this.send, finished: () => this.ended, fail: this.fail,
+      foregroundBusy: () => { this.rootIdle = false; this.foregroundStarted = true; }, foregroundFinished: this.finishForeground,
       settleBackground: this.settleBackground, sendTokenUsage: this.sendTokenUsage,
     });
   }
@@ -327,6 +350,13 @@ class OpenCodeRun {
     await this.reportOutcome();
   }
 
+  private async steer(command: string, options: AnyRecord): Promise<boolean> {
+    if (!this.foregroundStarted || this.rootIdle || this.error || this.ended || this.turn.aborted || this.completeSent || !this.turn.client || !this.turn.providerSessionId) {
+      return false;
+    }
+    return this.steering.send(command, options);
+  }
+
   private sessionId = () => this.appSessionId ?? this.turn.providerSessionId ?? this.turn.key;
   private send = (message: unknown) => {
     this.writer.send(message);
@@ -352,6 +382,10 @@ class OpenCodeRun {
   private finishForeground = () => {
     this.rootIdle = true;
     this.sendTokenUsage();
+    if (this.steering.pending) {
+      this.steering.wakePending();
+      return;
+    }
     if (!this.turn.work.pending) {
       this.finish();
       return;
@@ -366,7 +400,7 @@ class OpenCodeRun {
   };
 
   private settleBackground = () => {
-    if (this.rootIdle && !this.turn.work.pending) this.finish();
+    if (this.rootIdle && !this.turn.work.pending && !this.steering.pending) this.finish();
   };
 
   private async reconcileBackground(): Promise<void> {
@@ -496,6 +530,7 @@ class OpenCodeRun {
 
   private async cleanup(): Promise<void> {
     this.ended = true;
+    this.steering.close();
     if (!this.turn.aborted && this.error && this.turn.work.tasks.size > 0) await interruptTurnWork(this.turn);
     clearTimeout(this.backgroundTimer);
     clearInterval(this.reconciliationTimer);
@@ -602,6 +637,10 @@ export function isOpenCodeSessionActive(sessionId: string): boolean {
 export const opencodeRuntime = {
   askSideQuestion: askOpenCodeSideQuestion,
   run: runOpenCodeTurn,
+  async steer(sessionId: string, command: string, options: AnyRecord): Promise<boolean> {
+    const turn = [...liveTurns].find(candidate => candidate.key === sessionId);
+    return turn ? turn.steer(command, options) : false;
+  },
   abort: abortOpenCodeSession,
   listBackgroundWork: () => Array.from(liveTurns)
     .map((turn) => ({ sessionId: turn.key, tasks: turn.work.runningTasks }))

@@ -271,3 +271,57 @@ test('persistent Codex command approval uses only the prefix proposed by the nat
   rpc.complete();
   await running;
 });
+
+for (const withImages of [false, true]) {
+  test(`Codex steers the root turn with stable correlation (images=${withImages})`, async t => {
+    const { run, rpc, messages } = fixture(t, () => {});
+    const running = run();
+    await new Promise(resolve => setImmediate(resolve));
+    const originalCall = rpc.call.bind(rpc);
+    t.mock.method(rpc, 'call', async (method: string, params: AnyRecord) => {
+      if (method !== 'turn/steer') return originalCall(method, params);
+      rpc.calls.push({ method, params });
+      rpc.emit('item/completed', { threadId: 'native-thread', item: {
+        type: 'userMessage', id: 'native-user-id', clientId: params.clientUserMessageId, content: params.input,
+      } });
+      return { turnId: 'turn' };
+    });
+    // A child turn must never become the steering target.
+    rpc.emit('turn/started', { threadId: 'child-thread', turn: { id: 'child-turn' } });
+    const options = { messageId: 'request-id', ...(withImages ? { images: [{ path: path.join(process.cwd(), 'public/favicon.png'), mimeType: 'image/png' }] } : {}) };
+    assert.equal(await codexRuntime.steer('app-session', 'change course', options), true);
+    assert.equal(await codexRuntime.steer('app-session', 'change course', options), true);
+    const calls = rpc.calls.filter(call => call.method === 'turn/steer');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].params.threadId, 'native-thread');
+    assert.equal(calls[0].params.expectedTurnId, 'turn');
+    assert.equal(calls[0].params.clientUserMessageId, 'request-id');
+    assert.equal(calls[0].params.model, undefined);
+    const echo = messages.find(message => message.steerMessageId === 'request-id');
+    assert.equal(echo?.id, 'native-user-id');
+    assert.equal(echo?.content, 'change course');
+    if (withImages) assert.equal(echo?.images[0].path, path.join(process.cwd(), 'public/favicon.png'));
+    rpc.emit('turn/completed', { threadId: 'child-thread', turn: { id: 'child-turn', status: 'completed' } });
+    rpc.complete();
+    await running;
+    assert.equal(await codexRuntime.steer('app-session', 'late', { messageId: 'late-id' }), false);
+  });
+}
+
+test('Codex steering only falls back on an explicit inactive-turn rejection', async t => {
+  const { run, rpc } = fixture(t, () => {});
+  const running = run();
+  await new Promise(resolve => setImmediate(resolve));
+  const originalCall = rpc.call.bind(rpc);
+  let failure = Object.assign(new Error('no active turn'), { code: -32600 });
+  t.mock.method(rpc, 'call', async (method: string, params: AnyRecord) => {
+    if (method === 'turn/steer') throw failure;
+    return originalCall(method, params);
+  });
+  assert.equal(await codexRuntime.steer('app-session', 'late', { messageId: 'late' }), false);
+  failure = Object.assign(new Error('connection lost after write'), { code: -1 });
+  await assert.rejects(codexRuntime.steer('app-session', 'unknown', { messageId: 'unknown' }), /connection lost/);
+  assert.equal(rpc.closed, false);
+  rpc.complete();
+  await running;
+});

@@ -194,6 +194,10 @@ export function useChatRealtimeHandlers({
             onSteerOutcome?.(sid, msg.messageId, 'refused');
             return;
           }
+          if (sid && msg.code === 'STEER_UNCERTAIN' && typeof msg.messageId === 'string') {
+            onSteerOutcome?.(sid, msg.messageId, 'uncertain');
+            return;
+          }
           console.error('[Chat] Protocol error:', msg.code, msg.error);
           // The ✕ on a task whose end never reached this client (its process
           // went away, say): settle its card and chip instead of reporting a
@@ -321,11 +325,16 @@ export function useChatRealtimeHandlers({
         sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
       }
 
+      if (sid && msg.kind === 'status' && (msg.text === 'steer_uncertain' || msg.text === 'steer_cancelled') && typeof msg.steerMessageId === 'string') {
+        onSteerOutcome?.(sid, msg.steerMessageId, msg.text === 'steer_cancelled' ? 'cancelled' : 'uncertain');
+        return;
+      }
+
       // A user message on the live stream is a steered message the agent just
       // read (the turn's own prompt is never echoed); the composer drops its
       // card if it is one of its own.
       if (sid && msg.kind === 'text' && msg.role === 'user' && typeof msg.id === 'string') {
-        onSteerOutcome?.(sid, msg.id, 'delivered');
+        onSteerOutcome?.(sid, typeof msg.steerMessageId === 'string' ? msg.steerMessageId : msg.id, 'delivered');
       }
 
       // --- UI side effects for specific kinds ---

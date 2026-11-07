@@ -550,6 +550,8 @@ export type SideQuestionEvent = {
 /** A provider-agnostic transcript event as normalized by the backend adapters, with all kind-specific fields kept flat; it is the shape the session store holds and that chat converts into ChatMessage for rendering, so treat it as the wire contract rather than a view model. */
 export type NormalizedMessage = {
   id: string;
+  /** Client steering request correlated with this native user-message delivery. */
+  steerMessageId?: string;
   /**
    * The provider's own id for the transcript row behind this message, when the
    * provider has stable per-row identity (today: Claude). Sent back as the
@@ -848,7 +850,7 @@ export type QueuedDraft = {
  * `accepted`. Local to the tab that sent it.
  */
 export type PendingSteer = {
-  /** The UUID the message was sent with; its transcript row and live echo carry it too. */
+  /** Client request UUID; delivery echoes correlate via steerMessageId or their native row ID. */
   messageId: string;
   /** The session whose turn it was sent into. */
   sessionKey: string;
@@ -857,7 +859,7 @@ export type PendingSteer = {
   attachments: File[];
   /** Descriptors uploaded before it was sent, reused if it has to be queued instead. */
   uploadedAttachments: unknown[];
-  status: 'sending' | 'accepted';
+  status: 'sending' | 'accepted' | 'uncertain' | 'cancelled';
 };
 
 /**
@@ -866,8 +868,10 @@ export type PendingSteer = {
  * had already ended, so it should go out as the next turn) or `delivered` (the
  * agent read it; its echo is in the transcript). `delivered` is reported for
  * every live user message, so the composer matches it against its own ids.
+ * `uncertain` keeps a warning without automatic resend when delivery cannot be confirmed;
+ * `cancelled` records native cancellation without interrupting the parent or resending.
  */
-export type SteerOutcome = 'accepted' | 'refused' | 'delivered';
+export type SteerOutcome = 'accepted' | 'refused' | 'delivered' | 'uncertain' | 'cancelled';
 
 /** The answer to the prompt shown when sending over a session's background work: send now (stopping that work), queue the message until the work finishes, ask a side question instead, or do nothing. */
 export type BackgroundSendChoice = 'send' | 'queue' | 'sideQuestion' | 'cancel';

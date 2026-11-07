@@ -1,11 +1,10 @@
-import type { SideQuestionOutcome, SideQuestionRequest, SideQuestionSink } from '@/shared/types.js';
 import { codexAppServer, type CodexRpcConnection } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { CodexRunEvents } from '@/modules/providers/list/codex/codex-events.provider.js';
 import { codexPermissions, CodexRunPermissions } from '@/modules/providers/list/codex/codex-permissions.provider.js';
 import { notifyBackgroundWorkCompleted, notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from '@/shared/image-attachments.js';
 import { createCompleteMessage } from '@/shared/utils.js';
-import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/types.js';
+import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter, SideQuestionOutcome, SideQuestionRequest, SideQuestionSink } from '@/shared/types.js';
 
 const active = new Map<string, CodexRun>();
 const MAX_RUN_MS = 4 * 60 * 60 * 1000;
@@ -17,6 +16,7 @@ class CodexRun {
   readonly events: CodexRunEvents;
   lifetime?: Promise<void>;
   private reportedComplete = false;
+  private readonly steering = new Map<string, Promise<boolean>>();
   private generation = 0;
   private readonly output: ProviderRuntimeWriter;
   private permissions?: CodexRunPermissions;
@@ -160,6 +160,39 @@ class CodexRun {
     this.checkComplete();
     return true;
   }
+  steer(command: string, options: AnyRecord): Promise<boolean> {
+    const existing = this.steering.get(options.messageId);
+    if (existing) return existing;
+    const submitted = this.sendSteer(command, options);
+    this.steering.set(options.messageId, submitted);
+    return submitted;
+  }
+
+  private async sendSteer(command: string, options: AnyRecord): Promise<boolean> {
+    const turnId = this.events.activeTurns.get(this.threadId);
+    if (!turnId || !this.connection || this.stopped || this.reportedComplete || this.mainComplete) {
+      return false;
+    }
+    const cwd = this.options.cwd || this.options.projectPath || process.cwd();
+    const images = normalizeImageDescriptors(options.images);
+    const text = appendFilesInputTag(command, options.files);
+    const input = buildCodexInputItems(text || 'Please analyze the attached image(s).', images, cwd)
+      .map(item => item.type === 'text' ? { ...item, text_elements: [] } : { ...item, type: 'localImage' });
+    try {
+      const result = await this.connection.call('turn/steer', {
+        threadId: this.threadId, expectedTurnId: turnId,
+        clientUserMessageId: options.messageId, input,
+      });
+      if (result?.turnId !== turnId) throw new Error('Codex returned an unexpected steering turn ID');
+      return true;
+    } catch (error) {
+      // Only a native precondition rejection is safe to resend as a new turn.
+      if (error instanceof Error && 'code' in error && error.code === -32600
+        && /no active turn|turn.*mismatch|expected.*turn/i.test(error.message)) return false;
+      throw error;
+    }
+  }
+
   private async prepare(command: string): Promise<AnyRecord> {
     const { sessionId, model, effort, files, images } = this.options;
     const cwd = this.options.cwd || this.options.projectPath || process.cwd();
@@ -423,6 +456,9 @@ async function askCodexSideQuestion(
 
 export const codexRuntime = {
   askSideQuestion: askCodexSideQuestion,
+  async steer(sessionId: string, command: string, options: AnyRecord): Promise<boolean> {
+    return await active.get(sessionId)?.steer(command, options) ?? false;
+  },
   async run(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
     const previous = active.get(options.sessionId);
     if (previous?.canContinue(context.resolveProviderSessionId(options.sessionId))) {

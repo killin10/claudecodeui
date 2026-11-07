@@ -47,6 +47,7 @@ type Scenario = {
   models?: unknown[];
   /** Answered with a status instead of 204, as OpenCode does for a bad prompt. */
   promptStatus?: number;
+  steering?: 'normal' | 'stranded';
   /** Native validation can reject a reply without settling the form. */
   formReplyFailures?: number;
   /** Fail before applying a native mutation, allowing retry/state assertions on the same host. */
@@ -154,6 +155,15 @@ const emitPart = (sessionID: string, part: Record<string, any>) => {
   emit(type, { sessionID, assistantMessageID: messageID, ordinal: 0, text: part.text });
 };
 
+let steeringSubmitted: (() => void) | undefined;
+const steeringInputs = new Map<string, Record<string, any>>();
+function deliverSteering(sessionID: string, id: string): void {
+  const input = steeringInputs.get(id)!;
+  steeringInputs.delete(id);
+  messages.set(id, { id, type: 'user', text: input.text, files: input.files, time: { created: Date.now() } });
+  emit('session.inbox.delivered', { sessionID, inboxID: id });
+}
+
 const sendJson = (res: http.ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -191,6 +201,11 @@ async function runTurn(sessionID: string): Promise<void> {
   }
 
   emit('session.execution.started', { sessionID });
+  if (scenario.steering) {
+    const submitted = new Promise<void>(resolve => { steeringSubmitted = resolve; });
+    emitPart(sessionID, { type: 'text', text: 'ready to steer' });
+    await submitted;
+  }
   for (const event of scenario.events ?? []) emit(event.type, event.data, event.location);
   emit('message.updated', { sessionID, info: { id: 'msg_assistant', sessionID, role: 'assistant' } });
 
@@ -470,7 +485,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'PATCH' && (match = /^\/session\/([^/]+)\/inbox\/([^/]+)$/.exec(path))) {
+    res.writeHead(204);
+    res.end();
+    emit('session.execution.started', { sessionID: match[1] });
+    deliverSteering(match[1], match[2]);
+    emit('session.execution.succeeded', { sessionID: match[1] });
+    return;
+  }
+
   if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/(prompt|command|compact)$/.exec(path))) {
+    const input = body as Record<string, any>;
+    if (input.delivery === 'steer') {
+      steeringInputs.set(input.id, input);
+      emit('session.inbox.enqueued', { sessionID: match[1], inboxID: input.id, item: {
+        type: 'user', payload: { text: input.text, files: input.files }, delivery: 'steer',
+      } });
+      if (scenario.steering === 'normal') deliverSteering(match[1], input.id);
+      sendJson(res, 200, { data: { id: input.id, sessionID: match[1], type: 'user' } });
+      steeringSubmitted?.();
+      return;
+    }
     if (scenario.promptStatus) {
       sendJson(res, scenario.promptStatus, { name: 'BadRequest', data: { message: 'The prompt was refused' } });
       return;

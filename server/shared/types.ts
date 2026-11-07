@@ -454,6 +454,8 @@ export type CompactionInfo = {
 
 export type NormalizedMessage = {
   id: string;
+  /** Client steering request correlated with this native user-message delivery. */
+  steerMessageId?: string;
   /**
    * The provider's own identifier for the transcript row this message came
    * from, when the provider has stable per-row identity (today: Claude's

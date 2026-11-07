@@ -101,7 +101,7 @@ Handled by `server/modules/websocket/services/chat-websocket.service.ts`.
 | --- | --- |
 | `chat.send` | Start a run for a session. |
 | `chat.edit-send` | Replace an already-sent message and re-run from that anchor. |
-| `chat.steer` | Send a message into the running turn: the model reads it at its next tool call, without the turn stopping. |
+| `chat.steer` | Send a message into the running turn: the provider delivers it at an execution boundary, without stopping the task. |
 | `chat.abort` | Stop the running run. |
 | `chat.subscribe` | Watch one or more sessions, replaying from `lastSeq`. |
 | `chat.permission-response` | Answer a `permission_request`. |
@@ -189,3 +189,13 @@ how the pieces fit together.
 - `server/modules/websocket/README.md` — the gateway's service map.
 - `server/modules/providers/README.md` — the provider abstraction.
 - `src/modules/chat/tools/README.md` — the tool config registry, from the module's side.
+
+## Steering on develop
+
+Claude, Codex and OpenCode V2 expose `chat.steer` through the existing send menu. Steering retains the active turn’s model and permissions. Slash commands remain ordinary queued messages.
+
+- Claude writes to the held SDK input stream.
+- Codex reuses the active app-server connection and calls `turn/steer` with the root thread, `expectedTurnId` and `clientUserMessageId`. Native user-message IDs remain the transcript identity; `steerMessageId` correlates the client card with delivery. This requires an app-server version supporting client user-message correlation.
+- OpenCode sends `session.prompt` with a stable inbox ID and `delivery: "steer"`. An inbox delivery event triggers the authoritative user-message read. If execution finishes with pending input, CloudCLI wakes that same inbox item with `session.inbox.update`, keeping the host alive until delivery and subsequent execution finish. It does not submit a second prompt.
+
+`chat_steer_accepted` acknowledges submission, not delivery. Only an explicit refusal permits fallback to an ordinary queued message. Ambiguous failures produce `STEER_UNCERTAIN`; the composer retains a warning and does not resend automatically. A late native echo settles that warning. Native inbox cancellation produces a cancelled card without stopping the parent task or resending the input. OpenCode shuts down with an uncertainty notice for any still-undelivered input, which may remain in its durable native inbox.

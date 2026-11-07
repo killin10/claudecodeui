@@ -33,7 +33,7 @@ type SteerCall = { provider: string; sessionId: string; command: string; options
  * `running` decides whether the session has a chat run in progress.
  */
 async function withGateway(
-  { accepts, running }: { accepts: boolean; running: boolean },
+  { accepts, running, error }: { accepts: boolean; running: boolean; error?: Error },
   runTest: (context: { socket: ReturnType<typeof createFakeSocket>; steers: SteerCall[] }) => Promise<void>,
 ): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -66,6 +66,7 @@ async function withGateway(
           hasRuntime: () => true,
           steer: async (provider: string, sessionId: string, command: string, options: AnyRecord) => {
             steers.push({ provider, sessionId, command, options });
+            if (error) throw error;
             return accepts;
           },
         } as never,
@@ -155,5 +156,17 @@ test('an empty steer is refused before it reaches the runtime', async () => {
 
     assert.equal(steers.length, 0);
     assert.equal(socket.frames.at(-1)?.code, 'MESSAGE_REQUIRED');
+  });
+});
+
+test('an ambiguous runtime failure is correlated and never authorizes automatic resend', async () => {
+  await withGateway({ accepts: false, running: true, error: new Error('response lost') }, async ({ socket }) => {
+    socket.emit('message', JSON.stringify({ type: 'chat.steer', sessionId: SESSION_ID, messageId: MESSAGE_ID, content: 'once' }));
+    await settle();
+    const failure = socket.frames.find(frame => frame.code === 'STEER_UNCERTAIN');
+    assert.equal(failure?.messageId, MESSAGE_ID);
+    assert.equal(failure?.sessionId, SESSION_ID);
+    assert.equal(socket.frames.some(frame => frame.code === 'STEER_UNAVAILABLE'), false);
+    assert.equal(chatRunRegistry.getRun(SESSION_ID)?.status, 'running');
   });
 });

@@ -142,7 +142,16 @@ export class CodexRpcConnection {
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.close(new Error(`Codex app-server timed out: ${method}`)), REQUEST_TIMEOUT_MS);
+      const timer = setTimeout(() => {
+        const error = new Error(`Codex app-server timed out: ${method}`);
+        if (method === 'turn/steer') {
+          // Input may have landed. Report uncertainty without terminating the main turn.
+          this.pending.delete(id);
+          reject(error);
+          return;
+        }
+        this.close(error);
+      }, REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timer });
       this.write({ id, method, params: params as AnyRecord });
     });
@@ -222,7 +231,7 @@ export class CodexRpcConnection {
     this.pending.delete(message.id as number);
     clearTimeout(entry.timer);
     if (message.error) {
-      entry.reject(new Error(message.error.message || 'Codex request failed'));
+      entry.reject(Object.assign(new Error(message.error.message || 'Codex request failed'), { code: message.error.code }));
     } else {
       entry.resolve(message.result);
     }
