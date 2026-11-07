@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { exists, resolveRelease, runtimeManifest } from './layout.mjs';
@@ -55,15 +54,9 @@ export async function stageRelease(source, p, runtime, { skipTypecheck = false }
   }
   const env = { ...process.env, PATH: `${path.dirname(runtime.node)}:${runtime.path}`, HUSKY: '0', ELECTRON_SKIP_BINARY_DOWNLOAD: '1' };
   await run('npm', ['ci', '--include=dev', '--no-audit', '--no-fund'], { cwd: source, env });
-  for (const script of ['test:deploy', ...(!skipTypecheck ? ['typecheck'] : []), 'lint', 'build']) {
+  for (const script of [...(!skipTypecheck ? ['typecheck'] : []), 'lint', 'build']) {
     await run('npm', ['run', script], { cwd: source, env });
   }
-  const testHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudcli-test-home-'));
-  try {
-    for (const script of ['test', 'test:client']) {
-      await run('npm', testArguments(script), { cwd: source, env: { ...env, HOME: testHome } });
-    }
-  } finally { await fs.rm(testHome, { recursive: true, force: true }); }
   const git = (...args) => execFileSync('git', args, { cwd: source, encoding: 'utf8' }).trim();
   const manifest = JSON.parse(await fs.readFile(path.join(source, 'package.json'), 'utf8'));
   const commit = git('rev-parse', 'HEAD');
@@ -88,13 +81,6 @@ export async function stageRelease(source, p, runtime, { skipTypecheck = false }
     await fs.rm(release, { recursive: true, force: true });
     throw error;
   }
-}
-
-export function testArguments(script, platform = process.platform, arch = process.arch) {
-  const args = ['run', script];
-  if (platform !== 'linux' || arch !== 'arm64') return args;
-  // Keep the full suite while limiting parallel memory use on Raspberry Pi.
-  return [...args, '--', ...(script === 'test' ? ['--test-concurrency=1'] : ['--maxWorkers=1', '--minWorkers=1'])];
 }
 
 export async function pruneReleases(p, keep = 3) {

@@ -10,7 +10,6 @@ import { initialize, paths, verifyServiceFile } from '../layout.mjs';
 import { renderUnit, unitQuote } from '../systemd-unit.mjs';
 import { checkSystemdEnvironment, createSystemdAdapter, insideService, jobStatus, userBusEnvironment } from '../systemd.mjs';
 import { backgroundArguments, startBackgroundDeployment } from '../background.mjs';
-import { testArguments } from '../release.mjs';
 
 async function fixture(t) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cloudcli-linux-'));
@@ -192,10 +191,4 @@ test('background worker persists success and failure after its child exits', asy
     assert.equal(status.code, code);
     assert.equal(result.status, code === 0 ? 0 : 1);
   }
-});
-
-test('ARM64 deployment limits test parallelism without skipping suites or changing Mac defaults', () => {
-  assert.deepEqual(testArguments('test', 'linux', 'arm64'), ['run', 'test', '--', '--test-concurrency=1']);
-  assert.deepEqual(testArguments('test:client', 'linux', 'arm64'), ['run', 'test:client', '--', '--maxWorkers=1', '--minWorkers=1']);
-  assert.deepEqual(testArguments('test', 'darwin', 'arm64'), ['run', 'test']);
 });

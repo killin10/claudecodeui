@@ -62,7 +62,7 @@ ssh -N -L 5173:127.0.0.1:5173 -L 3002:127.0.0.1:3002 pi@raspberrypi.local
 
 独立数据库只隔离 CloudCLI 的账号、会话索引和调度数据，provider 的原始会话、插件和 `~/.cloudcli` 下的其他文件仍可能共享。需要同时测试有副作用的任务、插件或调度时，使用独立 Linux 用户进行开发，或先停止部署服务。`deploy:local` 会重新执行 `npm ci` 并更新工作区构建目录，部署期间先退出开发进程。
 
-手工验证命令：
+开发阶段的验证命令：
 
 ```bash
 npm run test:deploy
@@ -73,7 +73,7 @@ npm run test -- --test-concurrency=1
 npm run test:client -- --maxWorkers=1 --minWorkers=1
 ```
 
-部署脚本会自动执行这些检查，ARM64 下自动降低测试并行度。若构建因内存耗尽退出，先检查 `free -h` 和系统 OOM 日志，配置适合机器容量的 swap，或减少同机任务；不要通过跳过检查掩盖失败。
+测试在开发阶段完成，上述命令限制了 ARM64 的测试并行度。部署只执行 typecheck、lint、build、原生模块检查和服务健康检查，不重复执行测试。若构建因内存耗尽退出，先检查 `free -h` 和系统 OOM 日志，配置适合机器容量的 swap，或减少同机任务；不要通过跳过检查掩盖失败。
 
 ## 首次部署
 

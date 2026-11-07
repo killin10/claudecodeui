@@ -24,7 +24,7 @@ npm run deploy:local -- --node /absolute/path/to/node
 
 1. 检查安装目录归属和配置，获得部署互斥锁。
 2. 在工作区执行 `npm ci --include=dev`，设置 `HUSKY=0`，不改 Git hooks。
-3. 执行部署测试、typecheck、lint、build，以及前后端测试。应用测试使用临时 HOME，避免写入本机应用数据。
+3. 执行 typecheck、lint 和 build。测试在开发阶段完成，部署不再执行 `test:deploy`、`test` 或 `test:client`。
 4. 将产物复制到新 release，单独执行 `npm ci --omit=dev`，检查 SQLite、bcrypt 和实际 PTY 操作。
 5. 停止本工具管理的旧服务，备份数据库，切换 `current`，启动对应平台的服务。
 6. 校验服务 PID、应用 marker、`/health` 版本、首页和 JS 资源；成功后保留前一版本。
@@ -33,7 +33,7 @@ npm run deploy:local -- --node /absolute/path/to/node
 
 只有明确排查类型检查故障时才使用 `--skip-typecheck`。该参数只跳过 typecheck，仍执行其他检查，并在 `release.json` 记录例外；正常部署不要使用。
 
-Linux 首次部署前需以普通用户 SSH 登录，并执行 `sudo loginctl enable-linger "$USER"`，使用户服务在开机后和退出 SSH 后继续运行。安装器检查用户服务管理器和 linger，缺少时会报出操作提示，不会自动执行 sudo。ARM64 部署的前后端测试使用单 worker，测试范围不变。
+Linux 首次部署前需以普通用户 SSH 登录，并执行 `sudo loginctl enable-linger "$USER"`，使用户服务在开机后和退出 SSH 后继续运行。安装器检查用户服务管理器和 linger，缺少时会报出操作提示，不会自动执行 sudo。ARM64 开发阶段的测试建议使用单 worker，具体命令见树莓派开发指南。
 
 ## 首次账号初始化与全地址监听
 
