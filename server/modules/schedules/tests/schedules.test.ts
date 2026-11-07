@@ -188,6 +188,8 @@ test('submission result, restart interruption and queue cancellation are visible
   const manual = schedulesService.run(user, task.scheduleId);
   const dispatcher = createSubmissionDispatcher({
     hasRuntime: () => true,
+    steer: async () => false,
+    askSideQuestion: async () => ({ status: 'done', answer: 'test answer' }),
     hasBackgroundWork: () => false,
     getPendingApprovalsForSession: () => [],
     resolveToolApproval() {},

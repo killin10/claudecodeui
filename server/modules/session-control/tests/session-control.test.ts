@@ -47,7 +47,9 @@ async function fixture(t: test.TestContext) {
 
 function fakeRuntime(overrides: Partial<ProviderRuntimeGateway> = {}): ProviderRuntimeGateway {
   return {
-    hasRuntime: () => true, hasBackgroundWork: () => false,
+    hasRuntime: () => true,
+    steer: async () => false,
+    askSideQuestion: async () => ({ status: 'done', answer: 'test answer' }), hasBackgroundWork: () => false,
     getPendingApprovalsForSession: () => [], resolveToolApproval() { },
     abort: async () => true, stopBackgroundTask: async () => false,
     run: async (provider, content, options, writer) => {

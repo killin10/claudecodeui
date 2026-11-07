@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
-import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { connectedClients, broadcastToConnectedClients } from '@/modules/websocket/services/websocket-state.service.js';
 import type { SessionUpsertedEvent } from '@/shared/types.js';
 
 /**
@@ -70,26 +70,12 @@ async function buildSessionUpsertedEvent(
   };
 }
 
-function sendToConnectedClients(payloads: string[]): void {
-  if (payloads.length === 0) {
-    return;
-  }
-
-  connectedClients.forEach((client) => {
-    if (client.readyState === WS_OPEN_STATE) {
-      for (const payload of payloads) {
-        client.send(payload);
-      }
-    }
-  });
-}
-
 /** Announces one session. Used by the chat run registry when a run reports its provider-native id. */
 export async function broadcastSessionUpserted(sessionIdOrProviderSessionId: string, metadataOnly = false): Promise<void> {
   if (connectedClients.size === 0) return;
   const event = await buildSessionUpsertedEvent(sessionIdOrProviderSessionId);
   if (event) {
-    sendToConnectedClients([JSON.stringify({ ...event, metadataOnly })]);
+    broadcastToConnectedClients([JSON.stringify({ ...event, metadataOnly })]);
   }
 }
 
@@ -113,7 +99,7 @@ export { buildSessionUpsertedEvent };
 /** Used by session mutations to remove rows from every connected sidebar. */
 export function broadcastSessionRemoved(sessionId: string, projectPath: string | null): void {
   const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
-  sendToConnectedClients([JSON.stringify({
+  broadcastToConnectedClients([JSON.stringify({
     kind: 'session_removed', sessionId, projectId: project?.project_id ?? null,
     total: sessionsDb.getRecentSessionsPage(0, 0).total,
     projectTotal: projectPath ? sessionsDb.countSessionsByProjectPath(projectPath) : 0,
@@ -122,5 +108,5 @@ export function broadcastSessionRemoved(sessionId: string, projectPath: string |
 
 /** Project archive/restore/delete changes list membership beyond a single row. */
 export function broadcastSidebarInvalidated(): void {
-  sendToConnectedClients([JSON.stringify({ kind: 'sidebar_invalidated' })]);
+  broadcastToConnectedClients([JSON.stringify({ kind: 'sidebar_invalidated' })]);
 }

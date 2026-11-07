@@ -101,6 +101,7 @@ Handled by `server/modules/websocket/services/chat-websocket.service.ts`.
 | --- | --- |
 | `chat.send` | Start a run for a session. |
 | `chat.edit-send` | Replace an already-sent message and re-run from that anchor. |
+| `chat.steer` | Send a message into the running turn: the model reads it at its next tool call, without the turn stopping. |
 | `chat.abort` | Stop the running run. |
 | `chat.subscribe` | Watch one or more sessions, replaying from `lastSeq`. |
 | `chat.permission-response` | Answer a `permission_request`. |
@@ -165,6 +166,20 @@ unrelated to the change that caused them.
 | Nothing arrives at all after a network blip | [1](./01-websocket-transport.md) — reconnect and `lastSeq` |
 
 ---
+
+## Side questions on develop
+
+Side questions use `chat.side_question` and an in-memory store, separate from the
+main turn. They are lost when CloudCLI restarts. Claude uses its SDK integration;
+Codex uses an isolated app-server exchange while the main turn retains its own
+connection for approvals and background work.
+
+OpenCode on this branch requires V2. Its side-question adapter calls the native
+`session.generate` API, which generates transient text from the existing session
+context without modifying history. It follows the native session's model and
+returns one complete answer. It does not use upstream's V1 fork, temporary agent
+configuration or fork-index suppression. Dismissal closes only the private
+question server/request, never interrupts the parent's main turn.
 
 ## Related module docs
 

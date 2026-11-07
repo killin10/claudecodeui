@@ -453,6 +453,10 @@ export const api = {
       del(`/api/providers/${provider}/models/${recordId}${query({ workspacePath })}`),
     setCustomModelsOnly: (provider: string, enabled: boolean, workspacePath?: string) =>
       put(`/api/providers/${provider}/models/custom-only${query({ workspacePath })}`, { enabled }),
+    dismissSideQuestion: (sessionId: string, sideQuestionId: string) =>
+      del(
+        `/api/providers/sessions/${encodeURIComponent(sessionId)}/side-questions/${encodeURIComponent(sideQuestionId)}`,
+      ),
 
     createSession: (payload: {
       provider: string;

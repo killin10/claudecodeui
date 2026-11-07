@@ -24,7 +24,7 @@ const props = (overrides: Partial<ComponentProps<typeof SidebarProjectItem>> = {
   sessionRenameId: null, sessionRenameDraft: '', tasksEnabled: false, mcpServerStatus: null,
   onRenameDraftChange: noop, onToggleProject: noop, onProjectSelect: noop, onToggleStarProject: noop,
   onStartEditingProject: noop, onCancelEditingProject: noop, onSaveProjectName: noop, onDeleteProject: noop,
-  onSessionSelect: noop, onDeleteSession: noop, onLoadMoreSessions: noop,
+  onSessionSelect: noop, onArchiveSession: noop, onDeleteSession: noop, onLoadMoreSessions: noop,
   activeSessions: new Set(), backgroundSessionIds: new Set(), attentionSessionIds: new Set(),
   onNewSession: noop, onStartEditingSession: noop, onCancelEditingSession: noop, onSaveEditingSession: noop,
   selectedSessionIds: null, onSetSessionSelection: noop, onToggleSessionSelected: noop,

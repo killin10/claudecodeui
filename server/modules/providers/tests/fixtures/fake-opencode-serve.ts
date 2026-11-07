@@ -33,6 +33,9 @@ type Step =
 type Scenario = {
   /** Id given to a session created through POST /session. */
   newSessionId?: string;
+  generateText?: string;
+  generateDelayMs?: number;
+  generateStatus?: number;
   /** Sessions GET /session/:id knows; any other id answers 404. */
   sessions?: Record<string, StoredSession>;
   events?: Array<{ type: string; data: Record<string, unknown>; location?: { directory: string } }>;
@@ -374,6 +377,16 @@ const server = http.createServer(async (req, res) => {
     streams.add(res);
     res.write(`data: ${JSON.stringify({ id: 'evt_0', type: 'server.connected', data: {} })}\n\n`);
     req.on('close', () => streams.delete(res));
+    return;
+  }
+
+  if (req.method === 'POST' && (match = /^\/session\/([^/]+)\/generate$/.exec(path))) {
+    if (scenario.generateDelayMs) await new Promise(resolve => setTimeout(resolve, scenario.generateDelayMs));
+    if (!sessions.has(match[1]) || scenario.generateStatus) {
+      sendJson(res, scenario.generateStatus ?? 404, { name: 'GenerationError', message: 'Generation refused' });
+      return;
+    }
+    sendJson(res, 200, { data: { text: scenario.generateText ?? 'Side answer' } });
     return;
   }
 

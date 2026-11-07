@@ -1,6 +1,6 @@
 import { useInRouterContext, useNavigate } from 'react-router-dom';
 import { useEffect, useRef } from 'react';
-import { Clock, Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Archive, Clock, Check, Edit2, GitBranch, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu } from '@/shared/ui';
@@ -19,7 +19,7 @@ type SessionOptionsProps = {
    * which case rename is withheld rather than guessed — it is keyed by project.
    */
   projectId: string | null;
-  /** A running session cannot be deleted or forked, matching the Projects row. */
+  /** A running session cannot be archived, deleted or forked, matching the Projects row. */
   isProcessing: boolean;
   isEditing: boolean;
   renameDraft: string;
@@ -27,10 +27,11 @@ type SessionOptionsProps = {
   onStartEditingSession: (projectId: string, sessionId: string, initialName: string) => void;
   onCancelEditingSession: () => void;
   onSaveEditingSession: (projectId: string, sessionId: string, summary: string, provider: LLMProvider) => void;
+  onArchiveSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string, sessionTitle: string) => void;
   /** Bound by the caller, which owns the session object the fork needs. */
   onFork?: () => void;
-  /** Withheld where the row has nowhere to send a delete. */
+  /** Withheld where the row has nowhere to send an archive or delete. */
   canDelete?: boolean;
   className?: string;
   t: TFunction;
@@ -43,7 +44,8 @@ type SessionOptionsProps = {
  * Shared by the Projects list and the Conversations list so the two rows cannot
  * drift — the first cut of the Conversations row copied this markup, which is
  * how two rows end up diverging one fix at a time. Callers keep only what is
- * genuinely theirs: where the controls sit, and whether deleting is offered.
+ * genuinely theirs: where the controls sit, and whether archiving and deleting
+ * are offered.
  */
 function SessionOptionsContent({
   onSchedule,
@@ -58,6 +60,7 @@ function SessionOptionsContent({
   onStartEditingSession,
   onCancelEditingSession,
   onSaveEditingSession,
+  onArchiveSession,
   onDeleteSession,
   onFork,
   canDelete = true,
@@ -191,11 +194,16 @@ function SessionOptionsContent({
               onSelect: onFork,
             }] : []),
             ...(canDelete && !isProcessing ? [{
+              key: 'archive',
+              label: 'Archive session',
+              icon: Archive,
+              showDividerBefore: true,
+              onSelect: () => onArchiveSession(sessionId),
+            }, {
               key: 'delete',
-              label: 'Archive or delete session',
+              label: 'Delete session',
               icon: Trash2,
               isDanger: true,
-              showDividerBefore: true,
               onSelect: () => onDeleteSession(sessionId, sessionName),
             }] : []),
           ]}

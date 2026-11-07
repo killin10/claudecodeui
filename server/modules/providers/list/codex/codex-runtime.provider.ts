@@ -1,3 +1,4 @@
+import type { SideQuestionOutcome, SideQuestionRequest, SideQuestionSink } from '@/shared/types.js';
 import { codexAppServer, type CodexRpcConnection } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import { CodexRunEvents } from '@/modules/providers/list/codex/codex-events.provider.js';
 import { codexPermissions, CodexRunPermissions } from '@/modules/providers/list/codex/codex-permissions.provider.js';
@@ -392,7 +393,36 @@ class CodexRun {
   }
 }
 /** Codex provider's main runtime and replayable approval/background-work gateways. */
+async function askCodexSideQuestion(
+  request: SideQuestionRequest,
+  sink: SideQuestionSink,
+  _context: ProviderRuntimeContext,
+): Promise<SideQuestionOutcome> {
+  if (!request.providerSessionId) {
+    return { status: 'error', error: 'This Codex session has no provider thread to ask a side question on yet.', answer: '' };
+  }
+
+  let answer = '';
+  try {
+    const text = await codexAppServer.askSideQuestion({
+      threadId: request.providerSessionId,
+      cwd: request.projectPath || '',
+      model: request.model || '',
+      question: request.question,
+      signal: request.signal,
+    }, (delta) => {
+      answer += delta;
+      sink.delta(delta);
+    });
+    return { status: 'done', answer: text };
+  } catch (error) {
+    return { status: 'error', error: error instanceof Error ? error.message : String(error), answer };
+  }
+}
+
+
 export const codexRuntime = {
+  askSideQuestion: askCodexSideQuestion,
   async run(command: string, options: AnyRecord, writer: ProviderRuntimeWriter, context: ProviderRuntimeContext): Promise<void> {
     const previous = active.get(options.sessionId);
     if (previous?.canContinue(context.resolveProviderSessionId(options.sessionId))) {

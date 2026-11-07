@@ -1,3 +1,4 @@
+import { askOpenCodeSideQuestion } from './opencode-side-question.provider.js';
 import fsSync from 'node:fs';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -599,6 +600,7 @@ export function isOpenCodeSessionActive(sessionId: string): boolean {
  * /api/agent runs, and routes the chat's permission answers.
  */
 export const opencodeRuntime = {
+  askSideQuestion: askOpenCodeSideQuestion,
   run: runOpenCodeTurn,
   abort: abortOpenCodeSession,
   listBackgroundWork: () => Array.from(liveTurns)
