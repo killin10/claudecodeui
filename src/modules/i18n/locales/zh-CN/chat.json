@@ -334,5 +334,26 @@
       "label": "引导当前任务",
       "description": "追加指导消息，不中断正在执行的任务"
     }
+  },
+  "subscriptionUsage": {
+    "title": "订阅用量",
+    "subtitle": "各编程订阅的套餐额度使用情况。",
+    "refresh": "刷新",
+    "loading": "正在读取订阅用量…",
+    "loadFailed": "无法读取订阅用量。",
+    "period": {
+      "five_hour": "5 小时",
+      "weekly": "每周",
+      "monthly": "每月",
+      "customHours": "{{count}} 小时"
+    },
+    "resetsIn": "{{time}}后重置",
+    "resetPassed": "记录之后窗口已重置，等待新数据",
+    "durationDays": "{{days}} 天 {{hours}} 小时",
+    "durationHours": "{{hours}} 小时 {{minutes}} 分",
+    "durationMinutes": "{{minutes}} 分钟",
+    "updatedAt": "更新于 {{time}}",
+    "calls": "{{used}} / {{limit}} 次调用",
+    "noWindows": "未返回任何额度窗口。"
   }
 }

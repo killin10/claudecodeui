@@ -26,6 +26,7 @@ import type {
   ProviderModelsDefinition,CommandModalPayload,CostCommandData,HelpCommandData,ModelCommandData,StatusCommandData
 } from '@/shared/types';
 import ModelLibraryPanel from '@/modules/chat/modals/ModelLibraryPanel';
+import SubscriptionUsagePanel from '@/modules/chat/modals/SubscriptionUsagePanel';
 
 type CommandResultModalProps = {
   payload: CommandModalPayload | null;
@@ -460,7 +461,7 @@ function CostContent({ data }: { data: CostCommandData }) {
   ];
 
   return (
-    <div className="space-y-4">
+    <div className="scrollbar-thin h-full space-y-4 overflow-y-auto pr-1">
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/75">
         {usageRows.map((row) => {
           const Icon = row.icon;
@@ -494,6 +495,8 @@ function CostContent({ data }: { data: CostCommandData }) {
           </div>
         </div>
       </div>
+
+      <SubscriptionUsagePanel />
     </div>
   );
 }

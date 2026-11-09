@@ -1837,3 +1837,14 @@ export type SessionCliOptions = Record<string, string | boolean | undefined>;
 /** Schedules UI/API and persistence share this transport contract. */
 export type { Schedule, ScheduleDefinition, ScheduleRun } from '../../shared/schedules.js';
 // ---------------------------
+
+//----------------- SUBSCRIPTION USAGE HTTP CONTRACT ------------
+/** The providers module's plan-quota readers and the Token Usage modal share this transport contract. */
+export type {
+  SubscriptionUsage,
+  SubscriptionUsagePeriod,
+  SubscriptionUsageProvider,
+  SubscriptionUsageReport,
+  SubscriptionUsageWindow,
+} from '../../shared/subscription-usage.js';
+// ---------------------------

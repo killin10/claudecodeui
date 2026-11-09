@@ -470,6 +470,9 @@ export const api = {
     ) => get(sessionMessagesUrl(sessionId, pagination), options),
     sessionTokenUsage: (sessionId: string) =>
       get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/token-usage`),
+    // Claude / Codex / Z.ai plan quotas. The server caches for a minute; `refresh` bypasses it.
+    subscriptionUsage: (refresh = false) =>
+      get(`/api/providers/subscription-usage${query({ refresh: refresh ? 1 : undefined })}`),
     sessionActiveModel: (provider: string, sessionId: string) =>
       get(`/api/providers/${provider}/sessions/${encodeURIComponent(sessionId)}/active-model`),
     setSessionActiveModel: (provider: string, sessionId: string, model: string) =>

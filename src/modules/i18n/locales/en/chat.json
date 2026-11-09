@@ -484,5 +484,26 @@
     "customModelsOnlyHint": "Hide the built-in {{provider}} models from every model picker and make your first model the default. Built-in models stay listed until you add a model.",
     "builtInModelsHidden": "Hidden from model pickers while “Use only my models” is on.",
     "customModelsOnlyFailed": "Unable to change this setting."
+  },
+  "subscriptionUsage": {
+    "title": "Subscription usage",
+    "subtitle": "Plan quotas across your coding subscriptions.",
+    "refresh": "Refresh",
+    "loading": "Loading subscription usage…",
+    "loadFailed": "Couldn't load subscription usage.",
+    "period": {
+      "five_hour": "5-hour",
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "customHours": "{{count}}-hour"
+    },
+    "resetsIn": "Resets in {{time}}",
+    "resetPassed": "Window has reset since this data was recorded",
+    "durationDays": "{{days}}d {{hours}}h",
+    "durationHours": "{{hours}}h {{minutes}}m",
+    "durationMinutes": "{{minutes}}m",
+    "updatedAt": "Updated {{time}}",
+    "calls": "{{used}} / {{limit}} calls",
+    "noWindows": "No quota windows reported."
   }
 }

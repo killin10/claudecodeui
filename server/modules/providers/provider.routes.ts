@@ -9,6 +9,7 @@ import { providerCliService } from '@/modules/providers/services/provider-cli.se
 import { providerMcpService } from '@/modules/providers/services/mcp.service.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { providerTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
+import { providerSubscriptionUsageService } from '@/modules/providers/services/provider-subscription-usage.service.js';
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { sideQuestionsService } from '@/modules/providers/services/side-questions.service.js';
@@ -27,7 +28,15 @@ import { AppError, asyncHandler, createApiSuccessResponse, SIDE_QUESTION_ID_PATT
 
 const router = express.Router();
 
-router.get('/opencode/sessions/:sessionId/agent', asyncHandler(async (req: Request, res: Response) => {
+router.get(
+  '/subscription-usage',
+  asyncHandler(async (req: Request, res: Response) => {
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    res.json(createApiSuccessResponse(await providerSubscriptionUsageService.getSubscriptionUsage({ refresh })));
+  }),
+);
+
+router.get('/opencode/sessions/:sessionId/agent',asyncHandler(async (req: Request, res: Response) => {
   res.json(createApiSuccessResponse(opencodeAgentService.read(parseSessionId(req.params.sessionId))));
 }));
 

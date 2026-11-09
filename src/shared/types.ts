@@ -2045,3 +2045,12 @@ type TaskPriority = 'high' | 'medium' | 'low' | string;
 /** Schedules UI/API and persistence share this transport contract. */
 export type { Schedule, ScheduleDefinition, ScheduleRun } from '@shared/schedules';
 // ---------------------------
+
+//----------------- SUBSCRIPTION USAGE HTTP CONTRACT ------------
+/** Claude, Codex and Z.ai plan quotas (5-hour, weekly, monthly) shown by the chat Token Usage modal. */
+export type {
+  SubscriptionUsage,
+  SubscriptionUsageReport,
+  SubscriptionUsageWindow,
+} from '@shared/subscription-usage';
+// ---------------------------
