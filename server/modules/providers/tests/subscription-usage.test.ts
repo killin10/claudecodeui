@@ -7,7 +7,12 @@ import { test } from 'node:test';
 import Database from 'better-sqlite3';
 
 import { mapClaudePlanUsage } from '@/modules/providers/list/claude/claude-plan-usage.provider.js';
-import { findCodexPlanUsage, readCodexPlanUsage } from '@/modules/providers/list/codex/codex-plan-usage.provider.js';
+import {
+  fetchCodexPlanUsage,
+  findCodexPlanUsage,
+  mapCodexRateLimitsResponse,
+  readCodexPlanUsage,
+} from '@/modules/providers/list/codex/codex-plan-usage.provider.js';
 import {
   fetchZaiPlanUsage,
   mapZaiQuota,
@@ -103,6 +108,57 @@ test('Codex scan walks the newest day folders first and reports unavailable with
     const usage = await readCodexPlanUsage(root);
     assert.equal(usage.status, 'ok');
     assert.equal(usage.windows[0].usedPercent, 20);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Codex live rate limits map the plan-wide bucket first, then named buckets', () => {
+  const window = (usedPercent: number, windowDurationMins: number) => ({ usedPercent, windowDurationMins, resetsAt: 1794844865 });
+  const usage = mapCodexRateLimitsResponse({
+    rateLimits: { limitId: 'codex', primary: window(1, 10080), planType: 'prolite' },
+    rateLimitsByLimitId: {
+      gpt_spark: { limitId: 'gpt_spark', limitName: 'Spark', primary: window(70, 300), secondary: null },
+      codex: { limitId: 'codex', primary: window(40, 10080), secondary: window(12, 300), planType: 'pro' },
+    },
+  }, OBSERVED_AT);
+
+  assert.ok(usage);
+  assert.equal(usage.plan, 'pro');
+  assert.equal(usage.observedAt, OBSERVED_AT);
+  assert.deepEqual(usage.windows.map((entry) => [entry.key, entry.period, entry.scope, entry.usedPercent]), [
+    ['secondary', 'five_hour', null, 12],
+    ['primary', 'weekly', null, 40],
+    ['gpt_spark_primary', 'five_hour', 'Spark', 70],
+  ]);
+  assert.equal(usage.windows[1].resetsAt, new Date(1794844865 * 1000).toISOString());
+
+  // Older protocol answers carry only `rateLimits`.
+  const single = mapCodexRateLimitsResponse({ rateLimits: { primary: window(5, 300), planType: 'plus' } }, OBSERVED_AT);
+  assert.deepEqual(single?.windows.map((entry) => entry.usedPercent), [5]);
+  assert.equal(mapCodexRateLimitsResponse(null, OBSERVED_AT), null);
+});
+
+test('Codex prefers the live lookup and falls back to the rollout log when it fails', async () => {
+  const root = tempDir();
+  try {
+    const day = path.join(root, '2026', '11', '09');
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(path.join(day, 'rollout.jsonl'), `${JSON.stringify({
+      timestamp: '2026-11-09T10:00:00Z',
+      type: 'event_msg',
+      payload: { type: 'token_count', rate_limits: { primary: { used_percent: 33, window_minutes: 300 } } },
+    })}\n`);
+
+    const live = await fetchCodexPlanUsage(root, async () => ({
+      rateLimits: { primary: { usedPercent: 7, windowDurationMins: 300, resetsAt: 1 } },
+    }));
+    assert.equal(live.windows[0].usedPercent, 7);
+    assert.notEqual(live.observedAt, '2026-11-09T10:00:00Z');
+
+    const logged = await fetchCodexPlanUsage(root, async () => { throw new Error('not signed in'); });
+    assert.equal(logged.windows[0].usedPercent, 33);
+    assert.equal(logged.observedAt, '2026-11-09T10:00:00Z');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

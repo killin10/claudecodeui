@@ -445,6 +445,15 @@ export const codexAppServer = {
   },
 
   /**
+   * The account's plan rate limits (`account/rateLimits/read`), live from the
+   * backend. No thread is created and no turn runs, so it spends no quota.
+   * Used by the subscription-usage reader in this provider folder.
+   */
+  async readRateLimits(): Promise<unknown> {
+    return withAppServer(({ call }) => call('account/rateLimits/read', null));
+  },
+
+  /**
    * Copies a thread into a new one that ends at `lastTurnId`, or copies the
    * whole thread when it is omitted.
    *

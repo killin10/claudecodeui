@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { fetchClaudePlanUsage } from '@/modules/providers/list/claude/claude-plan-usage.provider.js';
-import { readCodexPlanUsage } from '@/modules/providers/list/codex/codex-plan-usage.provider.js';
+import { fetchCodexPlanUsage } from '@/modules/providers/list/codex/codex-plan-usage.provider.js';
 import { fetchZaiPlanUsage, getOpenCodeAuthFilePath } from '@/modules/providers/list/opencode/zai-plan-usage.provider.js';
 import type { SubscriptionUsage, SubscriptionUsageProvider, SubscriptionUsageReport } from '@/shared/types.js';
 import { getOpenCodeDatabasePath } from '@/shared/utils.js';
@@ -16,7 +16,8 @@ type ProviderSubscriptionUsageServiceDependencies = {
 };
 
 /**
- * Plan quotas move slowly, and the Claude lookup starts a CLI process, so a
+ * Plan quotas move slowly, and the Claude and Codex lookups each start a CLI
+ * process, so a
  * modal reopened within this window reuses the last answer. A manual refresh
  * bypasses it.
  */
@@ -27,7 +28,7 @@ const PROVIDER_ORDER: SubscriptionUsageProvider[] = ['claude', 'codex', 'zai'];
 
 const defaultReaders: SubscriptionUsageReaders = {
   claude: fetchClaudePlanUsage,
-  codex: () => readCodexPlanUsage(path.join(os.homedir(), '.codex', 'sessions')),
+  codex: () => fetchCodexPlanUsage(path.join(os.homedir(), '.codex', 'sessions')),
   zai: () => {
     const databasePath = getOpenCodeDatabasePath();
     return fetchZaiPlanUsage(databasePath, getOpenCodeAuthFilePath(databasePath));

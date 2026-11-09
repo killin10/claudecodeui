@@ -1,6 +1,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
+import { codexAppServer } from '@/modules/providers/list/codex/codex-app-server.client.js';
 import type { AnyRecord, SubscriptionUsage, SubscriptionUsageWindow } from '@/shared/types.js';
 
 /** The newest rate-limit row sits at the end of a rollout; this much tail always holds the last turns. */
@@ -18,23 +19,82 @@ function periodOf(windowMinutes: number | undefined): SubscriptionUsageWindow['p
   return 'custom';
 }
 
-function toWindow(key: string, scope: string | null, value: unknown): SubscriptionUsageWindow | null {
-  if (!value || typeof value !== 'object') {
+type RawWindow = { usedPercent: unknown; windowMinutes: unknown; resetsAtSeconds: unknown };
+
+function toWindow(key: string, scope: string | null, raw: RawWindow | null): SubscriptionUsageWindow | null {
+  if (!raw) {
     return null;
   }
 
-  const record = value as AnyRecord;
-  const windowMinutes = Number.isFinite(record.window_minutes) ? Number(record.window_minutes) : undefined;
-  const resetsAtSeconds = Number(record.resets_at);
+  const windowMinutes = Number.isFinite(raw.windowMinutes) ? Number(raw.windowMinutes) : undefined;
+  const resetsAtSeconds = Number(raw.resetsAtSeconds);
   return {
     key,
     period: periodOf(windowMinutes),
     ...(windowMinutes !== undefined ? { windowMinutes } : {}),
     scope,
-    usedPercent: Number.isFinite(record.used_percent) ? Number(record.used_percent) : null,
+    usedPercent: Number.isFinite(raw.usedPercent) ? Number(raw.usedPercent) : null,
     resetsAt: Number.isFinite(resetsAtSeconds) && resetsAtSeconds > 0
       ? new Date(resetsAtSeconds * 1000).toISOString()
       : null,
+  };
+}
+
+/** Rollout logs write snake_case windows. */
+function fromLogWindow(value: unknown): RawWindow | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as AnyRecord;
+  return { usedPercent: record.used_percent, windowMinutes: record.window_minutes, resetsAtSeconds: record.resets_at };
+}
+
+/** The app-server protocol writes camelCase windows. */
+function fromRpcWindow(value: unknown): RawWindow | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as AnyRecord;
+  return { usedPercent: record.usedPercent, windowMinutes: record.windowDurationMins, resetsAtSeconds: record.resetsAt };
+}
+
+/** 5-hour before weekly regardless of which slot Codex used. */
+const byWindowLength = (left: SubscriptionUsageWindow, right: SubscriptionUsageWindow) =>
+  (left.windowMinutes ?? 0) - (right.windowMinutes ?? 0);
+
+/**
+ * Used by this file and the providers tests: maps an `account/rateLimits/read`
+ * answer. The plan-wide `codex` bucket comes first; any other bucket (a
+ * model-specific limit) is labelled with its name.
+ */
+export function mapCodexRateLimitsResponse(result: unknown, observedAt: string): SubscriptionUsage | null {
+  const record = result && typeof result === 'object' ? result as AnyRecord : null;
+  const byId = record?.rateLimitsByLimitId && typeof record.rateLimitsByLimitId === 'object'
+    ? Object.values(record.rateLimitsByLimitId as AnyRecord)
+    : [];
+  const buckets = (byId.length > 0 ? byId : [record?.rateLimits])
+    .filter((bucket): bucket is AnyRecord => Boolean(bucket) && typeof bucket === 'object');
+  if (buckets.length === 0) {
+    return null;
+  }
+
+  const planWide = (bucket: AnyRecord) => !bucket.limitId || bucket.limitId === 'codex';
+  const windows = [...buckets]
+    .sort((left, right) => Number(!planWide(left)) - Number(!planWide(right)))
+    .flatMap((bucket) => {
+      const scope = planWide(bucket) ? null : String(bucket.limitName || bucket.limitId);
+      const prefix = planWide(bucket) ? '' : `${bucket.limitId}_`;
+      return [
+        toWindow(`${prefix}primary`, scope, fromRpcWindow(bucket.primary)),
+        toWindow(`${prefix}secondary`, scope, fromRpcWindow(bucket.secondary)),
+      ]
+        .filter((window): window is SubscriptionUsageWindow => window !== null)
+        .sort(byWindowLength);
+    });
+  const plan = buckets.find(planWide)?.planType ?? buckets[0].planType;
+
+  return {
+    provider: 'codex',
+    status: 'ok',
+    plan: typeof plan === 'string' ? plan : null,
+    windows,
+    observedAt,
   };
 }
 
@@ -71,12 +131,11 @@ export function findCodexPlanUsage(fileContent: string): SubscriptionUsage | nul
       ? String(rateLimits.limit_name || rateLimits.limit_id)
       : null;
     const windows = [
-      toWindow('primary', scope, rateLimits.primary),
-      toWindow('secondary', scope, rateLimits.secondary),
+      toWindow('primary', scope, fromLogWindow(rateLimits.primary)),
+      toWindow('secondary', scope, fromLogWindow(rateLimits.secondary)),
     ]
       .filter((window): window is SubscriptionUsageWindow => window !== null)
-      // 5-hour before weekly regardless of which slot Codex used.
-      .sort((left, right) => (left.windowMinutes ?? 0) - (right.windowMinutes ?? 0));
+      .sort(byWindowLength);
 
     return {
       provider: 'codex',
@@ -152,10 +211,10 @@ async function listRecentRollouts(sessionsRoot: string, limit: number): Promise<
 }
 
 /**
- * Used by the provider subscription-usage service. Codex has no quota lookup of
- * its own outside a running turn; every model reply logs the plan's rate limits
- * into the rollout, so the newest logged snapshot is the freshest local answer.
- * `observedAt` tells the UI how old it is.
+ * Used by this file and the providers tests: the fallback when the live lookup
+ * fails. Every model reply logs the plan's rate limits into the rollout, so the
+ * newest logged snapshot is the freshest local answer; `observedAt` tells the
+ * UI how old it is.
  */
 export async function readCodexPlanUsage(sessionsRoot: string): Promise<SubscriptionUsage> {
   for (const filePath of await listRecentRollouts(sessionsRoot, MAX_ROLLOUTS_SCANNED)) {
@@ -175,6 +234,27 @@ export async function readCodexPlanUsage(sessionsRoot: string): Promise<Subscrip
     plan: null,
     windows: [],
     observedAt: null,
-    message: 'No Codex rate-limit data yet. It appears after the next Codex reply.',
+    message: 'Codex usage is unavailable: the live lookup failed (signed out or Codex unreachable) and no rate-limit data has been logged yet.',
   };
+}
+
+/**
+ * Used by the provider subscription-usage service. Asks a short-lived Codex
+ * app-server for the live limits (no turn, no quota spent; Codex refreshes its
+ * own login), and falls back to the newest snapshot in the rollout logs when
+ * Codex is missing, signed out or unreachable.
+ */
+export async function fetchCodexPlanUsage(
+  sessionsRoot: string,
+  readLiveRateLimits: () => Promise<unknown> = () => codexAppServer.readRateLimits(),
+): Promise<SubscriptionUsage> {
+  try {
+    const live = mapCodexRateLimitsResponse(await readLiveRateLimits(), new Date().toISOString());
+    if (live) {
+      return live;
+    }
+  } catch {
+    // Fall through to the logged snapshot.
+  }
+  return readCodexPlanUsage(sessionsRoot);
 }
