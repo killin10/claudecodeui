@@ -66,14 +66,13 @@ ssh -N -L 5173:127.0.0.1:5173 -L 3002:127.0.0.1:3002 pi@raspberrypi.local
 
 ```bash
 npm run test:deploy
-npm run typecheck
-npm run lint
+npm run verify
 npm run build
 npm run test -- --test-concurrency=1
 npm run test:client -- --maxWorkers=1 --minWorkers=1
 ```
 
-测试在开发阶段完成，上述命令限制了 ARM64 的测试并行度。部署只执行 typecheck、lint、build、原生模块检查和服务健康检查，不重复执行测试。若构建因内存耗尽退出，先检查 `free -h` 和系统 OOM 日志，配置适合机器容量的 swap，或减少同机任务；不要通过跳过检查掩盖失败。
+测试在开发阶段完成，上述命令限制了 ARM64 的测试并行度。`npm run verify` 执行完整 typecheck 和 lint，通过后记录当前 working tree 的内容哈希；之后部署同一份代码时跳过这两项（约 2 分钟），任何文件改动都会让记录失效。部署只执行未验证时的检查、build、原生模块检查和服务健康检查，不重复执行测试。若构建因内存耗尽退出，先检查 `free -h` 和系统 OOM 日志，配置适合机器容量的 swap，或减少同机任务；不要通过跳过检查掩盖失败。
 
 ## 首次部署
 
@@ -116,6 +115,8 @@ npm run deploy:local -- --background
 ```
 
 Linux 上检测到命令来自 CloudCLI 自己的服务 cgroup 时，即使没传 `--background` 也会自动转为后台任务。安装器通过 `systemd-run --user --collect` 启动独立临时服务，避免停止 CloudCLI 时部署进程一起被杀。普通 `nohup` 无法脱离 systemd cgroup，不适合这种自部署场景。
+
+`package-lock.json`、`package.json` 和 Node 版本都没变时，部署保留工作区的 `node_modules`，并从当前版本复制生产依赖，不再重复执行两次 `npm ci`；复制后的依赖仍要通过原生模块检查，失败时自动重新安装。怀疑依赖损坏时加 `--clean-install` 强制重装，加 `--full-checks` 忽略 `npm run verify` 的记录。
 
 命令返回“已提交”只代表后台任务启动，**不代表部署成功**。根据输出的路径查看 `status.json` 和 `deploy.log`，确认最终状态 `succeeded`，再检查 `cloudcli-service status`。临时 systemd unit 执行结束后自动清理，日志和结果文件保留在 `~/.local/state/cloudcli/logs/deploy-*/`。部署期间不要再次切换或修改该源码目录。
 

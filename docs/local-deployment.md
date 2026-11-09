@@ -23,13 +23,15 @@ npm run deploy:local -- --node /absolute/path/to/node
 安装依次执行：
 
 1. 检查安装目录归属和配置，获得部署互斥锁。
-2. 在工作区执行 `npm ci --include=dev`，设置 `HUSKY=0`，不改 Git hooks。
-3. 执行 typecheck、lint 和 build。测试在开发阶段完成，部署不再执行 `test:deploy`、`test` 或 `test:client`。
-4. 将产物复制到新 release，单独执行 `npm ci --omit=dev`，检查 SQLite、bcrypt 和实际 PTY 操作。
+2. 在工作区执行 `npm ci --include=dev`，设置 `HUSKY=0`，不改 Git hooks。上次部署安装后 `package-lock.json`、`package.json` 和 Node 版本都没变时，保留现有 `node_modules`。
+3. 执行前端 typecheck、lint 和 build。后端类型由 `build:server` 的 tsc（`noEmitOnError`）检查，不单独重复。若 `npm run verify` 已对完全相同的 working tree 通过，跳过前端 typecheck 和 lint。测试在开发阶段完成，部署不再执行 `test:deploy`、`test` 或 `test:client`。
+4. 将产物复制到新 release。锁文件、Node、平台和架构与当前版本一致时复制当前版本的生产依赖（完整复制，不用硬链接，保证回滚互不影响），否则单独执行 `npm ci --omit=dev`；随后检查 SQLite、bcrypt 和实际 PTY 操作，复用的依赖检查失败时自动重新安装。
 5. 停止本工具管理的旧服务，备份数据库，切换 `current`，启动对应平台的服务。
 6. 校验服务 PID、应用 marker、`/health` 版本、首页和 JS 资源；成功后保留前一版本。
 
 构建或依赖安装失败不会停止现有服务。构建输入是**当前工作区**，包括参与构建的未提交修改；元数据记录 commit、dirty 状态、文件状态列表、锁文件摘要和 Node 版本，但 dirty 构建不能仅凭 commit 复现。
+
+`release.json` 记录本次检查和依赖的来源：`checks`（`ran` / `verified` / `lint-only`）、`devInstall` 和 `prodInstall`（`clean` / `reused`）以及 `treeFingerprint`。怀疑依赖损坏时用 `--clean-install` 强制两次 `npm ci`；`--full-checks` 忽略 `npm run verify` 的记录，照常执行检查。
 
 只有明确排查类型检查故障时才使用 `--skip-typecheck`。该参数只跳过 typecheck，仍执行其他检查，并在 `release.json` 记录例外；正常部署不要使用。
 

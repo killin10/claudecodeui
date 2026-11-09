@@ -19,12 +19,14 @@ async function main() {
   if (process.platform === 'linux' && !['arm64', 'x64'].includes(process.arch)) throw new Error('Linux deployment requires a 64-bit OS and Node (arm64 or x64)');
   const args = process.argv.slice(2);
   if (args.includes('--help')) {
-    console.log('Usage: npm run deploy:local -- [--node /absolute/path/to/node] [--setup-local] [--skip-typecheck] [--background]\nExisting server.env and service.json are preserved. Node 22/24 LTS is required.');
+    console.log('Usage: npm run deploy:local -- [--node /absolute/path/to/node] [--setup-local] [--skip-typecheck] [--clean-install] [--full-checks] [--background]\n--clean-install reinstalls dependencies even when package-lock.json is unchanged; --full-checks ignores a passed npm run verify.\nExisting server.env and service.json are preserved. Node 22/24 LTS is required.');
     return;
   }
   let selected;
   let setupLocal = false;
   let skipTypecheck = false;
+  let cleanInstall = false;
+  let fullChecks = false;
   let background = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--node') {
@@ -32,6 +34,8 @@ async function main() {
       if (!selected || !path.isAbsolute(selected)) throw new Error('--node requires an absolute executable path');
     } else if (args[i] === '--setup-local') setupLocal = true;
     else if (args[i] === '--skip-typecheck') skipTypecheck = true;
+    else if (args[i] === '--clean-install') cleanInstall = true;
+    else if (args[i] === '--full-checks') fullChecks = true;
     else if (args[i] === '--background') background = true;
     else throw new Error(`Unknown argument: ${args[i]}`);
   }
@@ -74,7 +78,7 @@ async function main() {
     const config = await readConfig(p);
     if (setupLocal && !['127.0.0.1', '::1'].includes(config.host)) throw new Error('--setup-local does not overwrite existing config. Set HOST=127.0.0.1 in server.env first.');
     if (skipTypecheck) console.warn('WARNING: typecheck explicitly skipped; this exception is recorded in release.json.');
-    const release = await stageRelease(source, p, config.runtime, { skipTypecheck });
+    const release = await stageRelease(source, p, config.runtime, { skipTypecheck, cleanInstall, fullChecks });
     // Helpers are installed only after the new release has passed build/native checks.
     await installCommands(p, scriptDir);
     await activate(p, release, await createServiceAdapter(p, release));
