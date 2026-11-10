@@ -253,7 +253,9 @@ export type GatewayEventKind =
   | 'loading_progress'
   | 'protocol_error'
   | 'side_question'
-  | 'scheduled_messages_changed';
+  | 'scheduled_messages_changed'
+  | 'schedules_changed'
+  | 'session_submission_changed';
 
 /**
  * Complete set of `kind` values emitted to websocket clients.

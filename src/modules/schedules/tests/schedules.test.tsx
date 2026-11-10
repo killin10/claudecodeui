@@ -10,7 +10,10 @@ import { ScheduleHistory } from '@/modules/schedules/ScheduleHistory';
 import { ScheduleSessionPicker } from '@/modules/schedules/ScheduleSessionPicker';
 import { SchedulesPage } from '@/modules/schedules/SchedulesPage';
 
-vi.mock('react-i18next', () => ({
+// Keys instead of copy, so assertions do not depend on wording; the rest of the
+// module stays real because the websocket context's import graph initialises i18n.
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
 }));
 const task: Schedule = {
@@ -34,6 +37,11 @@ const task: Schedule = {
 };
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+// Edit, history and delete live behind each card's overflow menu.
+const openMenuItem = (name: string) => {
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.more' }));
+  fireEvent.click(screen.getByRole('menuitem', { name }));
+};
 beforeEach(() => {
   vi.stubGlobal(
     'ResizeObserver',
@@ -344,13 +352,13 @@ test('deleting uses the themed confirmation dialog and preserves the task when c
     </MemoryRouter>,
   );
   await screen.findByText('Daily review');
-  fireEvent.click(screen.getByRole('button', { name: 'schedules.delete' }));
+  openMenuItem('schedules.delete');
   let dialog = screen.getByRole('dialog');
   expect(remove).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole('button', { name: 'buttons.cancel' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(remove).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'schedules.delete' }));
+  openMenuItem('schedules.delete');
   dialog = screen.getByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: 'schedules.delete' }));
   await waitFor(() => expect(remove).toHaveBeenCalledWith('task'));
@@ -456,7 +464,7 @@ test('edit opens the selected task in a dialog and cancelling preserves the list
   await screen.findByText('Daily review');
   const list = screen.getByText('schedules.intro').parentElement!.parentElement!;
   list.scrollTop = 800;
-  fireEvent.click(screen.getByRole('button', { name: 'schedules.edit' }));
+  openMenuItem('schedules.edit');
   const dialog = screen.getByRole('dialog', { name: 'schedules.edit' });
   expect(within(dialog).getByLabelText('schedules.name')).toHaveProperty('value', task.name);
   expect(list.contains(within(dialog).getByRole('form'))).toBe(false);
@@ -465,7 +473,7 @@ test('edit opens the selected task in a dialog and cancelling preserves the list
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(list.scrollTop).toBe(800);
   expect(update).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'schedules.edit' }));
+  openMenuItem('schedules.edit');
   expect(screen.getByLabelText('schedules.message')).toHaveProperty('value', task.message);
 });
 
@@ -486,7 +494,7 @@ test('save keeps the dialog open while pending, retains failed drafts, and close
   const update = vi.spyOn(api.schedules, 'update').mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
   render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
   await screen.findByText('Daily review');
-  fireEvent.click(screen.getByRole('button', { name: 'schedules.edit' }));
+  openMenuItem('schedules.edit');
   fireEvent.change(screen.getByLabelText('schedules.message'), { target: { value: 'Updated prompt' } });
   fireEvent.submit(screen.getByRole('form'));
   fireEvent.keyDown(screen.getByLabelText('schedules.name'), { key: 'Escape' });
@@ -505,4 +513,65 @@ test('session navigation opens the creation dialog with its session preselected'
   const dialog = screen.getByRole('dialog', { name: 'schedules.create' });
   await within(dialog).findByText('Target');
   expect(within(dialog).getByRole('combobox', { name: 'schedules.session' }).textContent).toContain('Target');
+});
+
+test('the list groups tasks by session, filters by status and text, and shows one-time tasks that fired as completed', async () => {
+  const fired: Schedule = {
+    ...task, scheduleId: 'once', name: 'Release notes', sessionId: 'other', sessionTitle: 'Other session',
+    cron: null, runAt: '2029-06-01T01:00:00Z', enabled: false, nextRunAt: null, lastState: 'succeeded',
+  };
+  vi.mocked(api.schedules.list).mockImplementation(async () => json({ items: [task, fired], nextToken: null }));
+  render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
+  await screen.findByText('Daily review');
+  expect(screen.getByRole('region', { name: 'Other session' })).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'Other session' })).getByText('schedules.completed')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'session' })).getByText('schedules.enabled')).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.filters.completed' }));
+  expect(screen.queryByText('Daily review')).toBeNull();
+  expect(screen.getByText('Release notes')).toBeTruthy();
+
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.filters.all' }));
+  fireEvent.change(screen.getByLabelText('schedules.filterPlaceholder'), { target: { value: 'daily' } });
+  expect(screen.getByText('Daily review')).toBeTruthy();
+  expect(screen.queryByText('Release notes')).toBeNull();
+  fireEvent.change(screen.getByLabelText('schedules.filterPlaceholder'), { target: { value: 'nothing here' } });
+  expect(screen.getByText('schedules.noMatches')).toBeTruthy();
+});
+
+test('run now is unavailable while the previous run is still in progress', async () => {
+  vi.mocked(api.schedules.list).mockImplementation(async () => json({ items: [{ ...task, lastState: 'running' }], nextToken: null }));
+  render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
+  await screen.findByText('Daily review');
+  const runNow = screen.getByText('schedules.runNow').closest('button') as HTMLButtonElement;
+  expect(runNow.disabled).toBe(true);
+  expect(runNow.title).toBe('schedules.runNowBusy');
+});
+
+test('a one-time task is picked as wall-clock time in the chosen zone and sent as one instant', async () => {
+  const create = vi.spyOn(api.schedules, 'create').mockResolvedValue(json(task));
+  const saved = vi.fn();
+  render(<ScheduleForm task={null} initialSessionId="session" onSaved={saved} onClose={() => {}} />);
+  await screen.findByText('Target');
+  fireEvent.change(screen.getByLabelText('schedules.name'), { target: { value: 'Once' } });
+  fireEvent.change(screen.getByLabelText('schedules.message'), { target: { value: 'Ship it' } });
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.once' }));
+  fireEvent.change(screen.getByLabelText('schedules.timezone'), { target: { value: 'Asia/Shanghai' } });
+  fireEvent.change(screen.getByLabelText('schedules.runAt'), { target: { value: '2031-03-05T09:30' } });
+  await waitFor(() => expect(api.schedules.preview).toHaveBeenLastCalledWith({
+    cron: null, runAt: '2031-03-05T01:30:00.000Z', timezone: 'Asia/Shanghai',
+  }));
+  fireEvent.submit(screen.getByRole('form'));
+  await waitFor(() => expect(saved).toHaveBeenCalled());
+  expect(create.mock.calls[0][0]).toMatchObject({ cron: null, runAt: '2031-03-05T01:30:00.000Z', timezone: 'Asia/Shanghai', misfirePolicy: 'skip' });
+});
+
+test('a quick rule fills the cron field and a hand-written rule reads as custom', async () => {
+  render(<ScheduleForm task={null} initialSessionId="" onSaved={() => {}} onClose={() => {}} />);
+  const preset = screen.getByLabelText('schedules.preset') as HTMLSelectElement;
+  expect(preset.value).toBe('weekdays');
+  fireEvent.change(preset, { target: { value: 'hourly' } });
+  expect((screen.getByLabelText('Cron') as HTMLInputElement).value).toBe('0 * * * *');
+  fireEvent.change(screen.getByLabelText('Cron'), { target: { value: '15 3 * * 2' } });
+  expect(preset.value).toBe('custom');
 });

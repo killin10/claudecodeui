@@ -19,6 +19,7 @@ vi.mock('@/modules/task-master', () => ({ TaskMasterProvider: Pass, TasksSetting
 vi.mock('@/shared/context/WebSocketContext', () => ({
   WebSocketProvider: Pass,
   useWebSocket: () => ({}),
+  useOptionalWebSocket: () => null,
 }));
 vi.mock('@/shared/context/SessionProtectionContext', () => ({
   SessionProtectionProvider: Pass,

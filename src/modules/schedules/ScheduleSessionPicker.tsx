@@ -4,16 +4,25 @@ import { useTranslation } from 'react-i18next';
 
 import { api, readApiJson } from '@/shared/api';
 import { Button, Command, CommandInput, CommandList, CommandItem, CommandEmpty } from '@/shared/ui';
+import type { ScheduleTargetSession } from '@/shared/types';
 
 /** Schedule form selects only existing active sessions, with search and explicit pagination. */
 export function ScheduleSessionPicker({
   initialId,
   disabled,
+  onChange,
 }: {
   initialId: string;
   disabled: boolean;
+  /** Reports the chosen session (or the resolved initial one) so the form can load its provider's models and modes. */
+  onChange?: (session: ScheduleTargetSession | null) => void;
 }) {
   const { t } = useTranslation('common');
+  // Read at call time so a new callback identity never restarts the lookups below.
+  const onChangeRef = useRef(onChange);
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
   // The picker opens one searchable list, retaining the selected session when it closes.
   const [open, setOpen] = useState(false);
   // Loading must not appear as a successful empty search.
@@ -33,21 +42,11 @@ export function ScheduleSessionPicker({
   const [search, setSearch] = useState('');
   // Results and continuation represent the currently loaded server page(s).
   const [page, setPage] = useState<{
-    items: {
-      sessionId: string;
-      title: string | null;
-      provider: string;
-      projectPath: string | null;
-    }[];
+    items: ScheduleTargetSession[];
     nextToken: string | null;
   }>({ items: [], nextToken: null });
   // A preselected session may be outside the first page and must remain identifiable.
-  const [selected, setSelected] = useState<{
-    sessionId: string;
-    title: string | null;
-    provider: string;
-    projectPath: string | null;
-  } | null>(null);
+  const [selected, setSelected] = useState<ScheduleTargetSession | null>(null);
   // The label and submitted ID share one selection; the initial ID remains usable during lookup.
   const value = selected?.sessionId ?? initialId;
   // Request errors must not be presented as an empty session catalog.
@@ -90,7 +89,10 @@ export function ScheduleSessionPicker({
         .session(initialId)
         .then(readApiJson<NonNullable<typeof selected>>)
         .then((result) => {
-          if (active && current === initialLookupGeneration.current) setSelected(result);
+          if (active && current === initialLookupGeneration.current) {
+            setSelected(result);
+            onChangeRef.current?.(result);
+          }
         })
         .catch((e: Error) => {
           if (active && current === initialLookupGeneration.current) setError(e.message);
@@ -119,6 +121,7 @@ export function ScheduleSessionPicker({
     if (!session) return;
     initialLookupGeneration.current++;
     setSelected(session);
+    onChangeRef.current?.(session);
     setError('');
     setOpen(false);
     trigger.current?.focus();

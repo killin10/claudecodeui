@@ -297,6 +297,7 @@ export const api = {
   schedules: {
     list: (startingToken?: string) => get(`/api/schedules${query({ startingToken, maxItems: 100 })}`),
     show: (id: string) => get(`/api/schedules/${encodeURIComponent(id)}`),
+    summary: () => get('/api/schedules/summary'),
     create: (body: unknown) => post('/api/schedules', body),
     update: (id: string, body: unknown) => patch(`/api/schedules/${encodeURIComponent(id)}`, body),
     action: (id: string, action: 'pause' | 'resume' | 'run', body: unknown = {}) => post(`/api/schedules/${encodeURIComponent(id)}/${action}`, body),

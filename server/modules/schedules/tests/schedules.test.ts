@@ -380,3 +380,14 @@ test('history retains ten recent records per schedule, protects unfinished runs 
   assert.deepEqual(schedulesService.run(user, task.scheduleId, { clientToken: 'retention-retry' }), pending);
   assert.ok(schedulesDb.run(second.runId), 'another schedule keeps its own history');
 });
+
+test('summary counts enabled and total tasks per session, skipping deleted ones', async (t) => {
+  const { user, id, create } = await fixture(t);
+  const first = await create();
+  await create({ name: 'Paused task', enabled: false });
+  const removed = await create({ name: 'Removed task' });
+  schedulesService.change(user, removed.scheduleId, 'delete');
+  assert.deepEqual(schedulesService.summary(user), { items: [{ sessionId: id, enabled: 1, total: 2 }] });
+  schedulesService.change(user, first.scheduleId, 'pause');
+  assert.deepEqual(schedulesService.summary(user), { items: [{ sessionId: id, enabled: 0, total: 2 }] });
+});

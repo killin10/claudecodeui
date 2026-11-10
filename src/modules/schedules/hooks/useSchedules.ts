@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, readApiJson } from '@/shared/api';
-import type { Schedule } from '@/shared/types';
+import { useOptionalWebSocket } from '@/shared/context/WebSocketContext';
+import type { Schedule, ServerEvent } from '@/shared/types';
 
-/** Schedules page keeps loaded pages current without allowing an older poll to overwrite a newer mutation. */
+/** Realtime kinds after which the list is read again. The ids in the frame are not used: the page re-reads its own view. */
+const REFRESH_KINDS = new Set(['schedules_changed', 'session_submission_changed', 'websocket_reconnected']);
+
+/**
+ * Schedules page keeps loaded pages current. Changes arrive over the chat
+ * websocket (schedule edits, triggers, run progress); a slow safety poll covers
+ * a frame lost while the socket was down. An older response never overwrites a
+ * newer mutation.
+ */
 export function useSchedules() {
   // Server-owned task records and continuation; never used as a second source of scheduling truth.
   const [page, setPage] = useState<{ items: Schedule[]; nextToken: string | null }>({
@@ -16,6 +25,10 @@ export function useSchedules() {
   const [loading, setLoading] = useState(true);
   const pages = useRef(1);
   const generation = useRef(0);
+  // Optional so the page also renders (without live updates) outside the websocket provider, as in tests.
+  const socket = useOptionalWebSocket();
+  const subscribe = socket?.subscribe;
+
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
@@ -38,21 +51,36 @@ export function useSchedules() {
       if (generation.current === current) setLoading(false);
     }
   }, []);
+
   useEffect(() => {
     const requestEpoch = generation;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      await refresh();
-      if (!disposed) timer = setTimeout(() => void poll(), 5000);
-    };
-    void poll();
+    void refresh();
+    const timer = setInterval(() => void refresh(), 60_000);
     return () => {
-      disposed = true;
-      clearTimeout(timer);
+      clearInterval(timer);
+      // Invalidates any response still in flight for the unmounted page.
       requestEpoch.current++;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!subscribe) return;
+    // Several frames can land together (a trigger and the run it queues); one read serves them all.
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribe((event: ServerEvent) => {
+      if (!REFRESH_KINDS.has(String(event.kind))) return;
+      if (pending) return;
+      pending = setTimeout(() => {
+        pending = null;
+        void refresh();
+      }, 150);
+    });
+    return () => {
+      unsubscribe();
+      if (pending) clearTimeout(pending);
+    };
+  }, [refresh, subscribe]);
+
   return {
     ...page,
     error,

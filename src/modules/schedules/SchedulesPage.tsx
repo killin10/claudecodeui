@@ -1,16 +1,47 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Clock, Plus, RefreshCw } from 'lucide-react';
+import { Clock, Plus, RefreshCw, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 
 import { api, readApiJson } from '@/shared/api';
-import { Button, Dialog, DialogContent, DialogTitle } from '@/shared/ui';
+import { Button, Dialog, DialogContent, DialogTitle, Input, LLMProviderLogo, Pill, PillBar, Shimmer } from '@/shared/ui';
 import type { Schedule } from '@/shared/types';
 import { createClientToken } from '@/shared/utils';
 import { ScheduleForm } from '@/modules/schedules/ScheduleForm';
 import { ScheduleCard } from '@/modules/schedules/ScheduleCard';
 import { useSchedules } from '@/modules/schedules/hooks/useSchedules';
+import { scheduleTaskStatus, type ScheduleTaskStatus } from '@/modules/schedules/utils/scheduleTiming';
+
+type StatusFilter = 'all' | ScheduleTaskStatus;
+const STATUS_FILTERS: StatusFilter[] = ['all', 'enabled', 'paused', 'completed'];
+
+/** Tasks of one target session, as the list groups them. */
+type SessionGroup = {
+  sessionId: string;
+  title: string;
+  provider?: string;
+  projectPath?: string | null;
+  tasks: Schedule[];
+};
+
+const groupBySession = (tasks: Schedule[]): SessionGroup[] => {
+  const groups = new Map<string, SessionGroup>();
+  tasks.forEach((task) => {
+    const group = groups.get(task.sessionId) ?? {
+      sessionId: task.sessionId,
+      title: task.sessionTitle || task.sessionId,
+      provider: task.provider,
+      projectPath: task.projectPath,
+      tasks: [],
+    };
+    group.tasks.push(task);
+    groups.set(task.sessionId, group);
+  });
+  return [...groups.values()]
+    .map((group) => ({ ...group, tasks: [...group.tasks].sort((left, right) => left.name.localeCompare(right.name)) }))
+    .sort((left, right) => left.title.localeCompare(right.title));
+};
 
 /** ProjectMainRegion renders schedules in the workspace, retaining the sidebar and global controls. */
 export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
@@ -31,7 +62,22 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
   const [busy, setBusy] = useState(false);
   // Deletion uses the same themed dialog as the rest of the workspace.
   const [pendingDelete, setPendingDelete] = useState<Schedule | null>(null);
+  // Free-text filter over task names, prompts and session titles; local to this page.
+  const [search, setSearch] = useState('');
+  // Which task statuses the list shows; `all` is the default so nothing is hidden by surprise.
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const runTokens = useRef(new Map<string, string>());
+
+  const groups = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const visible = data.items.filter((task) => (
+      (statusFilter === 'all' || scheduleTaskStatus(task) === statusFilter)
+      && (!needle || [task.name, task.message, task.sessionTitle ?? '', task.projectPath ?? ''].some((text) => text.toLowerCase().includes(needle)))
+    ));
+    return groupBySession(visible);
+  }, [data.items, search, statusFilter]);
+  const isFiltered = Boolean(search.trim()) || statusFilter !== 'all';
+
   async function action(task: Schedule, kind: 'pause' | 'resume' | 'run' | 'delete') {
     if (busy) return;
     setBusy(true);
@@ -62,9 +108,12 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
       setBusy(false);
     }
   }
+
+  const listError = (!pendingDelete && error) || data.error;
+
   return (
     <main className="flex h-full min-h-0 flex-col bg-background text-sm text-foreground">
-      <header className="pwa-header-safe flex shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-3 py-1.5 sm:px-4 sm:py-2">
+      <header className="pwa-header-safe flex shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-3 py-1.5 backdrop-blur-sm sm:px-4 sm:py-2">
         <div className="flex min-w-0 items-center gap-2">
           {mobileMenu}
           <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -89,32 +138,81 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
       <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
         <div className="mx-auto max-w-5xl space-y-4">
           <p className="text-sm text-muted-foreground">{t('schedules.intro')}</p>
-          {((!pendingDelete && error) || data.error) && (
-            <p role="alert" className="text-destructive">
-              {(!pendingDelete && error) || data.error}
-            </p>
-          )}
-          {data.loading && <p>{t('schedules.loading')}</p>}
-          {!data.loading && !data.error && data.items.length === 0 && (
-            <p className="rounded border p-8 text-center text-muted-foreground">
-              {t('schedules.empty')}
-            </p>
-          )}
-          <div className="space-y-3">
-            {data.items.map((task) => (
-              <ScheduleCard
-                key={task.scheduleId}
-                task={task}
-                busy={busy}
-                expanded={historyId === task.scheduleId}
-                onEdit={() => setEditing(task)}
-                onAction={(kind) => void action(task, kind)}
-                onHistory={() => setHistoryId(historyId === task.scheduleId ? null : task.scheduleId)}
-                onDelete={() => {
-                  setError('');
-                  setPendingDelete(task);
-                }}
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={t('schedules.filterPlaceholder')}
+                aria-label={t('schedules.filterPlaceholder')}
+                className="bg-background pl-9"
               />
+            </div>
+            <PillBar className="overflow-x-auto">
+              {STATUS_FILTERS.map((filter) => (
+                <Pill key={filter} isActive={statusFilter === filter} onClick={() => setStatusFilter(filter)}>
+                  {t(`schedules.filters.${filter}`)}
+                </Pill>
+              ))}
+            </PillBar>
+          </div>
+
+          {listError && (
+            <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {listError}
+            </p>
+          )}
+          {data.loading && (
+            <p className="py-6 text-center text-sm"><Shimmer>{t('schedules.loading')}</Shimmer></p>
+          )}
+          {!data.loading && !data.error && data.items.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border/70 bg-muted/15 px-4 py-10 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg border border-border/60 bg-background/80 text-muted-foreground">
+                <Clock className="h-5 w-5" />
+              </div>
+              <p className="mt-3 text-sm font-medium text-foreground">{t('schedules.empty')}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t('schedules.emptyHint')}</p>
+              <Button size="sm" className="mt-4" onClick={() => setEditing('new')}>
+                <Plus />
+                {t('schedules.create')}
+              </Button>
+            </div>
+          )}
+          {!data.loading && data.items.length > 0 && groups.length === 0 && isFiltered && (
+            <p className="rounded-lg border border-dashed border-border/70 bg-muted/15 px-4 py-8 text-center text-sm text-muted-foreground">
+              {t('schedules.noMatches')}
+            </p>
+          )}
+
+          <div className="space-y-6">
+            {groups.map((group) => (
+              <section key={group.sessionId} aria-label={group.title} className="space-y-2">
+                <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground">
+                  {group.provider && <LLMProviderLogo provider={group.provider} className="h-3.5 w-3.5 shrink-0" />}
+                  <span className="truncate font-medium text-foreground">{group.title}</span>
+                  {group.projectPath && <span className="hidden truncate sm:inline">· {group.projectPath}</span>}
+                  <span className="ml-auto shrink-0 tabular-nums">{t('schedules.taskCount', { count: group.tasks.length })}</span>
+                </div>
+                <div className="space-y-2">
+                  {group.tasks.map((task) => (
+                    <ScheduleCard
+                      key={task.scheduleId}
+                      task={task}
+                      busy={busy}
+                      expanded={historyId === task.scheduleId}
+                      onEdit={() => setEditing(task)}
+                      onAction={(kind) => void action(task, kind)}
+                      onHistory={() => setHistoryId(historyId === task.scheduleId ? null : task.scheduleId)}
+                      onDelete={() => {
+                        setError('');
+                        setPendingDelete(task);
+                      }}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
           {data.nextToken && (
@@ -124,12 +222,13 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
           )}
         </div>
       </div>
+
       <Dialog open={editing !== null} onOpenChange={(open) => {
         if (!open && !editorBusy) setEditing(null);
       }}>
         <DialogContent
           aria-label={t(editing === 'new' ? 'schedules.create' : 'schedules.edit')}
-          className="top-[calc((100dvh-var(--keyboard-height,0px))/2)] flex max-h-[calc(100dvh-var(--keyboard-height,0px)-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-hidden p-0"
+          className="top-[calc((100dvh-var(--keyboard-height,0px))/2)] flex max-h-[calc(100dvh-var(--keyboard-height,0px)-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-hidden"
         >
           {editing && (
             <ScheduleForm
@@ -146,6 +245,7 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
           )}
         </DialogContent>
       </Dialog>
+
       <Dialog
         open={pendingDelete !== null}
         onOpenChange={(open) => {
@@ -153,17 +253,16 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
         }}
       >
         <DialogContent className="max-w-sm p-5">
-          <DialogTitle>{t('schedules.delete')}</DialogTitle>
-          <h2 className="text-sm font-semibold">
+          <DialogTitle className="not-sr-only text-base font-semibold text-foreground">
             {t('schedules.delete')} · {pendingDelete?.name}
-          </h2>
+          </DialogTitle>
           <p className="mt-2 text-sm text-muted-foreground">{t('schedules.deleteConfirm')}</p>
           {error && (
-            <p role="alert" className="mt-2 text-sm text-destructive">
+            <p role="alert" className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {error}
             </p>
           )}
-          <div className="mt-4 flex justify-end gap-2">
+          <div className="mt-5 flex justify-end gap-2">
             <Button
               size="sm"
               variant="outline"

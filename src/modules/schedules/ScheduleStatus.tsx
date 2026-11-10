@@ -1,26 +1,49 @@
 import { useTranslation } from 'react-i18next';
 
-const STATUS_COLORS: Record<string, string> = {
-  enabled: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  succeeded: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  paused: 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  'waiting-for-input': 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  running: 'bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  queued: 'bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  failed: 'bg-destructive/10 text-destructive',
-  interrupted: 'bg-destructive/10 text-destructive',
+import { Badge } from '@/shared/ui';
+import { cn } from '@/shared/utils';
+import type { ScheduleTaskStatus } from '@/modules/schedules/utils/scheduleTiming';
+
+const TASK_STATUS_CLASSES: Record<ScheduleTaskStatus, string> = {
+  enabled: 'border-emerald-500/40 text-emerald-700 dark:text-emerald-400',
+  paused: 'border-amber-500/40 text-amber-700 dark:text-amber-400',
+  completed: 'border-border text-muted-foreground',
 };
 
-/** Schedule cards and history show status using both text and a colored dot. */
-export function ScheduleStatus({ state, enabled }: { state?: string | null; enabled?: boolean }) {
+const RUN_STATE_CLASSES: Record<string, string> = {
+  succeeded: 'text-emerald-700 dark:text-emerald-400',
+  'waiting-for-input': 'text-amber-700 dark:text-amber-400',
+  running: 'text-blue-700 dark:text-blue-400',
+  queued: 'text-blue-700 dark:text-blue-400',
+  failed: 'text-destructive',
+  interrupted: 'text-destructive',
+};
+
+type ScheduleStatusProps =
+  | { kind: 'task'; status: ScheduleTaskStatus }
+  | { kind: 'run'; state: string | null | undefined };
+
+/**
+ * Schedule cards and history show two different things with two different
+ * looks: a task's status as an outlined badge with a dot, and a run's state as
+ * a plain tinted label, so the two are never read as the same thing.
+ */
+export function ScheduleStatus(props: ScheduleStatusProps) {
   const { t } = useTranslation('common');
-  const key = enabled === undefined ? state : enabled ? 'enabled' : 'paused';
-  if (!key) return <span className="text-muted-foreground">—</span>;
-  const label = enabled === undefined ? `schedules.states.${key}` : `schedules.${key}`;
+  if (props.kind === 'task') {
+    return (
+      <Badge variant="outline" className={cn('gap-1.5 rounded-full px-2 py-0.5 font-medium', TASK_STATUS_CLASSES[props.status])}>
+        <span aria-hidden="true" className={cn('h-1.5 w-1.5 rounded-full bg-current', props.status === 'enabled' && 'animate-pulse')} />
+        {t(`schedules.${props.status}`)}
+      </Badge>
+    );
+  }
+  if (!props.state) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
   return (
-    <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[key] ?? 'bg-muted text-muted-foreground'}`}>
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
-      {t(label, { defaultValue: key })}
+    <span className={cn('text-xs font-medium', RUN_STATE_CLASSES[props.state] ?? 'text-muted-foreground')}>
+      {t(`schedules.states.${props.state}`, { defaultValue: props.state })}
     </span>
   );
 }

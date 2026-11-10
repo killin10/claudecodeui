@@ -43,6 +43,13 @@ export function createSchedulesRouter(browser = false) {
     asyncHandler(async (req, res) => res.json(schedulesService.preview(req.body))),
   );
   router.get(
+    '/summary',
+    asyncHandler(async (req, res) => {
+      fields(req.query, []);
+      res.json(schedulesService.summary(user(res)));
+    }),
+  );
+  router.get(
     '/sessions',
     asyncHandler(async (req, res) =>
       res.json(

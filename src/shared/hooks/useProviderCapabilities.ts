@@ -11,6 +11,8 @@ import type { LLMProvider } from '@/shared/types';
  */
 type ProviderCapabilityRow = {
   provider: LLMProvider;
+  /** Permission modes the provider accepts, in the provider's own spelling; the schedules form filters its picker by it. */
+  permissionModes?: string[];
   supportsSessionForking?: boolean;
   supportsSideQuestions?: boolean;
 };

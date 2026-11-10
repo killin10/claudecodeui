@@ -6,6 +6,7 @@ import type { SessionSubmission } from '@/shared/types.js';
 
 import { sessionControlService } from './session-control.service.js';
 import { createSubmissionResult } from './submission-result.js';
+import { transitionSubmission } from './submission-transition.js';
 import { invalid } from './session-control.validation.js';
 
 const ACTIVE: SessionSubmission['state'][] = ['running', 'waiting-for-input'];
@@ -73,10 +74,10 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
         }
         const session = sessionsDb.getSessionById(row.sessionId);
         if (!session || session.isArchived) {
-          sessionControlDb.transition(row.submissionId, ['queued'], 'failed', null, 'Session was deleted or archived before execution.');
+          transitionSubmission(row, ['queued'], 'failed', null, 'Session was deleted or archived before execution.');
           continue;
         }
-        if (!sessionControlDb.transition(row.submissionId, ['queued'], 'running')) {
+        if (!transitionSubmission(row, ['queued'], 'running')) {
           continue;
         }
         executing.add(row.sessionId);
@@ -103,7 +104,7 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
     async cancel(userId: number, sessionId: string, submissionId: string) {
       const row = sessionControlService.submission(userId, sessionId, submissionId);
       if (row.state === 'queued') {
-        sessionControlDb.transition(submissionId, ['queued'], 'cancelled');
+        transitionSubmission(row, ['queued'], 'cancelled');
       }
       if (ACTIVE.includes(row.state)) {
         const run = owned.get(submissionId);
@@ -125,7 +126,7 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
           invalid('Provider did not acknowledge cancellation.', 'CANCEL_FAILED', 409);
         }
         chatRunRegistry.completeRunIfCurrent(run, { exitCode: 0, aborted: true });
-        sessionControlDb.transition(submissionId, ACTIVE, 'cancelled');
+        transitionSubmission(row, ACTIVE, 'cancelled');
       }
       return sessionControlService.submission(userId, sessionId, submissionId);
     },

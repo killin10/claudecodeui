@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, readApiJson } from '@/shared/api';
+import { Shimmer } from '@/shared/ui';
 
 type RunResult = {
   submission: { result: { content?: string; text?: string }[]; error: string | null } | null;
@@ -34,11 +35,13 @@ export function ScheduleRunResult({ scheduleId, runId }: { scheduleId: string; r
   return (
     <div className="pt-2" aria-live="polite">
       {!result ? (
-        <p role="status" className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground">{t('schedules.loading')}</p>
+        <p role="status" className="rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
+          <Shimmer>{t('schedules.loading')}</Shimmer>
+        </p>
       ) : 'error' in result ? (
-        <p role="alert" className="rounded-md bg-destructive/10 p-3 text-xs text-destructive">{result.error}</p>
+        <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{result.error}</p>
       ) : (
-        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 text-xs">
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/20 p-3 text-xs">
           {result.content || t('schedules.noResult')}
         </pre>
       )}

@@ -7,7 +7,7 @@ import {
   sessionControlDb,
 } from '@/modules/database/index.js';
 import { sessionControlService, submissionDispatcher } from '@/modules/session-control/index.js';
-import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { broadcastToConnectedClients, chatRunRegistry } from '@/modules/websocket/index.js';
 import type { Schedule, ScheduleRun } from '@/shared/types.js';
 import {
   AppError,
@@ -26,6 +26,21 @@ import {
   scheduleDefinition,
   scheduleTiming,
 } from './schedule-timing.js';
+
+/**
+ * Tells every open socket that a schedule or one of its runs changed, so the
+ * schedules page and the sidebar indicator refresh instead of polling. Ids only;
+ * clients read the detail through their own authenticated requests. Called after
+ * the owning transaction commits, never inside it.
+ */
+function announce(task: Pick<Schedule, 'scheduleId' | 'sessionId'>): void {
+  broadcastToConnectedClients(JSON.stringify({
+    kind: 'schedules_changed',
+    scheduleId: task.scheduleId,
+    sessionId: task.sessionId,
+    timestamp: new Date().toISOString(),
+  }));
+}
 
 function owned(userId: number, id: string, includeDeleted = false): Schedule {
   const task = schedulesDb.get(id);
@@ -126,6 +141,10 @@ export const schedulesService = {
     };
   },
   show: owned,
+  /** Per-session task counts for the sidebar; one row per session that has at least one task. */
+  summary(userId: number) {
+    return { items: schedulesDb.summary(userId) };
+  },
   preview(raw: unknown, now = new Date()) {
     const timing = scheduleTiming(fields(raw, ['cron', 'runAt', 'timezone']));
     const times: string[] = [];
@@ -173,7 +192,7 @@ export const schedulesService = {
       definition.model,
       definition.permissionMode,
     );
-    return getConnection().transaction(() =>
+    const created = getConnection().transaction(() =>
       receipt(userId, 'schedule.create', clientToken, request, () => {
         activeSession(definition.sessionId);
         const now = new Date();
@@ -194,6 +213,8 @@ export const schedulesService = {
         return task;
       }),
     )();
+    announce(created);
+    return created;
   },
   async update(userId: number, id: string, raw: unknown) {
     const { revision: expected, ...changes } = fields(raw, [
@@ -215,7 +236,7 @@ export const schedulesService = {
       definition.model,
       definition.permissionMode,
     );
-    return getConnection().transaction(() => {
+    const updated = getConnection().transaction(() => {
       const current = owned(userId, id);
       revision(expected, current);
       activeSession(current.sessionId);
@@ -229,9 +250,11 @@ export const schedulesService = {
       if (current.enabled && !nextRunAt) invalid('runAt must be in the future.');
       return save(current, { ...definition, nextRunAt: current.enabled ? nextRunAt : null });
     })();
+    announce(updated);
+    return updated;
   },
   change(userId: number, id: string, action: 'pause' | 'resume' | 'delete') {
-    return getConnection().transaction(() => {
+    const changed = getConnection().transaction(() => {
       const task = owned(userId, id, action === 'delete');
       if (action === 'resume') {
         if (task.enabled) return task;
@@ -246,10 +269,12 @@ export const schedulesService = {
         deleted: action === 'delete' || task.deleted,
       });
     })();
+    announce(changed);
+    return changed;
   },
   run(userId: number, id: string, raw: unknown = {}) {
     const input = fields(raw, ['clientToken']);
-    return getConnection().transaction(() =>
+    const run = getConnection().transaction(() =>
       receipt(userId, 'schedule.run', input.clientToken, { scheduleId: id }, () => {
         const task = owned(userId, id);
         activeSession(task.sessionId);
@@ -259,6 +284,8 @@ export const schedulesService = {
         return record(task, now.toISOString(), 'manual', null, now);
       }),
     )();
+    announce(run);
+    return run;
   },
   runs(userId: number, id: string, raw: unknown) {
     owned(userId, id, true);
@@ -290,6 +317,7 @@ export const schedulesService = {
     const run = this.execution(userId, id, runId);
     if (run.submissionId)
       await submissionDispatcher.cancel(userId, run.sessionId, run.submissionId);
+    announce(run);
     return this.execution(userId, id, runId);
   },
 };
@@ -299,7 +327,10 @@ export function dispatchSchedules(now = new Date()): number {
   let count = 0;
   for (const candidate of schedulesDb.due(now.toISOString())) {
     try {
-      count += getConnection().transaction(() => dispatchOne(candidate.scheduleId, now))();
+      const dispatched = getConnection().transaction(() => dispatchOne(candidate.scheduleId, now))();
+      count += dispatched;
+      // After the commit, so a rolled-back trigger never announces a change nobody can see.
+      if (dispatched) announce(candidate);
     } catch (error) {
       console.error('[Schedules] Dispatch failed', { scheduleId: candidate.scheduleId, error });
     }

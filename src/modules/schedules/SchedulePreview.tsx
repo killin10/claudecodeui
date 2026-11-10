@@ -1,10 +1,9 @@
-import cronstrue from 'cronstrue';
-import 'cronstrue/locales/zh_CN';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, readApiJson } from '@/shared/api';
 import { ScheduleTime } from '@/modules/schedules/ScheduleTime';
+import { describeCron } from '@/modules/schedules/utils/scheduleTiming';
 
 /** ScheduleForm keys this preview by timing, so an old request cannot replace a newer draft. */
 export function SchedulePreview({
@@ -29,13 +28,7 @@ export function SchedulePreview({
         const data = await readApiJson<{ times: string[] }>(
           await api.schedules.preview({ cron, runAt, timezone }),
         );
-        const summary = cron
-          ? cronstrue.toString(cron, {
-              locale: language.startsWith('zh') ? 'zh_CN' : 'en',
-              use24HourTimeFormat: true,
-            })
-          : runAt!;
-        if (!disposed) setResult({ times: data.times, summary });
+        if (!disposed) setResult({ times: data.times, summary: cron ? describeCron(cron, language) : runAt ?? '' });
       } catch (error) {
         if (!disposed) setResult({ error: (error as Error).message });
       }
@@ -49,7 +42,7 @@ export function SchedulePreview({
     <section
       aria-label={t('schedules.preview')}
       aria-live="polite"
-      className="rounded-md bg-muted/40 p-3 text-xs text-muted-foreground"
+      className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground"
     >
       <p className="mb-1 font-medium text-foreground">
         {t(cron ? 'schedules.nextFive' : 'schedules.next')}

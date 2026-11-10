@@ -49,6 +49,14 @@ export const useWebSocket = () => {
   return context;
 };
 
+/**
+ * The socket when a provider is mounted, or null. For features that work
+ * without live updates (the schedules page and the sidebar's schedule
+ * indicator read their data over HTTP and only use the socket to refresh), so
+ * they also render in tests and embeddings that have no provider.
+ */
+export const useOptionalWebSocket = () => useContext(WebSocketContext);
+
 const buildWebSocketUrl = (token: string | null) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)

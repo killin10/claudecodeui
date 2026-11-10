@@ -4,7 +4,7 @@ import { Archive, Clock, Check, CheckSquare, Edit2, GitBranch, Loader2, MoreHori
 import type { TFunction } from 'i18next';
 
 import { SidebarSessionTooltip } from '@/modules/sidebar/SidebarSessionTooltip';
-import { ScheduleLink } from '@/modules/schedules';
+import { ScheduleLink, useSessionScheduleSummary } from '@/modules/schedules';
 
 import { Badge, Dialog, DialogContent, DialogTitle, LLMProviderLogo, Tooltip, buttonVariants } from '@/shared/ui';
 import { cn } from '@/shared/utils';
@@ -98,6 +98,23 @@ function SidebarSessionItem({
   // the desktop SessionOptions menu. The capability request is shared by rows.
   const forkableProviders = useSessionForkingProviders();
   const canFork = Boolean(onForkSession) && forkableProviders.has(session.__provider) && !isProcessing;
+  const scheduleSummary = useSessionScheduleSummary(session.id);
+  // Shown next to the message count whenever a task targets this session, so the
+  // session list tells which sessions run on a schedule without opening /schedules.
+  const scheduleIndicator = scheduleSummary && scheduleSummary.total > 0 ? (
+    <Tooltip content={t('common:schedules.sidebarIndicator', { count: scheduleSummary.enabled, total: scheduleSummary.total })} position="top">
+      <span
+        className={cn(
+          'inline-flex items-center gap-0.5 rounded-md px-1 text-[11px] tabular-nums',
+          scheduleSummary.enabled > 0 ? 'text-muted-foreground' : 'text-muted-foreground/60',
+        )}
+        aria-label={t('common:schedules.sidebarIndicator', { count: scheduleSummary.enabled, total: scheduleSummary.total })}
+      >
+        <Clock className="h-3 w-3" aria-hidden="true" />
+        {scheduleSummary.enabled}
+      </span>
+    </Tooltip>
+  ) : null;
 
   // Sessions are owned by a project identified by `projectId` (DB primary key)
   // after the projectName → projectId migration.
@@ -230,12 +247,13 @@ function SidebarSessionItem({
                   <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{compactSessionAge}</span>
                 )}
               </div>
-              <div className="mt-0.5 flex items-center">
+              <div className="mt-0.5 flex items-center gap-1.5">
                 {sessionView.messageCount > 0 && (
                   <Badge variant="secondary" className="px-1 py-0 text-xs">
                     {sessionView.messageCount}
                   </Badge>
                 )}
+                {scheduleIndicator}
               </div>
             </div>
 
@@ -510,8 +528,9 @@ function SidebarSessionItem({
                     </span>
                   )}
                 </div>
-                <div className="mt-0.5 flex items-center">
+                <div className="mt-0.5 flex items-center gap-1.5">
                   {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
+                  {scheduleIndicator}
                 </div>
               </div>
             </div>
