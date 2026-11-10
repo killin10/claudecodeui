@@ -462,21 +462,27 @@ export const api = {
         effort,
       }),
 
-    mcpServers: (
-      provider: string,
-      { scope, workspacePath }: { scope: string; workspacePath?: string },
-    ) => get(`/api/providers/${provider}/mcp/servers${query({ scope, workspacePath })}`),
+    // One provider's own MCP config; the settings page uses these to toggle a single provider's copy.
     saveMcpServer: (provider: string, payload: unknown) =>
-      post(`/api/providers/${provider}/mcp/servers`, payload),
+      post(`/api/providers/${encodeURIComponent(provider)}/mcp/servers`, payload),
     deleteMcpServer: (
       provider: string,
       serverName: string,
       { scope, workspacePath }: { scope: string; workspacePath?: string },
     ) =>
       del(
-        `/api/providers/${provider}/mcp/servers/${encodeURIComponent(serverName)}${query({ scope, workspacePath })}`,
+        `/api/providers/${encodeURIComponent(provider)}/mcp/servers/${encodeURIComponent(serverName)}${query({ scope, workspacePath })}`,
       ),
-    saveGlobalMcpServer: (payload: unknown) => post('/api/providers/mcp/servers/global', payload),
+    // Cross-provider MCP view: one row per server name; project/local rows need a workspacePath.
+    aggregatedMcpServers: ({ workspacePath }: { workspacePath?: string } = {}) =>
+      get(`/api/providers/mcp/servers${query({ workspacePath })}`),
+    saveMcpServerToProviders: (serverName: string, payload: unknown) =>
+      put(`/api/providers/mcp/servers/${encodeURIComponent(serverName)}`, payload),
+    deleteMcpServerFromAllProviders: (
+      serverName: string,
+      { scope, workspacePath }: { scope: string; workspacePath?: string },
+    ) =>
+      del(`/api/providers/mcp/servers/${encodeURIComponent(serverName)}${query({ scope, workspacePath })}`),
 
     skills: (provider: string, { workspacePath }: { workspacePath?: string } = {}) =>
       get(`/api/providers/${encodeURIComponent(provider)}/skills${query({ workspacePath })}`),

@@ -68,7 +68,7 @@ const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string)
 
 export class OpenCodeMcpProvider extends McpProvider {
   constructor() {
-    super('opencode', ['user', 'project'], ['stdio', 'http']);
+    super('opencode');
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

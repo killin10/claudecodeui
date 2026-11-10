@@ -1,11 +1,19 @@
-import { MCP_SUPPORTED_TRANSPORTS, MCP_SUPPORTS_WORKING_DIRECTORY } from '@/shared/constants';
-import type { KeyValueMap, McpFormState, McpProvider, McpScope, McpTransport, UpsertProviderMcpServerPayload } from '@/shared/types';
+import type { McpCapabilitiesByProvider } from '@/modules/mcp/hooks/useMcpCapabilities';
+import type {
+  KeyValueMap,
+  McpFormState,
+  McpProvider,
+  McpProviderField,
+  McpScope,
+  McpTransport,
+  SaveMcpServerPayload,
+} from '@/shared/types';
+
+/** Why a provider cannot take part in a save, for the form's error message and the disabled checkbox hint. */
+export type McpProviderRejection = { provider: McpProvider; reason: 'scope' | 'transport' | 'unknown' };
 
 type CreateMcpPayloadOptions = {
-  supportedTransports?: McpTransport[];
-  supportsWorkingDirectory?: boolean;
-  includeProviderSpecificFields?: boolean;
-  unsupportedTransportMessage?: (transport: McpTransport) => string;
+  rejectionMessage?: (rejection: McpProviderRejection) => string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -63,10 +71,6 @@ export const maskSecret = (value: unknown): string => {
   return `${normalizedValue.slice(0, 2)}****${normalizedValue.slice(-2)}`;
 };
 
-export const isMcpScope = (value: unknown): value is McpScope => (
-  value === 'user' || value === 'local' || value === 'project'
-);
-
 export const isMcpTransport = (value: unknown): value is McpTransport => (
   value === 'stdio' || value === 'http' || value === 'sse'
 );
@@ -79,26 +83,74 @@ export const getErrorMessage = (error: unknown): string => (
   error instanceof Error ? error.message : 'Unknown error'
 );
 
-const assertSupportedTransport = (
+/**
+ * Why `provider` cannot hold a server with this scope and transport, or null
+ * when it can. Unknown capabilities (not loaded, or a provider the backend no
+ * longer reports) count as a rejection so nothing is written blind.
+ */
+export const getProviderRejection = (
   provider: McpProvider,
+  scope: McpScope,
   transport: McpTransport,
-  options?: CreateMcpPayloadOptions,
-) => {
-  const supportedTransports = options?.supportedTransports ?? MCP_SUPPORTED_TRANSPORTS[provider];
-  if (supportedTransports.includes(transport)) {
-    return;
+  capabilities: McpCapabilitiesByProvider,
+): McpProviderRejection | null => {
+  const providerCapabilities = capabilities[provider];
+  if (!providerCapabilities) {
+    return { provider, reason: 'unknown' };
   }
-
-  throw new Error(
-    options?.unsupportedTransportMessage?.(transport) ?? `${provider} does not support ${transport} MCP servers`,
-  );
+  if (!providerCapabilities.scopes.includes(scope)) {
+    return { provider, reason: 'scope' };
+  }
+  if (!providerCapabilities.transports.includes(transport)) {
+    return { provider, reason: 'transport' };
+  }
+  return null;
 };
 
-export const parseJsonMcpPayload = (
-  provider: McpProvider,
-  formData: McpFormState,
+/** The provider-native fields at least one of the given providers can persist; the form shows only these. */
+export const getSupportedFields = (
+  providers: McpProvider[],
+  capabilities: McpCapabilitiesByProvider,
+): Set<McpProviderField> => (
+  new Set(providers.flatMap((provider) => capabilities[provider]?.fields ?? []))
+);
+
+const assertProvidersAccept = (
+  formData: Pick<McpFormState, 'providers' | 'scope'>,
+  transport: McpTransport,
+  capabilities: McpCapabilitiesByProvider,
   options?: CreateMcpPayloadOptions,
-): UpsertProviderMcpServerPayload => {
+) => {
+  if (formData.providers.length === 0) {
+    throw new Error('Select at least one provider');
+  }
+  for (const provider of formData.providers) {
+    const rejection = getProviderRejection(provider, formData.scope, transport, capabilities);
+    if (rejection) {
+      throw new Error(
+        options?.rejectionMessage?.(rejection) ?? `${provider} does not support ${rejection.reason === 'scope' ? formData.scope : transport} MCP servers`,
+      );
+    }
+  }
+};
+
+// Codex-only fields ride along only when a selected provider can store them, so
+// a Claude-only save never carries fields Claude would silently drop.
+const pickProviderFields = (
+  fields: Set<McpProviderField>,
+  values: { cwd?: string; envVars?: string[]; bearerTokenEnvVar?: string; envHttpHeaders?: KeyValueMap },
+) => ({
+  cwd: fields.has('cwd') ? values.cwd : undefined,
+  envVars: fields.has('envVars') ? values.envVars : undefined,
+  bearerTokenEnvVar: fields.has('bearerTokenEnvVar') ? values.bearerTokenEnvVar : undefined,
+  envHttpHeaders: fields.has('envHttpHeaders') ? values.envHttpHeaders : undefined,
+});
+
+export const parseJsonMcpPayload = (
+  formData: McpFormState,
+  capabilities: McpCapabilitiesByProvider,
+  options?: CreateMcpPayloadOptions,
+): SaveMcpServerPayload => {
   const parsed = JSON.parse(formData.jsonInput) as unknown;
   if (!isRecord(parsed)) {
     throw new Error('JSON configuration must be an object');
@@ -110,7 +162,7 @@ export const parseJsonMcpPayload = (
     throw new Error('Missing required field: type');
   }
 
-  assertSupportedTransport(provider, transport, options);
+  assertProvidersAccept(formData, transport, capabilities, options);
 
   if (transport === 'stdio' && !readString(parsed.command)) {
     throw new Error('stdio type requires a command field');
@@ -120,58 +172,61 @@ export const parseJsonMcpPayload = (
     throw new Error(`${transport} type requires a url field`);
   }
 
+  const fields = getSupportedFields(formData.providers, capabilities);
   return {
     name: formData.name.trim(),
     scope: formData.scope,
     workspacePath: formData.scope === 'user' ? undefined : formData.workspacePath,
+    providers: formData.providers,
     transport,
     command: readString(parsed.command),
     args: readStringArray(parsed.args) ?? [],
     env: readStringRecord(parsed.env) ?? {},
-    cwd: (options?.supportsWorkingDirectory ?? MCP_SUPPORTS_WORKING_DIRECTORY[provider])
-      ? readString(parsed.cwd)
-      : undefined,
     url: readString(parsed.url),
     headers: readStringRecord(parsed.headers ?? parsed.http_headers) ?? {},
-    envVars: (options?.includeProviderSpecificFields ?? provider === 'codex')
-      ? readStringArray(parsed.envVars ?? parsed.env_vars) ?? []
-      : undefined,
-    bearerTokenEnvVar: (options?.includeProviderSpecificFields ?? provider === 'codex')
-      ? readString(parsed.bearerTokenEnvVar ?? parsed.bearer_token_env_var)
-      : undefined,
-    envHttpHeaders: (options?.includeProviderSpecificFields ?? provider === 'codex')
-      ? readStringRecord(parsed.envHttpHeaders ?? parsed.env_http_headers) ?? {}
-      : undefined,
+    ...pickProviderFields(fields, {
+      cwd: readString(parsed.cwd),
+      envVars: readStringArray(parsed.envVars ?? parsed.env_vars) ?? [],
+      bearerTokenEnvVar: readString(parsed.bearerTokenEnvVar ?? parsed.bearer_token_env_var),
+      envHttpHeaders: readStringRecord(parsed.envHttpHeaders ?? parsed.env_http_headers) ?? {},
+    }),
   };
 };
 
+/**
+ * Turns the form into the fan-out save body, keeping only the connection
+ * fields that fit the transport and the extra fields some selected provider
+ * can persist. Throws when a selected provider cannot hold the server.
+ */
 export const createMcpPayloadFromForm = (
-  provider: McpProvider,
   formData: McpFormState,
+  capabilities: McpCapabilitiesByProvider,
   options?: CreateMcpPayloadOptions,
-): UpsertProviderMcpServerPayload => {
+): SaveMcpServerPayload => {
   if (formData.importMode === 'json') {
-    return parseJsonMcpPayload(provider, formData, options);
+    return parseJsonMcpPayload(formData, capabilities, options);
   }
 
-  assertSupportedTransport(provider, formData.transport, options);
-
-  const supportsWorkingDirectory = options?.supportsWorkingDirectory ?? MCP_SUPPORTS_WORKING_DIRECTORY[provider];
-  const includeProviderSpecificFields = options?.includeProviderSpecificFields ?? provider === 'codex';
+  assertProvidersAccept(formData, formData.transport, capabilities, options);
+  const fields = getSupportedFields(formData.providers, capabilities);
+  const isStdio = formData.transport === 'stdio';
 
   return {
     name: formData.name.trim(),
     scope: formData.scope,
     workspacePath: formData.scope === 'user' ? undefined : formData.workspacePath,
+    providers: formData.providers,
     transport: formData.transport,
-    command: formData.transport === 'stdio' ? formData.command.trim() : undefined,
-    args: formData.transport === 'stdio' ? formData.args : undefined,
+    command: isStdio ? formData.command.trim() : undefined,
+    args: isStdio ? formData.args : undefined,
     env: formData.env,
-    cwd: supportsWorkingDirectory ? formData.cwd.trim() || undefined : undefined,
-    url: formData.transport !== 'stdio' ? formData.url.trim() : undefined,
-    headers: formData.transport !== 'stdio' ? formData.headers : undefined,
-    envVars: includeProviderSpecificFields ? formData.envVars : undefined,
-    bearerTokenEnvVar: includeProviderSpecificFields ? formData.bearerTokenEnvVar.trim() || undefined : undefined,
-    envHttpHeaders: includeProviderSpecificFields ? formData.envHttpHeaders : undefined,
+    url: isStdio ? undefined : formData.url.trim(),
+    headers: isStdio ? undefined : formData.headers,
+    ...pickProviderFields(fields, {
+      cwd: formData.cwd.trim() || undefined,
+      envVars: formData.envVars,
+      bearerTokenEnvVar: formData.bearerTokenEnvVar.trim() || undefined,
+      envHttpHeaders: formData.envHttpHeaders,
+    }),
   };
 };

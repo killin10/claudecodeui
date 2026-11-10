@@ -1,4 +1,4 @@
-import type { LLMProvider } from '@/shared/types.js';
+import type { LLMProvider, ProviderMcpCapabilities } from '@/shared/types.js';
 
 /**
  * Static, backend-owned description of what one provider integration supports.
@@ -54,6 +54,12 @@ type ProviderCapabilities = {
    * Requires a runtime that keeps its CLI's input open during a turn.
    */
   supportsSteering: boolean;
+  /**
+   * What the provider's MCP config format can hold. The MCP adapters validate
+   * scope and transport against this, and the settings UI builds its form from
+   * it, so it is the one place the per-provider MCP matrix lives.
+   */
+  mcp: ProviderMcpCapabilities;
 };
 
 /**
@@ -83,6 +89,9 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // Streaming input stays open for the whole run, and a user message written
     // to it with priority `next` joins the running turn.
     supportsSteering: true,
+    // `local` lives in ~/.claude.json under the project path; `.mcp.json` is the
+    // project scope. Claude is the only CLI that still speaks SSE.
+    mcp: { scopes: ['user', 'local', 'project'], transports: ['stdio', 'http', 'sse'], fields: [] },
   },
   cursor: {
     provider: 'cursor',
@@ -99,6 +108,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsSessionForking: false,
     supportsSideQuestions: false,
     supportsSteering: false,
+    mcp: { scopes: ['user', 'project'], transports: ['stdio', 'http'], fields: ['cwd'] },
   },
   codex: {
     provider: 'codex',
@@ -119,6 +129,13 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsSessionForking: true,
     supportsSideQuestions: true,
     supportsSteering: false,
+    // config.toml carries env_vars (names forwarded from the parent env),
+    // bearer_token_env_var and env_http_headers, which no other CLI has.
+    mcp: {
+      scopes: ['user', 'project'],
+      transports: ['stdio', 'http'],
+      fields: ['cwd', 'envVars', 'bearerTokenEnvVar', 'envHttpHeaders'],
+    },
   },
   opencode: {
     provider: 'opencode',
@@ -142,6 +159,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsSessionForking: false,
     supportsSideQuestions: true,
     supportsSteering: false,
+    mcp: { scopes: ['user', 'project'], transports: ['stdio', 'http'], fields: [] },
   },
 };
 

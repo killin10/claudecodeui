@@ -15,7 +15,7 @@ import {
 
 export class CursorMcpProvider extends McpProvider {
   constructor() {
-    super('cursor', ['user', 'project'], ['stdio', 'http']);
+    super('cursor');
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

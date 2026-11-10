@@ -1,5 +1,4 @@
-import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, McpProject, SkillsProject } from '@/shared/types';
-import { McpServers } from '@/modules/mcp';
+import type { AgentCategory, AgentContextByProvider, AgentProvider, AgentSettingsProject, ClaudePermissionsState, CodexPermissionMode, CursorPermissionsState, SkillsProject } from '@/shared/types';
 import { ProviderSkills } from '@/modules/skills';
 import AccountContent from '@/modules/settings/tabs/agents-settings/sections/content/AccountContent';
 import PermissionsContent from '@/modules/settings/tabs/agents-settings/sections/content/PermissionsContent';
@@ -81,20 +80,6 @@ export default function AgentCategoryContentSection({
           agent="codex"
           permissionMode={codexPermissionMode}
           onPermissionModeChange={onCodexPermissionModeChange}
-        />
-      )}
-
-      {selectedCategory === 'mcp' && (
-        // AgentSettingsProject.name is populated from the DB projectId by
-        // normalizeProjectForSettings, so we can map it straight through.
-        <McpServers
-          selectedProvider={selectedAgent}
-          currentProjects={projects.map<McpProject>((project) => ({
-            projectId: project.name,
-            displayName: project.displayName,
-            fullPath: project.fullPath,
-            path: project.path,
-          }))}
         />
       )}
 

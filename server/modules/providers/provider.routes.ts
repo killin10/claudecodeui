@@ -19,6 +19,7 @@ import type {
   McpTransport,
   ProviderSkillCreateFile,
   ProviderSkillCreateInput,
+  SaveMcpServerToProvidersInput,
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse, SIDE_QUESTION_ID_PATTERN } from '@/shared/utils.js';
@@ -224,6 +225,38 @@ const parseMcpUpsertPayload = (payload: unknown): UpsertProviderMcpServerInput =
         ),
       )
       : undefined,
+  };
+};
+
+// The fan-out body is the per-provider upsert body plus the providers that
+// should end up holding the server and, after a rename, the name to drop.
+const parseMcpSavePayload = (payload: unknown): SaveMcpServerToProvidersInput => {
+  const upsert = parseMcpUpsertPayload(payload);
+  const body = payload as Record<string, unknown>;
+  if (!upsert.scope) {
+    throw new AppError('scope is required.', {
+      code: 'MCP_SCOPE_REQUIRED',
+      statusCode: 400,
+    });
+  }
+  if (upsert.scope !== 'user' && !upsert.workspacePath) {
+    throw new AppError('workspacePath is required for project and local MCP scopes.', {
+      code: 'MCP_WORKSPACE_REQUIRED',
+      statusCode: 400,
+    });
+  }
+  if (!Array.isArray(body.providers) || body.providers.length === 0) {
+    throw new AppError('providers must list at least one provider.', {
+      code: 'MCP_PROVIDERS_REQUIRED',
+      statusCode: 400,
+    });
+  }
+
+  return {
+    ...upsert,
+    scope: upsert.scope,
+    providers: [...new Set(body.providers.map((entry) => parseProvider(entry)))],
+    previousName: readOptionalQueryString(body.previousName),
   };
 };
 
@@ -841,22 +874,41 @@ router.delete(
   }),
 );
 
-router.post(
-  '/mcp/servers/global',
+// Cross-provider view: one row per server name, with each provider's copy
+// marked present, absent or unsupported. Project and local scopes are only
+// filled in when a workspacePath is given.
+router.get(
+  '/mcp/servers',
   asyncHandler(async (req: Request, res: Response) => {
-    const payload = parseMcpUpsertPayload(req.body);
-    if (payload.scope === 'local') {
-      throw new AppError('Global MCP add supports only "user" or "project" scopes.', {
-        code: 'INVALID_GLOBAL_MCP_SCOPE',
-        statusCode: 400,
-      });
-    }
+    const workspacePath = readOptionalQueryString(req.query.workspacePath);
+    const scopes = await providerMcpService.listAggregatedMcpServers({ workspacePath });
+    res.json(createApiSuccessResponse({ scopes }));
+  }),
+);
 
-    const results = await providerMcpService.addMcpServerToAllProviders({
-      ...payload,
-      scope: payload.scope === 'user' ? 'user' : 'project',
+router.put(
+  '/mcp/servers/:name',
+  asyncHandler(async (req: Request, res: Response) => {
+    const payload = parseMcpSavePayload({
+      ...(req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {}),
+      name: readPathParam(req.params.name, 'name'),
     });
-    res.status(201).json(createApiSuccessResponse({ results }));
+    const results = await providerMcpService.saveMcpServerToProviders(payload);
+    res.json(createApiSuccessResponse({ results }));
+  }),
+);
+
+router.delete(
+  '/mcp/servers/:name',
+  asyncHandler(async (req: Request, res: Response) => {
+    const scope = parseMcpScope(req.query.scope);
+    const workspacePath = readOptionalQueryString(req.query.workspacePath);
+    const results = await providerMcpService.removeMcpServerFromAllProviders({
+      name: readPathParam(req.params.name, 'name'),
+      scope,
+      workspacePath,
+    });
+    res.json(createApiSuccessResponse({ results }));
   }),
 );
 

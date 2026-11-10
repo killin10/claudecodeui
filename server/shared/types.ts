@@ -1006,6 +1006,82 @@ export type UpsertProviderMcpServerInput = {
   envHttpHeaders?: Record<string, string>;
 };
 
+/**
+ * Provider-native MCP config fields beyond the common command/args/env and
+ * url/headers set. A provider's adapter only persists the fields it lists in
+ * `ProviderMcpCapabilities.fields`; the others are dropped on write.
+ */
+export type McpProviderField = 'cwd' | 'envVars' | 'bearerTokenEnvVar' | 'envHttpHeaders';
+
+/**
+ * What one provider's MCP config format can hold. The single source of truth
+ * for scope/transport validation in the MCP adapters and for the settings UI,
+ * which reads it from the capabilities endpoint instead of keeping its own table.
+ */
+export type ProviderMcpCapabilities = {
+  scopes: McpScope[];
+  transports: McpTransport[];
+  fields: McpProviderField[];
+};
+
+/**
+ * The provider-independent part of an MCP server entry: everything except who
+ * stores it and under which name and scope. Fan-out writes carry one of these
+ * and each adapter maps it to its own format.
+ */
+export type McpServerDefinition = Omit<ProviderMcpServer, 'provider' | 'name' | 'scope'>;
+
+/**
+ * Whether one provider has its own copy of an aggregated MCP server.
+ * `unsupported` means the provider cannot hold it at all (the scope is not
+ * one its config format has), as opposed to `absent`, which it could but does not.
+ */
+export type McpProviderPresence = 'present' | 'absent' | 'unsupported';
+
+/**
+ * One MCP server as the settings UI sees it: the copies every provider keeps
+ * under the same name, scope and workspace, merged into one row.
+ *
+ * `definition` comes from the first provider (in registry order) that has a
+ * copy. `differs` on a provider marks a copy whose common fields disagree with
+ * that definition, which happens when a copy was edited through one CLI only;
+ * `hasDrift` is true when any copy differs. `managed` entries are written by a
+ * CloudCLI feature (the Browser tab) rather than the user and are shown read-only.
+ */
+export type AggregatedMcpServer = {
+  name: string;
+  scope: McpScope;
+  workspacePath?: string;
+  definition: McpServerDefinition;
+  providers: Record<LLMProvider, { presence: McpProviderPresence; differs: boolean }>;
+  hasDrift: boolean;
+  managed: boolean;
+};
+
+/**
+ * Desired state for one MCP server across providers: `providers` lists every
+ * provider that should hold a copy after the write, so providers not listed
+ * lose theirs. `previousName` is the name the entry had before a rename; that
+ * copy is removed from every provider once the new one is written.
+ */
+export type SaveMcpServerToProvidersInput = McpServerDefinition & {
+  name: string;
+  scope: McpScope;
+  workspacePath?: string;
+  providers: LLMProvider[];
+  previousName?: string;
+};
+
+/**
+ * Outcome of a fan-out MCP write for one provider. `error` is set when that
+ * provider's adapter rejected the write; the other providers are still updated.
+ */
+export type McpProviderWriteResult = {
+  provider: LLMProvider;
+  action: 'saved' | 'removed' | 'unchanged';
+  error?: string;
+};
+
 // ---------------------------
 //----------------- PROVIDER AUTH TYPES ------------
 /**

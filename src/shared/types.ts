@@ -289,6 +289,24 @@ export type QueueItemStatus = 'completed' | 'in_progress' | 'pending';
 
 //----------------- CHAT MESSAGES AND PERMISSIONS ------------
 
+/** The backend-owned description of what one provider integration supports, as served by the capabilities endpoint; the chat composer reads the turn-related flags and the MCP settings page reads `mcp`, so neither branches on the provider id. Optional members may be missing from an older server. */
+export type ProviderCapabilities = {
+  provider: LLMProvider;
+  permissionModes: string[];
+  defaultPermissionMode: string;
+  supportsImages: boolean;
+  supportsFiles: boolean;
+  supportsAbort: boolean;
+  supportsPermissionRequests: boolean;
+  supportsTokenUsage: boolean;
+  supportsEffort?: boolean;
+  supportsMessageEditing?: boolean;
+  supportsSessionForking?: boolean;
+  supportsSideQuestions?: boolean;
+  supportsSteering?: boolean;
+  mcp?: ProviderMcpCapabilities;
+};
+
 /** Permission preset a provider runs a turn under ('default', 'acceptEdits', 'auto', 'bypassPermissions' or 'plan'), chosen in the composer and sent with each message; the backend capability matrix decides which values a given provider accepts. */
 export type PermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan';
 
@@ -1261,11 +1279,48 @@ export type ProviderMcpServer = {
   projectDisplayName?: string;
 };
 
-/** The complete editable state of the MCP server form, covering the structured connection fields and the raw JSON import text; convert it with createMcpPayloadFromForm before sending it to the API. */
+/** A provider-native MCP config field beyond the common command/url set; a provider's capabilities list which of these its adapter persists, and the form only shows a field some selected provider can keep. */
+export type McpProviderField = 'cwd' | 'envVars' | 'bearerTokenEnvVar' | 'envHttpHeaders';
+
+/** What one provider's MCP config format can hold, as served by the capabilities endpoint; drives the scope and transport pickers and the provider checkboxes instead of a frontend table. */
+export type ProviderMcpCapabilities = {
+  scopes: McpScope[];
+  transports: McpTransport[];
+  fields: McpProviderField[];
+};
+
+/** Whether a provider holds its own copy of an aggregated MCP server: `unsupported` means its config format has no place for that scope, `absent` that it could but does not. */
+export type McpProviderPresence = 'present' | 'absent' | 'unsupported';
+
+/** The provider-independent part of an MCP server entry (transport and connection fields); the aggregated row shows one and the fan-out save sends one. */
+export type McpServerDefinition = Omit<ProviderMcpServer, 'provider' | 'name' | 'scope' | 'workspacePath' | 'projectName' | 'projectDisplayName'>;
+
+/** One MCP server as the settings page lists it: the copies every provider keeps under one name, scope and workspace, merged into a row with each provider's presence and whether its copy drifted from the shown definition. `managed` rows are written by a CloudCLI feature and shown read-only. */
+export type AggregatedMcpServer = {
+  name: string;
+  scope: McpScope;
+  workspacePath?: string;
+  definition: McpServerDefinition;
+  providers: Record<McpProvider, { presence: McpProviderPresence; differs: boolean }>;
+  hasDrift: boolean;
+  managed: boolean;
+};
+
+/** The request body of a fan-out MCP save: the definition plus every provider that should hold a copy afterwards (unlisted ones lose theirs) and, after a rename, the name to drop everywhere. */
+export type SaveMcpServerPayload = McpServerDefinition & {
+  name: string;
+  scope: McpScope;
+  workspacePath?: string;
+  providers: McpProvider[];
+  previousName?: string;
+};
+
+/** The complete editable state of the MCP server form, covering the target providers, the structured connection fields and the raw JSON import text; convert it with createMcpPayloadFromForm before sending it to the API. */
 export type McpFormState = {
   name: string;
   scope: McpScope;
   workspacePath: string;
+  providers: McpProvider[];
   transport: McpTransport;
   command: string;
   args: string[];
@@ -1278,23 +1333,6 @@ export type McpFormState = {
   envHttpHeaders: KeyValueMap;
   importMode: McpImportMode;
   jsonInput: string;
-};
-
-/** The request body sent when creating or updating a provider's MCP server, built from McpFormState so only the fields valid for the chosen transport are included. */
-export type UpsertProviderMcpServerPayload = {
-  name: string;
-  scope: McpScope;
-  transport: McpTransport;
-  workspacePath?: string;
-  command?: string;
-  args?: string[];
-  env?: KeyValueMap;
-  cwd?: string;
-  url?: string;
-  headers?: KeyValueMap;
-  envVars?: string[];
-  bearerTokenEnvVar?: string;
-  envHttpHeaders?: KeyValueMap;
 };
 
 /** Whether the MCP server form is being filled in field by field or pasted in as raw JSON, which selects the form's input mode. */
@@ -1482,13 +1520,13 @@ export type AgentContext = {
 };
 
 /** Identifier of a top-level section in the settings dialog; use it whenever a tab is stored, compared or requested so deep links, the sidebar and the command palette all agree on the same set of names. */
-export type SettingsMainTab = 'agents' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
+export type SettingsMainTab = 'agents' | 'mcp' | 'appearance' | 'git' | 'api' | 'voice' | 'tasks' | 'browser' | 'notifications' | 'plugins' | 'about';
 
 /** The coding-agent CLI a settings screen is configuring, aliasing LLMProvider so agent-scoped settings read as being about an agent rather than a chat model. */
 export type AgentProvider = LLMProvider;
 
-/** One category of per-agent configuration in the agents settings tab (account, permissions, MCP servers or skills); use it to key which panel the tab renders. */
-export type AgentCategory = 'account' | 'permissions' | 'mcp' | 'skills';
+/** One category of per-agent configuration in the agents settings tab (account, permissions or skills); use it to key which panel the tab renders. MCP servers are cross-provider and have their own main tab. */
+export type AgentCategory = 'account' | 'permissions' | 'skills';
 
 /** How much Codex may do without asking, from prompting on every edit to bypassing permission checks entirely; persisted as the Codex agent's permission setting. */
 export type CodexPermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions';
