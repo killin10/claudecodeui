@@ -27,7 +27,6 @@
   "tabs": {
     "account": "Account",
     "permissions": "Permissions",
-    "mcpServers": "MCP Servers",
     "skills": "Skills",
     "appearance": "Appearance"
   },
@@ -157,7 +156,8 @@
     "browser": "Browser",
     "notifications": "Notifications",
     "plugins": "Plugins",
-    "about": "About"
+    "about": "About",
+    "mcp": "MCP Servers"
   },
   "notifications": {
     "title": "Notifications",
@@ -331,7 +331,8 @@
       "invalidJson": "Invalid JSON format",
       "jsonHelp": "Paste your MCP server configuration in JSON format. Example formats:",
       "jsonExampleStdio": "• stdio: {\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@upstash/context7-mcp\"]}",
-      "jsonExampleHttp": "• http/sse: {\"type\":\"http\",\"url\":\"https://api.example.com/mcp\"}"
+      "jsonExampleHttp": "• http/sse: {\"type\":\"http\",\"url\":\"https://api.example.com/mcp\"}",
+      "unsupportedTransport": "No agent in this scope supports {{transport}} MCP servers"
     },
     "configDetails": "Configuration Details (from {{configFile}})",
     "projectPath": "Path: {{path}}",
@@ -342,22 +343,25 @@
       "updateServer": "Update Server"
     },
     "scopes": {
-      "userGlobal": "User (Global)",
-      "userAllProviders": "User (All Providers)",
       "local": "Claude Local",
       "project": "Project",
-      "projectAllProviders": "Project (All Providers)",
-      "userGlobalDesc": "Available across all projects on your machine",
-      "userAllProvidersDesc": "Writes to each provider user config and is available across projects on this machine",
       "localDesc": "Stored in Claude user settings for the selected project",
       "projectDesc": "Stored in the selected project workspace",
-      "projectAllProvidersDesc": "Writes to the selected project workspace for every provider"
+      "user": "User",
+      "userDesc": "Available across all projects on this machine"
     },
-    "unsupportedTransport": "Add MCP Server supports only stdio and http across all providers, not {{transport}}.",
-    "addToProvider": "{{action}} to {{provider}}",
     "workingDirectory": "Working Directory",
     "envVarNames": "Environment Variable Names",
-    "bearerTokenEnvVar": "Bearer Token Environment Variable"
+    "bearerTokenEnvVar": "Bearer Token Environment Variable",
+    "providers": {
+      "label": "Agents",
+      "addHint": "Each ticked agent gets its own copy, written in that agent’s own config format.",
+      "editHint": "Ticked agents are updated to this definition; unticked agents lose their copy.",
+      "rejectedScope": "{{provider}} has no {{scope}}-scoped MCP config",
+      "rejectedTransport": "{{provider}} does not support {{transport}} MCP servers",
+      "rejectedUnknown": "{{provider}} capabilities are not available"
+    },
+    "providerOnlyField": "Only kept by {{providers}}; other agents ignore this field."
   },
   "saveStatus": {
     "success": "Settings saved successfully!",
@@ -634,12 +638,6 @@
   },
   "mcpServers": {
     "title": "MCP Servers",
-    "description": {
-      "claude": "Model Context Protocol servers provide additional tools and data sources to Claude",
-      "cursor": "Model Context Protocol servers provide additional tools and data sources to Cursor",
-      "codex": "Model Context Protocol servers provide additional tools and data sources to Codex",
-      "opencode": "Model Context Protocol servers provide additional tools and data sources to OpenCode"
-    },
     "addButton": "Add MCP Server",
     "empty": "No MCP servers configured",
     "serverType": "Type",
@@ -651,7 +649,9 @@
       "command": "Command",
       "url": "URL",
       "args": "Args",
-      "environment": "Environment"
+      "environment": "Environment",
+      "cwd": "Cwd",
+      "envVars": "Env Vars"
     },
     "tools": {
       "title": "Tools",
@@ -666,9 +666,25 @@
       "badge": "Managed",
       "hint": "Managed by CloudCLI."
     },
-    "help": {
-      "title": "About Codex MCP",
-      "description": "Codex supports stdio-based MCP servers. You can add servers that extend Codex's capabilities with additional tools and resources."
+    "crossProviderDescription": "Model Context Protocol servers give your coding agents extra tools and data sources. Each row is one server; the chips show which agents have it.",
+    "loading": "Loading MCP servers...",
+    "view": {
+      "user": "User",
+      "project": "Project",
+      "selectProject": "Project",
+      "noProjects": "No projects available",
+      "userHint": "Servers in each agent’s user config, available in every project on this machine.",
+      "projectHint": "Servers stored in the selected project’s workspace, plus Claude’s local entries for it."
+    },
+    "drift": {
+      "badge": "Differs",
+      "hint": "Some agents hold a different copy of this server. Edit and save to make them match."
+    },
+    "providerChip": {
+      "add": "Add to {{provider}}",
+      "remove": "Remove from {{provider}}",
+      "differs": "{{provider}} holds a different copy of this server",
+      "lastCopy": "This is the last copy. Use Delete to remove the server."
     }
   },
   "pluginSettings": {
@@ -929,33 +945,10 @@
     "saveFailed": "Failed to save Browser settings",
     "installFailed": "Failed to install browser runtime"
   },
-  "mcpServersAdd": {
-    "menuLabel": "Add MCP Server",
-    "globalButtonLabel": "Add Global MCP Server",
-    "providerButtonLabel": "Add {{provider}} MCP Server",
-    "globalAddDescription": "Add Global MCP Server writes one common stdio or HTTP server to Claude, Cursor, Codex, and OpenCode.",
-    "providerAddDescription": "{{button}} only changes {{provider}}.",
-    "globalModalDescription": "Adds this MCP server to every provider: Claude, Cursor, Codex, and OpenCode. Only stdio and HTTP transports are supported because the same config must work across all providers.",
-    "refreshingScopes": "Refreshing project scopes...",
-    "loadingServers": "Loading MCP servers...",
-    "configCwd": "Cwd",
-    "configEnvVars": "Env Vars"
-  },
   "mcpTeamCard": {
     "title": "Team MCP Configs",
     "description": "Share MCP server configurations across your team. Everyone stays in sync automatically.",
     "proLink": "Available with CloudCLI Pro"
-  },
-  "mcpServersAddErrors": {
-    "loadFailedProvider": "Failed to load {{provider}} MCP servers",
-    "deleteFailed": "Failed to delete MCP server",
-    "saveFailed": "Failed to save MCP server",
-    "saveGlobalFailed": "Failed to save MCP server to all providers",
-    "selectProjectRequired": "Select a project for project-scoped MCP servers",
-    "globalScopeUnsupported": "Add MCP Server supports only user or project scope across all providers.",
-    "globalAddFailed": "Failed to add MCP server to all providers. {{details}}",
-    "deleteConfirm": "Are you sure you want to delete this MCP server?",
-    "unknownError": "Unknown error"
   },
   "about": {
     "tagline": "Open-source AI coding assistant interface",
@@ -984,5 +977,10 @@
     "noCredentials": "No credentials detected here; check project availability below.",
     "detected": "Detected",
     "notDetected": "Not detected"
+  },
+  "mcpServersErrors": {
+    "unknownError": "Unknown error",
+    "saveFailedForProviders": "Some agents could not be updated. {{details}}",
+    "deleteConfirm": "Delete \"{{name}}\" from every agent?"
   }
 }

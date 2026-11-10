@@ -19,7 +19,7 @@ type AgentsSettingsTabProps = {
   projects: AgentSettingsProject[];
 };
 
-/** Rendered by Settings for the "agents" tab, hosting per-provider account, permission, MCP and skill settings. */
+/** Rendered by Settings for the "agents" tab, hosting per-provider account, permission and skill settings. */
 export default function AgentsSettingsTab({
   providerAuthStatus,
   onProviderLogin,
@@ -34,7 +34,7 @@ export default function AgentsSettingsTab({
   const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => (
-    ['account', 'permissions', 'mcp', 'skills']
+    ['account', 'permissions', 'skills']
   ), [selectedAgent]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {

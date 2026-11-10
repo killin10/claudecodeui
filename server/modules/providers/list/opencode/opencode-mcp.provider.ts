@@ -139,7 +139,7 @@ const resolveOpenCodeConfigPath = async (scope: McpScope, workspacePath: string)
 /** Used by the OpenCode provider to manage V2 MCP settings in user and project scopes. */
 export class OpenCodeMcpProvider extends McpProvider {
   constructor() {
-    super('opencode', ['user', 'project'], ['stdio', 'http']);
+    super('opencode');
   }
 
   protected async readScopedServers(scope: McpScope, workspacePath: string): Promise<Record<string, unknown>> {

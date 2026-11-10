@@ -8,10 +8,11 @@ import {
   MonitorPlay,
   Palette,
   Plug,
+  Server,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 
-import type { FileStatusCode, LLMProvider, McpProvider, McpScope, McpTransport, SettingsMainTab } from '@/shared/types';
+import type { FileStatusCode, LLMProvider, McpProvider, SettingsMainTab } from '@/shared/types';
 import type { UserPreferenceKey } from '@/shared/userSettings';
 
 /** The four buckets the git changes view sorts working-tree files into. */
@@ -56,6 +57,7 @@ type SettingsMainTabMeta = {
  */
 export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
   { id: 'agents', label: 'Agents', keywords: 'agents subagents claude code', icon: Bot },
+  { id: 'mcp', label: 'MCP Servers', keywords: 'mcp servers tools model context protocol', icon: Server },
   { id: 'appearance', label: 'Appearance', keywords: 'appearance theme dark light language', icon: Palette },
   { id: 'git', label: 'Git', keywords: 'git github commits', icon: GitBranch },
   { id: 'api', label: 'API Tokens', keywords: 'api tokens auth keys', icon: KeyRound },
@@ -112,9 +114,12 @@ export const FILE_STATUS_GROUPS: GitStatusGroupEntry[] = [
 
 // ---------------------------
 
-//----------------- MCP SERVER CAPABILITIES ------------
+//----------------- MCP SERVERS ------------
 
-/** Display name for each provider that can host MCP servers, used in headings and buttons. */
+/** Every provider that can host MCP servers, in the order the settings page lists them; what a provider accepts comes from the capabilities endpoint, not from here. */
+export const MCP_PROVIDERS: McpProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+
+/** Display name for each provider that can host MCP servers, used in headings, chips and error messages. */
 export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
@@ -122,39 +127,12 @@ export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   opencode: 'OpenCode',
 };
 
-/** Scopes each provider can install an MCP server into; drives the scope selector and validation. */
-export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {
-  claude: ['user', 'project', 'local'],
-  cursor: ['user', 'project'],
-  codex: ['user', 'project'],
-  opencode: ['user', 'project'],
-};
-
-/** Transports each provider can talk to an MCP server over; drives the transport selector and validation. */
-export const MCP_SUPPORTED_TRANSPORTS: Record<McpProvider, McpTransport[]> = {
-  claude: ['stdio', 'http', 'sse'],
-  cursor: ['stdio', 'http'],
-  codex: ['stdio', 'http'],
-  opencode: ['stdio', 'http'],
-};
-
-/** Transports offered when configuring a global (provider-agnostic) MCP server. */
-export const MCP_GLOBAL_SUPPORTED_TRANSPORTS: McpTransport[] = ['stdio', 'http'];
-
 /**
  * Tool name the backend gives an MCP server's request for input ("elicitation") when it
  * forwards it as a permission request. The permission banner draws it with the elicitation
  * panel, and the composer steps aside while one is open, as it does for a question.
  */
 export const MCP_ELICITATION_TOOL_NAME = 'McpElicitation';
-
-/** Whether a provider honours an MCP server's working-directory setting; the form hides the field when it does not. */
-export const MCP_SUPPORTS_WORKING_DIRECTORY: Record<McpProvider, boolean> = {
-  claude: false,
-  cursor: false,
-  codex: true,
-  opencode: false,
-};
 
 // ---------------------------
 

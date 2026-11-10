@@ -2,14 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useOpenCodeAgentMode } from '@/modules/chat/hooks/useOpenCodeAgentMode';
 import { api } from '@/shared/api';
-import type { PendingPermissionRequest, PermissionMode,
-  ProjectSession,
-  LLMProvider,
-  Project,
-  CustomProviderModelInput,
-  ProviderModelActions,
-  ProviderModelOption,
-  ProviderModelsDefinition } from '@/shared/types';
+import type { CustomProviderModelInput, LLMProvider, PendingPermissionRequest, PermissionMode, Project, ProjectSession, ProviderCapabilities, ProviderModelActions, ProviderModelOption, ProviderModelsDefinition } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 import { readUserPreference, USER_PREFERENCES_CHANGED_EVENT } from '@/shared/userSettings';
@@ -56,22 +49,6 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   cursor: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   codex: ['default', 'auto', 'acceptEdits', 'bypassPermissions', 'plan'],
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
-};
-
-type ProviderCapabilities = {
-  provider: LLMProvider;
-  permissionModes: string[];
-  defaultPermissionMode: string;
-  supportsImages: boolean;
-  supportsFiles: boolean;
-  supportsAbort: boolean;
-  supportsPermissionRequests: boolean;
-  supportsTokenUsage: boolean;
-  supportsEffort?: boolean;
-  supportsMessageEditing?: boolean;
-  supportsSessionForking?: boolean;
-  supportsSideQuestions?: boolean;
-  supportsSteering?: boolean;
 };
 
 type ProviderCapabilitiesApiResponse = {

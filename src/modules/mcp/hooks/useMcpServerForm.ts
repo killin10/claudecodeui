@@ -1,25 +1,36 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { MCP_SUPPORTED_SCOPES, MCP_SUPPORTED_TRANSPORTS } from '@/shared/constants';
-import type { McpFormState, McpProject, McpProvider, McpScope, McpTransport, ProviderMcpServer } from '@/shared/types';
+import { MCP_PROVIDER_NAMES, MCP_PROVIDERS } from '@/shared/constants';
+import type {
+  AggregatedMcpServer,
+  McpFormState,
+  McpProvider,
+  McpScope,
+  McpTransport,
+  SaveMcpServerPayload,
+} from '@/shared/types';
+import type { McpCapabilitiesByProvider } from '@/modules/mcp/hooks/useMcpCapabilities';
 import {
+  createMcpPayloadFromForm,
   formatKeyValueLines,
   getErrorMessage,
-  getProjectPath,
+  getProviderRejection,
+  getSupportedFields,
   isMcpTransport,
   parseKeyValueLines,
   parseListLines,
+  type McpProviderRejection,
 } from '@/modules/mcp/utils/mcpFormatting';
 
 type UseMcpServerFormArgs = {
-  provider: McpProvider;
-  editingServer: ProviderMcpServer | null;
-  currentProjects: McpProject[];
-  supportedScopes?: McpScope[];
-  supportedTransports?: McpTransport[];
-  unsupportedTransportMessage?: (transport: McpTransport) => string;
-  onSubmit: (formData: McpFormState, editingServer: ProviderMcpServer | null) => Promise<void>;
+  editingServer: AggregatedMcpServer | null;
+  /** Scopes this form may write to: `['user']` from the user view, `['project', 'local']` from a project. */
+  scopeOptions: McpScope[];
+  /** The project the form writes into when the scope is not `user`; empty in the user view. */
+  workspacePath: string;
+  capabilities: McpCapabilitiesByProvider;
+  onSubmit: (payload: SaveMcpServerPayload) => Promise<void>;
 };
 
 type MultilineFieldText = {
@@ -34,6 +45,7 @@ const DEFAULT_MCP_FORM: McpFormState = {
   name: '',
   scope: 'user',
   workspacePath: '',
+  providers: [],
   transport: 'stdio',
   command: '',
   args: [],
@@ -48,14 +60,24 @@ const DEFAULT_MCP_FORM: McpFormState = {
   jsonInput: '',
 };
 
-const cloneDefaultForm = (
-  provider: McpProvider,
-  supportedScopes = MCP_SUPPORTED_SCOPES[provider],
-  supportedTransports = MCP_SUPPORTED_TRANSPORTS[provider],
+const providersAccepting = (
+  scope: McpScope,
+  transport: McpTransport,
+  capabilities: McpCapabilitiesByProvider,
+): McpProvider[] => (
+  MCP_PROVIDERS.filter((provider) => getProviderRejection(provider, scope, transport, capabilities) === null)
+);
+
+const createBlankForm = (
+  scope: McpScope,
+  workspacePath: string,
+  capabilities: McpCapabilitiesByProvider,
 ): McpFormState => ({
   ...DEFAULT_MCP_FORM,
-  scope: supportedScopes[0],
-  transport: supportedTransports[0],
+  scope,
+  workspacePath: scope === 'user' ? '' : workspacePath,
+  // A new server goes to every provider that can take it; the user unticks the rest.
+  providers: providersAccepting(scope, DEFAULT_MCP_FORM.transport, capabilities),
   args: [],
   env: {},
   headers: {},
@@ -63,26 +85,22 @@ const cloneDefaultForm = (
   envHttpHeaders: {},
 });
 
-const createFormStateFromServer = (
-  provider: McpProvider,
-  server: ProviderMcpServer,
-  supportedScopes?: McpScope[],
-  supportedTransports?: McpTransport[],
-): McpFormState => ({
-  ...cloneDefaultForm(provider, supportedScopes, supportedTransports),
+const createFormStateFromServer = (server: AggregatedMcpServer): McpFormState => ({
+  ...DEFAULT_MCP_FORM,
   name: server.name,
   scope: server.scope,
   workspacePath: server.workspacePath || '',
-  transport: server.transport,
-  command: server.command || '',
-  args: server.args || [],
-  env: server.env || {},
-  cwd: server.cwd || '',
-  url: server.url || '',
-  headers: server.headers || {},
-  envVars: server.envVars || [],
-  bearerTokenEnvVar: server.bearerTokenEnvVar || '',
-  envHttpHeaders: server.envHttpHeaders || {},
+  providers: MCP_PROVIDERS.filter((provider) => server.providers[provider]?.presence === 'present'),
+  transport: server.definition.transport,
+  command: server.definition.command || '',
+  args: server.definition.args || [],
+  env: server.definition.env || {},
+  cwd: server.definition.cwd || '',
+  url: server.definition.url || '',
+  headers: server.definition.headers || {},
+  envVars: server.definition.envVars || [],
+  bearerTokenEnvVar: server.definition.bearerTokenEnvVar || '',
+  envHttpHeaders: server.definition.envHttpHeaders || {},
 });
 
 const createMultilineTextFromForm = (formData: McpFormState): MultilineFieldText => ({
@@ -93,76 +111,109 @@ const createMultilineTextFromForm = (formData: McpFormState): MultilineFieldText
   envHttpHeaders: formatKeyValueLines(formData.envHttpHeaders),
 });
 
-const normalizeScope = (supportedScopes: McpScope[], value: McpScope): McpScope => (
-  supportedScopes.includes(value) ? value : supportedScopes[0]
-);
-
-const normalizeTransport = (supportedTransports: McpTransport[], value: McpTransport): McpTransport => (
-  supportedTransports.includes(value) ? value : supportedTransports[0]
-);
-
 export function useMcpServerForm({
-  provider,
   editingServer,
-  currentProjects,
-  supportedScopes = MCP_SUPPORTED_SCOPES[provider],
-  supportedTransports = MCP_SUPPORTED_TRANSPORTS[provider],
-  unsupportedTransportMessage,
+  scopeOptions,
+  workspacePath,
+  capabilities,
   onSubmit,
 }: UseMcpServerFormArgs) {
   const { t } = useTranslation('settings');
-  const [formData, setFormData] = useState<McpFormState>(() => (
-    cloneDefaultForm(provider, supportedScopes, supportedTransports)
-  ));
-  const [multilineText, setMultilineText] = useState<MultilineFieldText>(() => (
-    createMultilineTextFromForm(cloneDefaultForm(provider, supportedScopes, supportedTransports))
-  ));
+  const initialForm = () => (
+    editingServer
+      ? createFormStateFromServer(editingServer)
+      : createBlankForm(scopeOptions[0] ?? 'user', workspacePath, capabilities)
+  );
+  // The structured form values; textareas keep their own raw text below until submit.
+  const [formData, setFormData] = useState<McpFormState>(initialForm);
+  // Raw textarea text, so blank lines and half-typed KEY=value entries survive while editing.
+  const [multilineText, setMultilineText] = useState<MultilineFieldText>(() => createMultilineTextFromForm(initialForm()));
+  // Live validation message for the pasted JSON, cleared as soon as the JSON parses.
   const [jsonValidationError, setJsonValidationError] = useState('');
+  // Disables the submit button while the save request is in flight.
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // The save request's error, shown inside the modal so the user can fix the form and retry.
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // The modal is mounted only while open and remounted per edit target, so the
+  // initializers above are the only place the form is seeded.
   const isEditing = Boolean(editingServer);
 
-  // The modal is mounted only while open, so this runs on mount and whenever the
-  // edit target changes. The state initializers above already produce the blank
-  // form; this exists to load an existing server into it.
-  useEffect(() => {
-    setJsonValidationError('');
-    if (editingServer) {
-      const nextFormData = createFormStateFromServer(provider, editingServer, supportedScopes, supportedTransports);
-      setFormData(nextFormData);
-      setMultilineText(createMultilineTextFromForm(nextFormData));
-      return;
+  // Every transport some provider can speak within this scope; picking one a
+  // provider lacks unticks that provider rather than hiding the transport.
+  const availableTransports = useMemo<McpTransport[]>(() => {
+    const transports = new Set<McpTransport>();
+    MCP_PROVIDERS.forEach((provider) => {
+      const providerCapabilities = capabilities[provider];
+      if (providerCapabilities?.scopes.includes(formData.scope)) {
+        providerCapabilities.transports.forEach((transport) => transports.add(transport));
+      }
+    });
+    return (['stdio', 'http', 'sse'] as McpTransport[]).filter((transport) => transports.has(transport));
+  }, [capabilities, formData.scope]);
+
+  const providerOptions = useMemo(() => (
+    MCP_PROVIDERS.map((provider) => ({
+      provider,
+      name: MCP_PROVIDER_NAMES[provider],
+      selected: formData.providers.includes(provider),
+      rejection: getProviderRejection(provider, formData.scope, formData.transport, capabilities),
+    }))
+  ), [capabilities, formData.providers, formData.scope, formData.transport]);
+
+  const supportedFields = useMemo(
+    () => getSupportedFields(formData.providers, capabilities),
+    [capabilities, formData.providers],
+  );
+
+  const describeRejection = (rejection: McpProviderRejection): string => {
+    const provider = MCP_PROVIDER_NAMES[rejection.provider];
+    if (rejection.reason === 'scope') {
+      return t('mcpForm.providers.rejectedScope', { provider, scope: formData.scope });
     }
-
-    const nextFormData = cloneDefaultForm(provider, supportedScopes, supportedTransports);
-    setFormData(nextFormData);
-    setMultilineText(createMultilineTextFromForm(nextFormData));
-  }, [editingServer, provider, supportedScopes, supportedTransports]);
-
-  const projectOptions = useMemo(() => (
-    currentProjects
-      .map((project) => ({
-        value: getProjectPath(project),
-        // Fall back to projectId (DB primary key) when no display name is set.
-        label: project.displayName || project.projectId,
-      }))
-      .filter((project) => project.value)
-  ), [currentProjects]);
+    if (rejection.reason === 'transport') {
+      return t('mcpForm.providers.rejectedTransport', { provider, transport: formData.transport });
+    }
+    return t('mcpForm.providers.rejectedUnknown', { provider });
+  };
 
   const updateForm = <K extends keyof McpFormState>(key: K, value: McpFormState[K]) => {
     setFormData((prev) => ({ ...prev, [key]: value }));
   };
 
   const updateScope = (scope: McpScope) => {
+    if (!scopeOptions.includes(scope)) {
+      return;
+    }
     setFormData((prev) => ({
       ...prev,
-      scope: normalizeScope(supportedScopes, scope),
-      workspacePath: scope === 'user' ? '' : prev.workspacePath,
+      scope,
+      workspacePath: scope === 'user' ? '' : workspacePath,
+      providers: prev.providers.filter((provider) => getProviderRejection(provider, scope, prev.transport, capabilities) === null),
     }));
   };
 
   const updateTransport = (transport: McpTransport) => {
-    setFormData((prev) => ({ ...prev, transport: normalizeTransport(supportedTransports, transport) }));
+    if (!availableTransports.includes(transport)) {
+      return;
+    }
+    setFormData((prev) => ({
+      ...prev,
+      transport,
+      providers: prev.providers.filter((provider) => getProviderRejection(provider, prev.scope, transport, capabilities) === null),
+    }));
+  };
+
+  const toggleProvider = (provider: McpProvider) => {
+    setFormData((prev) => {
+      if (prev.providers.includes(provider)) {
+        return { ...prev, providers: prev.providers.filter((entry) => entry !== provider) };
+      }
+      if (getProviderRejection(provider, prev.scope, prev.transport, capabilities)) {
+        return prev;
+      }
+      return { ...prev, providers: MCP_PROVIDERS.filter((entry) => entry === provider || prev.providers.includes(entry)) };
+    });
   };
 
   const validateJsonInput = (value: string) => {
@@ -176,10 +227,8 @@ export function useMcpServerForm({
       const transportInput = parsed.transport || parsed.type;
       if (!isMcpTransport(transportInput)) {
         setJsonValidationError(t('mcpForm.validation.missingType'));
-      } else if (!supportedTransports.includes(transportInput)) {
-        setJsonValidationError(
-          unsupportedTransportMessage?.(transportInput) ?? `${provider} does not support ${transportInput} MCP servers`,
-        );
+      } else if (!availableTransports.includes(transportInput)) {
+        setJsonValidationError(t('mcpForm.validation.unsupportedTransport', { transport: transportInput }));
       } else if (transportInput === 'stdio' && !parsed.command) {
         setJsonValidationError(t('mcpForm.validation.stdioRequiresCommand'));
       } else if ((transportInput === 'http' || transportInput === 'sse') && !parsed.url) {
@@ -211,7 +260,7 @@ export function useMcpServerForm({
   });
 
   const canSubmit = useMemo(() => {
-    if (!formData.name.trim()) {
+    if (!formData.name.trim() || formData.providers.length === 0) {
       return false;
     }
 
@@ -233,13 +282,18 @@ export function useMcpServerForm({
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsSubmitting(true);
+    setSubmitError(null);
 
     try {
-      // Textareas keep raw strings while editing so users can create blank
-      // lines or partial KEY=value entries without the form rewriting them.
-      await onSubmit(createSubmitFormData(), editingServer);
+      const payload = createMcpPayloadFromForm(createSubmitFormData(), capabilities, {
+        rejectionMessage: describeRejection,
+      });
+      await onSubmit({
+        ...payload,
+        previousName: editingServer && editingServer.name !== payload.name ? editingServer.name : undefined,
+      });
     } catch (error) {
-      alert(`Error: ${getErrorMessage(error)}`);
+      setSubmitError(getErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -248,14 +302,19 @@ export function useMcpServerForm({
   return {
     formData,
     multilineText,
-    projectOptions,
+    availableTransports,
+    providerOptions,
+    supportedFields,
+    describeRejection,
     isEditing,
     isSubmitting,
+    submitError,
     jsonValidationError,
     canSubmit,
     updateForm,
     updateScope,
     updateTransport,
+    toggleProvider,
     updateJsonInput,
     updateMultilineText,
     handleSubmit,

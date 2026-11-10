@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 import type { IProviderMcp } from '@/shared/interfaces.js';
 import type { LLMProvider, McpScope, McpTransport, ProviderMcpServer, UpsertProviderMcpServerInput } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
@@ -21,20 +22,25 @@ const normalizeServerName = (name: string): string => {
 
 /**
  * Shared MCP provider for provider-specific config readers/writers.
+ *
+ * Which scopes and transports an adapter accepts comes from the provider
+ * capability matrix rather than from the adapter itself, so the validation here
+ * and what the settings UI offers can never disagree.
  */
 export abstract class McpProvider implements IProviderMcp {
   protected readonly provider: LLMProvider;
   protected readonly supportedScopes: McpScope[];
   protected readonly supportedTransports: McpTransport[];
 
-  protected constructor(
-    provider: LLMProvider,
-    supportedScopes: McpScope[],
-    supportedTransports: McpTransport[],
-  ) {
+  protected constructor(provider: LLMProvider) {
+    const capabilities = providerCapabilitiesService.getProviderCapabilities(provider).mcp;
     this.provider = provider;
-    this.supportedScopes = supportedScopes;
-    this.supportedTransports = supportedTransports;
+    this.supportedScopes = capabilities.scopes;
+    this.supportedTransports = capabilities.transports;
+  }
+
+  supportsScope(scope: McpScope): boolean {
+    return this.supportedScopes.includes(scope);
   }
 
   async listServers(options?: { workspacePath?: string }): Promise<Record<McpScope, ProviderMcpServer[]>> {

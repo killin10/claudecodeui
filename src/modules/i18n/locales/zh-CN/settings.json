@@ -27,7 +27,6 @@
   "tabs": {
     "account": "账户",
     "permissions": "权限",
-    "mcpServers": "MCP 服务器",
     "skills": "技能",
     "appearance": "外观"
   },
@@ -157,7 +156,8 @@
     "browser": "浏览器",
     "notifications": "通知",
     "plugins": "插件",
-    "about": "关于"
+    "about": "关于",
+    "mcp": "MCP 服务器"
   },
   "notifications": {
     "title": "通知",
@@ -326,7 +326,8 @@
       "invalidJson": "无效的 JSON 格式",
       "jsonHelp": "粘贴您的 MCP 服务器配置（JSON 格式）。示例格式：",
       "jsonExampleStdio": "• stdio: {\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"@upstash/context7-mcp\"]}",
-      "jsonExampleHttp": "• http/sse: {\"type\":\"http\",\"url\":\"https://api.example.com/mcp\"}"
+      "jsonExampleHttp": "• http/sse: {\"type\":\"http\",\"url\":\"https://api.example.com/mcp\"}",
+      "unsupportedTransport": "此范围内没有智能体支持 {{transport}} 类型的 MCP 服务器"
     },
     "configDetails": "配置详细信息（来自 {{configFile}}）",
     "projectPath": "路径：{{path}}",
@@ -335,7 +336,27 @@
       "saving": "保存中...",
       "addServer": "添加服务器",
       "updateServer": "更新服务器"
-    }
+    },
+    "scopes": {
+      "user": "用户",
+      "userDesc": "在本机所有项目中可用",
+      "local": "Claude 本地",
+      "project": "项目",
+      "localDesc": "保存在 Claude 用户设置中，仅针对所选项目",
+      "projectDesc": "保存在所选项目的工作区中"
+    },
+    "providers": {
+      "label": "智能体",
+      "addHint": "每个勾选的智能体都会获得一份副本，以其自身的配置格式写入。",
+      "editHint": "勾选的智能体将更新为此定义；取消勾选的智能体将失去其副本。",
+      "rejectedScope": "{{provider}} 没有 {{scope}} 范围的 MCP 配置",
+      "rejectedTransport": "{{provider}} 不支持 {{transport}} 类型的 MCP 服务器",
+      "rejectedUnknown": "{{provider}} 的能力信息不可用"
+    },
+    "providerOnlyField": "仅 {{providers}} 会保存此字段，其他智能体会忽略它。",
+    "workingDirectory": "工作目录",
+    "envVarNames": "环境变量名",
+    "bearerTokenEnvVar": "Bearer 令牌环境变量"
   },
   "saveStatus": {
     "success": "设置保存成功！",
@@ -599,12 +620,6 @@
   },
   "mcpServers": {
     "title": "MCP 服务器",
-    "description": {
-      "claude": "Model Context Protocol 服务器为 Claude 提供额外的工具和数据源",
-      "cursor": "Model Context Protocol 服务器为 Cursor 提供额外的工具和数据源",
-      "codex": "Model Context Protocol 服务器为 Codex 提供额外的工具和数据源",
-      "opencode": "Model Context Protocol 服务器为 OpenCode 提供额外的工具和数据源"
-    },
     "addButton": "添加 MCP 服务器",
     "empty": "未配置 MCP 服务器",
     "serverType": "类型",
@@ -616,7 +631,9 @@
       "command": "命令",
       "url": "URL",
       "args": "参数",
-      "environment": "环境变量"
+      "environment": "环境变量",
+      "cwd": "工作目录",
+      "envVars": "环境变量名"
     },
     "tools": {
       "title": "工具",
@@ -631,9 +648,25 @@
       "badge": "已托管",
       "hint": "由 CloudCLI 管理。"
     },
-    "help": {
-      "title": "关于 Codex MCP",
-      "description": "Codex 支持基于 stdio 的 MCP 服务器。您可以添加服务器，通过额外的工具和资源来扩展 Codex 的功能。"
+    "crossProviderDescription": "Model Context Protocol 服务器为编码智能体提供额外的工具和数据源。每行是一个服务器，标签显示哪些智能体已配置它。",
+    "loading": "正在加载 MCP 服务器...",
+    "view": {
+      "user": "用户",
+      "project": "项目",
+      "selectProject": "项目",
+      "noProjects": "没有可用的项目",
+      "userHint": "各智能体用户配置中的服务器，在本机所有项目中可用。",
+      "projectHint": "存储在所选项目工作区中的服务器，以及 Claude 针对该项目的本地条目。"
+    },
+    "drift": {
+      "badge": "不一致",
+      "hint": "部分智能体保存的副本与此处不同。编辑并保存可使其一致。"
+    },
+    "providerChip": {
+      "add": "添加到 {{provider}}",
+      "remove": "从 {{provider}} 移除",
+      "differs": "{{provider}} 保存的副本与此处不同",
+      "lastCopy": "这是最后一个副本，请使用删除按钮移除该服务器。"
     }
   },
   "pluginSettings": {
@@ -736,5 +769,15 @@
     "noCredentials": "此处未检测到凭据，请查看下方的项目模型可用性。",
     "detected": "已检测到",
     "notDetected": "未检测到"
+  },
+  "mcpServersErrors": {
+    "unknownError": "未知错误",
+    "saveFailedForProviders": "部分智能体更新失败。{{details}}",
+    "deleteConfirm": "确定从所有智能体中删除“{{name}}”？"
+  },
+  "mcpTeamCard": {
+    "title": "团队 MCP 配置",
+    "description": "在团队内共享 MCP 服务器配置，所有人自动保持同步。",
+    "proLink": "CloudCLI Pro 可用"
   }
 }

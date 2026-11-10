@@ -441,3 +441,139 @@ test('OpenCode MCP reads and mutates only OPENCODE_CONFIG_DIR when it overrides 
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * The settings UI shows one row per server name with each provider's copy
+ * marked present, absent or unsupported, and flags copies whose common fields
+ * disagree. Project and local scopes need a workspace; `local` is Claude-only.
+ */
+test('providerMcpService aggregates one row per name across providers with presence and drift', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-mcp-aggregate-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await fs.mkdir(workspacePath, { recursive: true });
+
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await providerMcpService.upsertProviderMcpServer('claude', {
+      name: 'shared', scope: 'user', transport: 'http', url: 'https://a.example/mcp',
+    });
+    await providerMcpService.upsertProviderMcpServer('codex', {
+      name: 'shared', scope: 'user', transport: 'http', url: 'https://b.example/mcp', bearerTokenEnvVar: 'TOKEN',
+    });
+    await providerMcpService.upsertProviderMcpServer('cursor', {
+      name: 'shared', scope: 'user', transport: 'http', url: 'https://a.example/mcp',
+    });
+    await providerMcpService.upsertProviderMcpServer('claude', {
+      name: 'cloudcli-browser', scope: 'user', transport: 'stdio', command: 'node',
+    });
+    await providerMcpService.upsertProviderMcpServer('claude', {
+      name: 'only-local', scope: 'local', transport: 'stdio', command: 'node', workspacePath,
+    });
+
+    const withoutWorkspace = await providerMcpService.listAggregatedMcpServers();
+    assert.deepEqual(withoutWorkspace.project, []);
+    assert.deepEqual(withoutWorkspace.local, []);
+    assert.deepEqual(withoutWorkspace.user.map((row) => row.name), ['cloudcli-browser', 'shared']);
+
+    const shared = withoutWorkspace.user.find((row) => row.name === 'shared');
+    assert.ok(shared);
+    assert.equal(shared.managed, false);
+    assert.equal(shared.workspacePath, undefined);
+    // Registry order (claude first) picks the reference copy.
+    assert.equal(shared.definition.url, 'https://a.example/mcp');
+    assert.deepEqual(shared.providers, {
+      claude: { presence: 'present', differs: false },
+      codex: { presence: 'present', differs: true },
+      cursor: { presence: 'present', differs: false },
+      opencode: { presence: 'absent', differs: false },
+    });
+    assert.equal(shared.hasDrift, true);
+    assert.equal(withoutWorkspace.user.find((row) => row.name === 'cloudcli-browser')?.managed, true);
+
+    const withWorkspace = await providerMcpService.listAggregatedMcpServers({ workspacePath });
+    const onlyLocal = withWorkspace.local.find((row) => row.name === 'only-local');
+    assert.ok(onlyLocal);
+    assert.equal(onlyLocal.workspacePath, workspacePath);
+    assert.equal(onlyLocal.providers.claude.presence, 'present');
+    assert.equal(onlyLocal.providers.codex.presence, 'unsupported');
+    assert.equal(onlyLocal.providers.cursor.presence, 'unsupported');
+    assert.equal(onlyLocal.providers.opencode.presence, 'unsupported');
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A fan-out save is desired state: listed providers get the definition,
+ * unlisted ones lose their copy, and a renamed entry's old name is removed
+ * everywhere. One adapter refusing the definition does not stop the others.
+ */
+test('providerMcpService fan-out save writes listed providers, removes the rest and drops the previous name', { concurrency: false }, async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'llm-mcp-fanout-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await fs.mkdir(workspacePath, { recursive: true });
+
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  try {
+    await providerMcpService.upsertProviderMcpServer('opencode', {
+      name: 'tool', scope: 'project', transport: 'stdio', command: 'old', workspacePath,
+    });
+
+    const results = await providerMcpService.saveMcpServerToProviders({
+      name: 'tool',
+      scope: 'project',
+      workspacePath,
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'tool-server'],
+      providers: ['claude', 'codex'],
+    });
+    assert.deepEqual(results, [
+      { provider: 'claude', action: 'saved' },
+      { provider: 'codex', action: 'saved' },
+      { provider: 'cursor', action: 'unchanged' },
+      { provider: 'opencode', action: 'removed' },
+    ]);
+
+    const aggregated = await providerMcpService.listAggregatedMcpServers({ workspacePath });
+    const tool = aggregated.project.find((row) => row.name === 'tool');
+    assert.ok(tool);
+    assert.equal(tool.providers.claude.presence, 'present');
+    assert.equal(tool.providers.codex.presence, 'present');
+    assert.equal(tool.providers.cursor.presence, 'absent');
+    assert.equal(tool.providers.opencode.presence, 'absent');
+
+    // Rename: the new name lands first, then the old one goes from every provider.
+    await providerMcpService.saveMcpServerToProviders({
+      name: 'tool-renamed',
+      previousName: 'tool',
+      scope: 'project',
+      workspacePath,
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'tool-server'],
+      providers: ['claude', 'codex'],
+    });
+    const afterRename = await providerMcpService.listAggregatedMcpServers({ workspacePath });
+    assert.deepEqual(afterRename.project.map((row) => row.name), ['tool-renamed']);
+
+    // SSE is Claude-only: the other listed provider reports its refusal and Claude still gets the copy.
+    const sseResults = await providerMcpService.saveMcpServerToProviders({
+      name: 'events',
+      scope: 'user',
+      transport: 'sse',
+      url: 'https://events.example/sse',
+      providers: ['claude', 'cursor'],
+    });
+    assert.equal(sseResults.find((entry) => entry.provider === 'claude')?.error, undefined);
+    assert.match(sseResults.find((entry) => entry.provider === 'cursor')?.error ?? '', /does not support "sse"/);
+
+    const removed = await providerMcpService.removeMcpServerFromAllProviders({ name: 'events', scope: 'user' });
+    assert.equal(removed.find((entry) => entry.provider === 'claude')?.removed, true);
+    assert.equal(removed.every((entry) => entry.error === undefined), true);
+  } finally {
+    restoreHomeDir();
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
