@@ -1,9 +1,11 @@
 import { expect, test } from 'vitest';
 
 import {
-  cronPresetOf,
+  buildCron,
+  DEFAULT_CRON_HELPER,
   describeCron,
   isRunInProgress,
+  parseCron,
   quickRunAtValues,
   scheduleTaskStatus,
   toZonedInputValue,
@@ -32,10 +34,20 @@ test('quick one-time choices are wall-clock values in the zone', () => {
   expect(monday.nextMonday).toBe('2031-03-17T09:00');
 });
 
-test('presets, cron wording and statuses follow the task', () => {
-  expect(cronPresetOf('0 9 * * 1-5')).toBe('weekdays');
-  expect(cronPresetOf(' 0 * * * * ')).toBe('hourly');
-  expect(cronPresetOf('5 4 * * *')).toBe('custom');
+test('the cron helper round-trips the rules it writes and declines the rest', () => {
+  const rules = ['0 9 * * *', '30 18 * * 1-5', '0 9 * * 1,3,5', '15 8 31 * *', '45 * * * *'];
+  for (const rule of rules) expect(buildCron(parseCron(rule)!)).toBe(rule);
+  expect(parseCron('0 9 * * 7')?.weekdays).toEqual([0]);
+  expect(parseCron(' 0  9 * * 1-5 ')?.frequency).toBe('weekdays');
+  for (const rule of ['*/15 * * * *', '0 9-17 * * *', '0 9 1 1 *', '0 9 1 * 1', '0 24 * * *', '0 9 * * 8', 'nonsense']) {
+    expect(parseCron(rule)).toBeNull();
+  }
+  // Fields a frequency ignores come from the fallback, so switching back restores them.
+  expect(parseCron('10 * * * *', { ...DEFAULT_CRON_HELPER, hour: 18 })).toMatchObject({ frequency: 'hourly', minute: 10, hour: 18 });
+  expect(buildCron({ ...DEFAULT_CRON_HELPER, frequency: 'weekly', weekdays: [] })).toBe('0 9 * * 1');
+});
+
+test('cron wording and statuses follow the task', () => {
   expect(describeCron('0 9 * * 1-5', 'en')).toMatch(/Monday through Friday/);
   expect(describeCron('not a cron', 'en')).toBe('not a cron');
   expect(scheduleTaskStatus({ enabled: true, runAt: null, lastState: null })).toBe('enabled');

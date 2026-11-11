@@ -2088,13 +2088,6 @@ export type ScheduleTargetSession = {
   projectPath: string | null;
 };
 
-/** How many scheduled tasks one session has, as the schedules summary endpoint reports it; the sidebar shows `enabled` next to the session and the schedules module keeps the list fresh. */
-export type SessionScheduleSummary = {
-  sessionId: string;
-  enabled: number;
-  total: number;
-};
-
 /** Schedules UI/API and persistence share this transport contract. */
 export type { Schedule, ScheduleDefinition, ScheduleRun } from '@shared/schedules';
 // ---------------------------

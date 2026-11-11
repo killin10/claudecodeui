@@ -117,7 +117,7 @@ function record(
       task.userId,
       task.sessionId,
       task.message,
-      task,
+      { model: task.model, permissionMode: task.permissionMode, recordResult: false },
     );
     run.submissionId = submission.submissionId;
   }
@@ -141,10 +141,6 @@ export const schedulesService = {
     };
   },
   show: owned,
-  /** Per-session task counts for the sidebar; one row per session that has at least one task. */
-  summary(userId: number) {
-    return { items: schedulesDb.summary(userId) };
-  },
   preview(raw: unknown, now = new Date()) {
     const timing = scheduleTiming(fields(raw, ['cron', 'runAt', 'timezone']));
     const times: string[] = [];
@@ -306,12 +302,8 @@ export const schedulesService = {
     owned(userId, id, true);
     const run = schedulesDb.run(runId);
     if (!run || run.scheduleId !== id) invalid('Execution not found.', 'RUN_NOT_FOUND', 404);
-    return {
-      ...run,
-      submission: run.submissionId
-        ? sessionControlService.submission(userId, run.sessionId, run.submissionId)
-        : null,
-    };
+    // State and failure reason already come from the linked submission; the output is in the session.
+    return run;
   },
   async cancel(userId: number, id: string, runId: string) {
     const run = this.execution(userId, id, runId);

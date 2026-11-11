@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 
 import { api, readApiJson } from '@/shared/api';
-import { Button, Dialog, DialogContent, DialogTitle, Input, LLMProviderLogo, Pill, PillBar, Shimmer } from '@/shared/ui';
+import { Button, Dialog, DialogContent, DialogTitle, Input, Pill, PillBar, Shimmer } from '@/shared/ui';
 import type { Schedule } from '@/shared/types';
 import { createClientToken } from '@/shared/utils';
 import { ScheduleForm } from '@/modules/schedules/ScheduleForm';
@@ -16,32 +16,14 @@ import { scheduleTaskStatus, type ScheduleTaskStatus } from '@/modules/schedules
 type StatusFilter = 'all' | ScheduleTaskStatus;
 const STATUS_FILTERS: StatusFilter[] = ['all', 'enabled', 'paused', 'completed'];
 
-/** Tasks of one target session, as the list groups them. */
-type SessionGroup = {
-  sessionId: string;
-  title: string;
-  provider?: string;
-  projectPath?: string | null;
-  tasks: Schedule[];
-};
+const STATUS_ORDER: Record<ScheduleTaskStatus, number> = { enabled: 0, paused: 1, completed: 2 };
 
-const groupBySession = (tasks: Schedule[]): SessionGroup[] => {
-  const groups = new Map<string, SessionGroup>();
-  tasks.forEach((task) => {
-    const group = groups.get(task.sessionId) ?? {
-      sessionId: task.sessionId,
-      title: task.sessionTitle || task.sessionId,
-      provider: task.provider,
-      projectPath: task.projectPath,
-      tasks: [],
-    };
-    group.tasks.push(task);
-    groups.set(task.sessionId, group);
-  });
-  return [...groups.values()]
-    .map((group) => ({ ...group, tasks: [...group.tasks].sort((left, right) => left.name.localeCompare(right.name)) }))
-    .sort((left, right) => left.title.localeCompare(right.title));
-};
+/** Active tasks first, each status ordered by its next run, then by name; each card names its own session. */
+const sortTasks = (tasks: Schedule[]): Schedule[] => [...tasks].sort((left, right) => (
+  STATUS_ORDER[scheduleTaskStatus(left)] - STATUS_ORDER[scheduleTaskStatus(right)]
+  || (left.nextRunAt ?? '\uffff').localeCompare(right.nextRunAt ?? '\uffff')
+  || left.name.localeCompare(right.name)
+));
 
 /** ProjectMainRegion renders schedules in the workspace, retaining the sidebar and global controls. */
 export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
@@ -68,13 +50,13 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const runTokens = useRef(new Map<string, string>());
 
-  const groups = useMemo(() => {
+  const tasks = useMemo(() => {
     const needle = search.trim().toLowerCase();
     const visible = data.items.filter((task) => (
       (statusFilter === 'all' || scheduleTaskStatus(task) === statusFilter)
       && (!needle || [task.name, task.message, task.sessionTitle ?? '', task.projectPath ?? ''].some((text) => text.toLowerCase().includes(needle)))
     ));
-    return groupBySession(visible);
+    return sortTasks(visible);
   }, [data.items, search, statusFilter]);
   const isFiltered = Boolean(search.trim()) || statusFilter !== 'all';
 
@@ -180,39 +162,27 @@ export function SchedulesPage({ mobileMenu }: { mobileMenu?: ReactNode }) {
               </Button>
             </div>
           )}
-          {!data.loading && data.items.length > 0 && groups.length === 0 && isFiltered && (
+          {!data.loading && data.items.length > 0 && tasks.length === 0 && isFiltered && (
             <p className="rounded-lg border border-dashed border-border/70 bg-muted/15 px-4 py-8 text-center text-sm text-muted-foreground">
               {t('schedules.noMatches')}
             </p>
           )}
 
-          <div className="space-y-6">
-            {groups.map((group) => (
-              <section key={group.sessionId} aria-label={group.title} className="space-y-2">
-                <div className="flex min-w-0 items-center gap-2 px-1 text-xs text-muted-foreground">
-                  {group.provider && <LLMProviderLogo provider={group.provider} className="h-3.5 w-3.5 shrink-0" />}
-                  <span className="truncate font-medium text-foreground">{group.title}</span>
-                  {group.projectPath && <span className="hidden truncate sm:inline">· {group.projectPath}</span>}
-                  <span className="ml-auto shrink-0 tabular-nums">{t('schedules.taskCount', { count: group.tasks.length })}</span>
-                </div>
-                <div className="space-y-2">
-                  {group.tasks.map((task) => (
-                    <ScheduleCard
-                      key={task.scheduleId}
-                      task={task}
-                      busy={busy}
-                      expanded={historyId === task.scheduleId}
-                      onEdit={() => setEditing(task)}
-                      onAction={(kind) => void action(task, kind)}
-                      onHistory={() => setHistoryId(historyId === task.scheduleId ? null : task.scheduleId)}
-                      onDelete={() => {
-                        setError('');
-                        setPendingDelete(task);
-                      }}
-                    />
-                  ))}
-                </div>
-              </section>
+          <div className="space-y-2">
+            {tasks.map((task) => (
+              <ScheduleCard
+                key={task.scheduleId}
+                task={task}
+                busy={busy}
+                expanded={historyId === task.scheduleId}
+                onEdit={() => setEditing(task)}
+                onAction={(kind) => void action(task, kind)}
+                onHistory={() => setHistoryId(historyId === task.scheduleId ? null : task.scheduleId)}
+                onDelete={() => {
+                  setError('');
+                  setPendingDelete(task);
+                }}
+              />
             ))}
           </div>
           {data.nextToken && (

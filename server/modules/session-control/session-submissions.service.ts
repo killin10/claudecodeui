@@ -20,7 +20,9 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
   let polling = false;
   let closed = false;
   async function execute(row: SessionSubmission): Promise<void> {
-    const resultTracker = createSubmissionResult(row, () => cancellations.has(row.submissionId));
+    // `recordResult` is a submission setting, not a provider option.
+    const { recordResult, ...providerOptions } = row.options;
+    const resultTracker = createSubmissionResult(row, () => cancellations.has(row.submissionId), { recordResult: recordResult !== false });
     const observedRuntime: ProviderRuntimeGateway = {
       ...runtime,
       run: (provider, command, options, writer) => {
@@ -38,7 +40,7 @@ export function createSubmissionDispatcher(runtime: ProviderRuntimeGateway) {
       },
     };
     try {
-      const result = await runDetachedChatTurn({ sessionId: row.sessionId, userId: row.userId, content: row.content, options: row.options }, { runtime: observedRuntime });
+      const result = await runDetachedChatTurn({ sessionId: row.sessionId, userId: row.userId, content: row.content, options: providerOptions }, { runtime: observedRuntime });
       const cancelled = await cancellations.get(row.submissionId);
       if (cancelled) {
         resultTracker.cancel();

@@ -172,7 +172,11 @@ export const sessionControlService = {
     });
   },
   /** Scheduler calls this inside its SQLite transaction; options are validated before storing a task. */
-  enqueue(userId: number, id: string, content: string, overrides: { model?: string | null; permissionMode?: string | null } = {}): SubmissionAcknowledgement {
+  /**
+   * `recordResult: false` (schedules) keeps only the submission's state and
+   * error; the reply stays in the session transcript instead of a second copy.
+   */
+  enqueue(userId: number, id: string, content: string, overrides: { model?: string | null; permissionMode?: string | null; recordResult?: boolean } = {}): SubmissionAcknowledgement {
     const row = session(id);
     if (row.isArchived) invalid('Restore the archived session before sending.', 'SESSION_ARCHIVED', 409);
     if (chatRunRegistry.isMutationReserved(id)) invalid('Session is being modified.', 'SESSION_BUSY', 409);
@@ -182,7 +186,7 @@ export const sessionControlService = {
     if (!mode) invalid('Unsupported permission mode.');
     const submission: SessionSubmission = {
       submissionId: randomUUID(), sessionId: id, userId, content,
-      options: { ...(model ? { model } : {}), permissionMode: mode },
+      options: { ...(model ? { model } : {}), permissionMode: mode, ...(overrides.recordResult === false ? { recordResult: false } : {}) },
       state: 'queued', result: [], error: null, createdAt: now, updatedAt: now,
     };
     sessionControlDb.insert(submission);

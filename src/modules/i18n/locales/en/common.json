@@ -396,7 +396,6 @@
   },
   "cancel": "Cancel",
   "schedules": {
-    "collapseResult": "Hide result",
     "historyRetention": "Keeps the latest 10 runs, plus any unfinished executions.",
     "nextFive": "Next 5 runs",
     "noSessions": "No matching sessions",
@@ -424,7 +423,7 @@
     "timezone": "Time zone",
     "runAt": "Run at",
     "onceHelp": "Date and time in the selected time zone.",
-    "cronHelp": "Minute, hour, day, month, weekday. 0 9 * * 1-5 means weekdays at 09:00.",
+    "cronHelp": "minute hour day month weekday. The helper above writes this field; you can also edit it directly.",
     "misfire": "When an occurrence is missed",
     "skip": "Skip and record the missed interval",
     "latest": "Catch up only the latest occurrence",
@@ -437,8 +436,6 @@
     "form": "Scheduled task settings",
     "history": "Execution history",
     "openSession": "Open session",
-    "result": "View result",
-    "noResult": "No output yet.",
     "cancelRun": "Cancel execution",
     "loadMore": "Load more",
     "refresh": "Refresh",
@@ -477,19 +474,9 @@
       "paused": "Paused",
       "completed": "Completed"
     },
-    "taskCount": "{{count}} tasks",
     "more": "More actions",
     "runNowBusy": "The previous run has not finished yet.",
     "recurring": "Recurring",
-    "preset": "Quick rule",
-    "presets": {
-      "weekdays": "Weekdays at 09:00",
-      "daily": "Every day at 09:00",
-      "weekly": "Every Monday at 09:00",
-      "hourly": "Every hour",
-      "monthly": "First day of the month at 09:00",
-      "custom": "Custom"
-    },
     "quick": {
       "inOneHour": "In an hour",
       "tomorrowMorning": "Tomorrow 09:00",
@@ -498,6 +485,34 @@
     "runAtInvalid": "Pick a date and time.",
     "saving": "Saving…",
     "noRuns": "No runs yet.",
-    "sidebarIndicator": "{{count}} of {{total}} scheduled tasks enabled"
+    "helper": {
+      "frequency": "Repeat",
+      "custom": "Custom (typed cron)",
+      "customHint": "This rule is not one the helper can show; edit the cron below, or pick a repeat to replace it.",
+      "frequencies": {
+        "daily": "Every day",
+        "weekdays": "Weekdays",
+        "weekly": "Every week",
+        "monthly": "Every month",
+        "hourly": "Every hour"
+      },
+      "time": "Time",
+      "minute": "Minute",
+      "atMinutePrefix": "at minute",
+      "atMinuteSuffix": "",
+      "dayOfMonth": "Day of month",
+      "daySuffix": "",
+      "weekdays": "Days of the week",
+      "weekdayNames": {
+        "0": "Sun",
+        "1": "Mon",
+        "2": "Tue",
+        "3": "Wed",
+        "4": "Thu",
+        "5": "Fri",
+        "6": "Sat"
+      },
+      "shortMonths": "Months without day {{day}} are skipped."
+    }
   }
 }

@@ -28,6 +28,11 @@ BEGIN
  UPDATE schedules SET enabled=0, next_run_at=NULL, revision=revision+1,
  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE session_id=NEW.session_id;
 END;
+-- Schedule runs keep only their state and failure reason; the output is in the
+-- session transcript. Clears output stored by earlier versions; a no-op after.
+UPDATE session_submissions SET result='[]'
+WHERE result IS NOT NULL AND result<>'[]'
+ AND id IN (SELECT submission_id FROM schedule_runs WHERE submission_id IS NOT NULL);
 `;
 
 type TaskRow = {
@@ -113,17 +118,6 @@ export const schedulesDb = {
         )
         .all(userId, after, limit) as TaskRow[]
     ).map(task);
-  },
-  /** How many tasks each of the user's sessions has, for the sidebar's per-session indicator. */
-  summary(userId: number): Array<{ sessionId: string; enabled: number; total: number }> {
-    return (
-      getConnection()
-        .prepare(
-          `SELECT session_id AS sessionId, SUM(enabled) AS enabled, COUNT(*) AS total
-           FROM schedules WHERE user_id=? AND deleted=0 GROUP BY session_id`,
-        )
-        .all(userId) as Array<{ sessionId: string; enabled: number; total: number }>
-    );
   },
   save(value: Schedule) {
     const {

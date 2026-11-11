@@ -2,7 +2,9 @@
 
 CloudCLI stores and schedules prompts on the server. The browser can be closed. Each task targets an existing CloudCLI session; creating a fresh session per execution is not supported.
 
-Open **Scheduled tasks** in the sidebar, or **Create scheduled task** in a session's options. Choose a session, prompt, timing and time zone. Tasks can be edited, paused, resumed, run immediately or deleted. Execution history links to the session and shows the actual submission state and result.
+Open **Scheduled tasks** in the sidebar, or **Create scheduled task** in a session's options. Choose a session, prompt, timing and time zone. Tasks can be edited, paused, resumed, run immediately or deleted. Execution history records each run's state (and the failure reason when it failed) and links to the session; the reply itself is read in the session, not stored a second time with the run.
+
+In the form, the cron field is the only saved rule. The helper above it (every day, weekdays, every week on chosen days, every month on a day, every hour) writes that field and reads it back when the rule is one it can show; any other rule is typed directly.
 
 ## Timing and execution
 
@@ -51,7 +53,7 @@ Use `--run-at '2030-01-01T09:00:00+08:00'` instead of `--cron` for a one-time ta
 
 Optional `--model` and `--permission-mode` override session settings. Update accepts `--inherit-model` and `--inherit-permission-mode` to clear the respective override. An explicit value and its inherit flag are mutually exclusive. `--misfire-policy` accepts `skip` or `latest`.
 
-Use a distinct `--client-token` for each create or manual trigger, and reuse it when retrying an uncertain request. Retrying with different input returns a conflict. Deleting the task or session prevents those receipts from recreating it. A successful `schedule run` command only acknowledges enqueue; inspect `run show` for the actual result. JSON, table, TSV, JMESPath queries and cursor pagination behave like the session CLI.
+Use a distinct `--client-token` for each create or manual trigger, and reuse it when retrying an uncertain request. Retrying with different input returns a conflict. Deleting the task or session prevents those receipts from recreating it. A successful `schedule run` command only acknowledges enqueue; inspect `run show` for the execution state, then read the reply in the session. JSON, table, TSV, JMESPath queries and cursor pagination behave like the session CLI.
 
 ## Lifecycle and recovery
 

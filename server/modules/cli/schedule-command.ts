@@ -55,7 +55,7 @@ export const SCHEDULE_COMMANDS = {
   'run show': {
     options: [...ID, 'run-id'],
     required: [...ID, 'run-id'],
-    description: 'Read an execution and its actual submission result.',
+    description: 'Read an execution and its state; the reply is in the session.',
   },
   'run cancel': {
     options: [...ID, 'run-id'],

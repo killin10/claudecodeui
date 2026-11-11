@@ -3,20 +3,75 @@ import 'cronstrue/locales/zh_CN';
 
 import type { Schedule } from '@/shared/types';
 
-/** A ready-made cron rule the form offers; `custom` means the user typed their own. */
-export type CronPresetKey = 'weekdays' | 'daily' | 'weekly' | 'hourly' | 'monthly' | 'custom';
-
 /** Where a task stands as the card shows it: firing, stopped by hand or the system, or a one-time task that already fired. */
 export type ScheduleTaskStatus = 'enabled' | 'paused' | 'completed';
 
-/** The cron rules behind the form's quick-rule picker, in display order. */
-export const CRON_PRESETS: Array<{ key: Exclude<CronPresetKey, 'custom'>; cron: string }> = [
-  { key: 'weekdays', cron: '0 9 * * 1-5' },
-  { key: 'daily', cron: '0 9 * * *' },
-  { key: 'weekly', cron: '0 9 * * 1' },
-  { key: 'hourly', cron: '0 * * * *' },
-  { key: 'monthly', cron: '0 9 1 * *' },
-];
+/** The repeat patterns the cron helper can write; anything else is edited as raw cron. */
+export type CronHelperFrequency = 'daily' | 'weekdays' | 'weekly' | 'monthly' | 'hourly';
+
+/**
+ * The cron helper's controls. They only ever produce a cron string; the cron
+ * field stays the one value that is saved. Days of week use cron's 0 = Sunday.
+ */
+export type CronHelperState = {
+  frequency: CronHelperFrequency;
+  hour: number;
+  minute: number;
+  weekdays: number[];
+  dayOfMonth: number;
+};
+
+/** What a new task starts from: weekdays at 09:00. */
+export const DEFAULT_CRON_HELPER: CronHelperState = { frequency: 'weekdays', hour: 9, minute: 0, weekdays: [1], dayOfMonth: 1 };
+
+const integerIn = (value: string, min: number, max: number): number | null => (
+  /^\d{1,2}$/.test(value) && Number(value) >= min && Number(value) <= max ? Number(value) : null
+);
+
+/** Cron text for helper controls. Weekly with no day picked falls back to Monday rather than an invalid rule. */
+export const buildCron = (state: CronHelperState): string => {
+  const { minute, hour } = state;
+  switch (state.frequency) {
+    case 'hourly': return `${minute} * * * *`;
+    case 'daily': return `${minute} ${hour} * * *`;
+    case 'weekdays': return `${minute} ${hour} * * 1-5`;
+    case 'weekly': {
+      const days = [...new Set(state.weekdays)].sort((left, right) => left - right);
+      return `${minute} ${hour} * * ${days.length ? days.join(',') : '1'}`;
+    }
+    case 'monthly': return `${minute} ${hour} ${state.dayOfMonth} * *`;
+  }
+};
+
+/**
+ * Helper controls matching a cron string, or null when the rule is not one the
+ * helper writes (steps, ranges other than 1-5, several hours, …). `fallback`
+ * supplies the fields a frequency does not use, so switching keeps them.
+ */
+export const parseCron = (cron: string, fallback: CronHelperState = DEFAULT_CRON_HELPER): CronHelperState | null => {
+  const fields = cron.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+  const [minuteField, hourField, dayField, monthField, weekdayField] = fields;
+  const minute = integerIn(minuteField, 0, 59);
+  if (minute === null || monthField !== '*') return null;
+  if (hourField === '*' && dayField === '*' && weekdayField === '*') {
+    return { ...fallback, frequency: 'hourly', minute };
+  }
+  const hour = integerIn(hourField, 0, 23);
+  if (hour === null) return null;
+  const base = { ...fallback, hour, minute };
+  if (dayField === '*' && weekdayField === '*') return { ...base, frequency: 'daily' };
+  if (dayField === '*' && weekdayField === '1-5') return { ...base, frequency: 'weekdays' };
+  if (dayField === '*') {
+    const days = weekdayField.split(',').map((day) => integerIn(day, 0, 7));
+    if (days.some((day) => day === null)) return null;
+    // Cron accepts 7 for Sunday too.
+    return { ...base, frequency: 'weekly', weekdays: [...new Set(days.map((day) => (day as number) % 7))].sort() };
+  }
+  const dayOfMonth = integerIn(dayField, 1, 31);
+  if (dayOfMonth !== null && weekdayField === '*') return { ...base, frequency: 'monthly', dayOfMonth };
+  return null;
+};
 
 /** Zones most tasks use; the picker shows these until it is opened, then every zone. */
 export const COMMON_TIME_ZONES = [
@@ -24,11 +79,6 @@ export const COMMON_TIME_ZONES = [
   'Europe/Berlin', 'Europe/Paris', 'America/New_York', 'America/Chicago', 'America/Denver',
   'America/Los_Angeles', 'America/Sao_Paulo', 'Australia/Sydney',
 ];
-
-/** Which preset a cron string is, or `custom` when it matches none. */
-export const cronPresetOf = (cron: string): CronPresetKey => (
-  CRON_PRESETS.find((preset) => preset.cron === cron.trim())?.key ?? 'custom'
-);
 
 /**
  * Every IANA zone the browser knows, so the picker is a list rather than a free

@@ -8,12 +8,11 @@ import { Badge, Button, Shimmer } from '@/shared/ui';
 import type { ScheduleRun, ServerEvent } from '@/shared/types';
 import { ScheduleTime } from '@/modules/schedules/ScheduleTime';
 import { ScheduleStatus } from '@/modules/schedules/ScheduleStatus';
-import { ScheduleRunResult } from '@/modules/schedules/ScheduleRunResult';
 import { isRunInProgress } from '@/modules/schedules/utils/scheduleTiming';
 
 const REFRESH_KINDS = new Set(['schedules_changed', 'session_submission_changed', 'websocket_reconnected']);
 
-/** Task history reports persisted trigger state and the provider's actual submission result. */
+/** Task history lists each run's state and failure reason; the reply itself is read in the session. */
 export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
   const { t } = useTranslation('common');
   // The loaded history pages are refreshed together so pagination never silently drops older rows.
@@ -22,8 +21,6 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
   const [error, setError] = useState('');
   // Fetch failures and action failures have separate lifetimes: a refresh must not clear a cancellation error.
   const [fetchError, setFetchError] = useState('');
-  // Only the selected execution expands its output directly beneath that record.
-  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   // A reload request follows load-more, cancellation or a realtime change.
   const [refresh, setRefresh] = useState(0);
   // Prevents simultaneous cancel actions in this history view.
@@ -128,15 +125,6 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
               >
                 {t('schedules.openSession')}
               </Link>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 px-2 text-xs"
-                aria-expanded={expandedRunId === run.runId}
-                onClick={() => setExpandedRunId(expandedRunId === run.runId ? null : run.runId)}
-              >
-                {t(expandedRunId === run.runId ? 'schedules.collapseResult' : 'schedules.result')}
-              </Button>
               {isRunInProgress(run.state) && (
                 <Button
                   size="sm"
@@ -149,9 +137,6 @@ export function ScheduleHistory({ scheduleId }: { scheduleId: string }) {
                 </Button>
               )}
             </div>
-            {expandedRunId === run.runId && (
-              <ScheduleRunResult key={`${scheduleId}:${run.runId}`} scheduleId={scheduleId} runId={run.runId} />
-            )}
           </div>
         ))}
       </div>

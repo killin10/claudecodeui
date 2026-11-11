@@ -103,10 +103,7 @@ test('trigger is atomic, deduplicated and snapshots settings; next overlap is re
     revision: schedulesDb.get(task.scheduleId)!.revision,
     message: 'Changed future message',
   });
-  assert.equal(
-    schedulesService.execution(user, task.scheduleId, first.runId).submission?.content,
-    'Inspect only',
-  );
+  assert.equal(sessionControlDb.get(first.submissionId!, user)?.content, 'Inspect only');
   assert.notEqual(edited.nextRunAt, task.nextRunAt);
   dispatchSchedules(new Date(edited.nextRunAt!));
   assert.equal(sessionControlDb.pending(id), 1);
@@ -182,10 +179,11 @@ test('ownership, revision conflicts, idempotency, lifecycle and permanent conten
   );
 });
 
-test('submission result, restart interruption and queue cancellation are visible as execution state', async (t) => {
+test('execution state, restart interruption and queue cancellation are visible; replies are not stored twice', async (t) => {
   const { user, create } = await fixture(t);
   const task = await create();
   const manual = schedulesService.run(user, task.scheduleId);
+  const providerOptions: Record<string, unknown>[] = [];
   const dispatcher = createSubmissionDispatcher({
     hasRuntime: () => true,
     steer: async () => false,
@@ -196,6 +194,7 @@ test('submission result, restart interruption and queue cancellation are visible
     abort: async () => true,
     stopBackgroundTask: async () => false,
     run: async (provider, _content, options, writer) => {
+      providerOptions.push(options);
       writer.send(
         createNormalizedMessage({
           provider,
@@ -215,7 +214,10 @@ test('submission result, restart interruption and queue cancellation are visible
     await new Promise((resolve) => setTimeout(resolve, 10));
   const result = schedulesService.execution(user, task.scheduleId, manual.runId);
   assert.equal(result.state, 'succeeded');
-  assert.match(JSON.stringify(result.submission?.result), /Scheduled answer/);
+  // The reply lives in the session transcript; the run keeps only its state.
+  assert.equal('submission' in result, false);
+  assert.deepEqual(sessionControlDb.get(manual.submissionId!, user)?.result, []);
+  assert.equal('recordResult' in providerOptions[0], false, 'a submission setting, not a provider option');
   const next = schedulesService.run(user, task.scheduleId);
   sessionControlDb.transition(next.submissionId!, ['queued'], 'running');
   sessionControlDb.recover();
@@ -381,13 +383,19 @@ test('history retains ten recent records per schedule, protects unfinished runs 
   assert.ok(schedulesDb.run(second.runId), 'another schedule keeps its own history');
 });
 
-test('summary counts enabled and total tasks per session, skipping deleted ones', async (t) => {
+test('startup clears replies earlier versions stored on schedule runs, leaving other submissions alone', async (t) => {
   const { user, id, create } = await fixture(t);
-  const first = await create();
-  await create({ name: 'Paused task', enabled: false });
-  const removed = await create({ name: 'Removed task' });
-  schedulesService.change(user, removed.scheduleId, 'delete');
-  assert.deepEqual(schedulesService.summary(user), { items: [{ sessionId: id, enabled: 1, total: 2 }] });
-  schedulesService.change(user, first.scheduleId, 'pause');
-  assert.deepEqual(schedulesService.summary(user), { items: [{ sessionId: id, enabled: 0, total: 2 }] });
+  const task = await create();
+  const run = schedulesService.run(user, task.scheduleId);
+  const reply = [{ kind: 'text', role: 'assistant', content: 'old stored answer' }];
+  sessionControlDb.transition(run.submissionId!, ['queued'], 'succeeded', reply);
+  assert.deepEqual(sessionControlDb.get(run.submissionId!, user)?.result, reply);
+  const cli = sessionControlService.enqueue(user, id, 'from the CLI');
+  sessionControlDb.transition(cli.submissionId, ['queued'], 'succeeded', reply);
+
+  await initializeDatabase();
+
+  assert.deepEqual(sessionControlDb.get(run.submissionId!, user)?.result, []);
+  assert.equal(sessionControlDb.get(run.submissionId!, user)?.state, 'succeeded');
+  assert.deepEqual(sessionControlDb.get(cli.submissionId, user)?.result, reply, 'CLI `session send --wait` still reads its result');
 });

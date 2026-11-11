@@ -271,7 +271,6 @@
     }
   },
   "schedules": {
-    "collapseResult": "收起结果",
     "historyRetention": "保留最近 10 次执行记录；尚未结束的执行会额外保留。",
     "nextFive": "接下来 5 次执行时间",
     "noSessions": "没有匹配的会话",
@@ -299,7 +298,7 @@
     "timezone": "时区",
     "runAt": "执行时间点",
     "onceHelp": "按所选时区的日期和时间。",
-    "cronHelp": "分 时 日 月 星期。0 9 * * 1-5 表示工作日 09:00。",
+    "cronHelp": "分 时 日 月 星期。上方辅助工具会生成这里的表达式，也可以直接编辑。",
     "misfire": "错过执行时间时",
     "skip": "跳过，并记录错过的时间段",
     "latest": "恢复后只补执行最近一次",
@@ -312,8 +311,6 @@
     "form": "定时任务配置",
     "history": "执行记录",
     "openSession": "打开会话",
-    "result": "查看结果",
-    "noResult": "暂无执行输出。",
     "cancelRun": "取消本次执行",
     "loadMore": "加载更多",
     "refresh": "刷新",
@@ -352,19 +349,9 @@
       "paused": "已暂停",
       "completed": "已完成"
     },
-    "taskCount": "{{count}} 个任务",
     "more": "更多操作",
     "runNowBusy": "上一次执行尚未结束。",
     "recurring": "周期执行",
-    "preset": "常用规则",
-    "presets": {
-      "weekdays": "工作日 09:00",
-      "daily": "每天 09:00",
-      "weekly": "每周一 09:00",
-      "hourly": "每小时",
-      "monthly": "每月 1 日 09:00",
-      "custom": "自定义"
-    },
     "quick": {
       "inOneHour": "一小时后",
       "tomorrowMorning": "明天 09:00",
@@ -373,6 +360,34 @@
     "runAtInvalid": "请选择日期和时间。",
     "saving": "保存中…",
     "noRuns": "还没有执行记录。",
-    "sidebarIndicator": "{{total}} 个定时任务，{{count}} 个已启用"
+    "helper": {
+      "frequency": "重复",
+      "custom": "自定义（手写 cron）",
+      "customHint": "当前规则无法用辅助工具表示，可直接编辑下方 cron；选择重复方式会覆盖它。",
+      "frequencies": {
+        "daily": "每天",
+        "weekdays": "工作日",
+        "weekly": "每周",
+        "monthly": "每月",
+        "hourly": "每小时"
+      },
+      "time": "时间",
+      "minute": "分钟",
+      "atMinutePrefix": "第",
+      "atMinuteSuffix": "分",
+      "dayOfMonth": "日期",
+      "daySuffix": "日",
+      "weekdays": "星期",
+      "weekdayNames": {
+        "0": "周日",
+        "1": "周一",
+        "2": "周二",
+        "3": "周三",
+        "4": "周四",
+        "5": "周五",
+        "6": "周六"
+      },
+      "shortMonths": "没有 {{day}} 日的月份会跳过。"
+    }
   }
 }

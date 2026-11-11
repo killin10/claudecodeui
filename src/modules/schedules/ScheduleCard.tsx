@@ -77,6 +77,8 @@ export function ScheduleCard({
               ariaLabel={t('schedules.more')}
               icon={MoreHorizontal}
               iconOnly
+              // Rendered outside the card: its overflow clipping cut the menu off on short cards.
+              portal
               variant="ghost"
               disabled={busy}
               triggerClassName="h-9 w-9 px-0"

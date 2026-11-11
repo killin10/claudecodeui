@@ -149,7 +149,7 @@ test('a preview response for an outdated draft cannot restore stale timing', asy
   await waitFor(() => expect(screen.queryByText(/Monday through Friday/)).toBeNull());
 });
 
-test('history shows actual waiting/failed states, cancellation, and result details', async () => {
+test('history shows each run\'s state and failure reason, offers cancellation, and no stored output', async () => {
   const run: ScheduleRun = {
     runId: 'r',
     scheduleId: 'task',
@@ -157,16 +157,13 @@ test('history shows actual waiting/failed states, cancellation, and result detai
     scheduledFor: '2030-01-01T00:00:00Z',
     source: 'scheduled',
     state: 'waiting-for-input',
-    reason: null,
+    reason: 'Provider stopped',
     submissionId: 'sub',
     createdAt: '2030-01-01T00:00:00Z',
     snapshot: task,
   };
   vi.spyOn(api.schedules, 'runs').mockImplementation(async () =>
     json({ items: [run], nextToken: null }),
-  );
-  vi.spyOn(api.schedules, 'run').mockResolvedValue(
-    json({ submission: { result: [{ content: 'answer' }], error: 'Provider stopped' } }),
   );
   const cancel = vi
     .spyOn(api.schedules, 'cancel')
@@ -177,9 +174,10 @@ test('history shows actual waiting/failed states, cancellation, and result detai
     </MemoryRouter>,
   );
   await screen.findByText('schedules.states.waiting-for-input');
-  fireEvent.click(screen.getByText('schedules.result'));
-  await screen.findByText(/answer/);
-  expect(screen.getByText(/Provider stopped/).textContent).toBe('answer\n\nProvider stopped');
+  expect(screen.getByText('Provider stopped')).toBeTruthy();
+  // The reply is read in the session, linked from the row; there is no separate result view.
+  expect(screen.getByText('schedules.openSession')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'schedules.result' })).toBeNull();
   fireEvent.click(screen.getByText('schedules.cancelRun'));
   await waitFor(() => expect(cancel).toHaveBeenCalledWith('task', 'r'));
 });
@@ -427,37 +425,6 @@ test('schedule timestamps use 24-hour time in the rule timezone, including midni
   expect(screen.queryByText(/24:00|AM|PM/)).toBeNull();
 });
 
-test('execution output expands beneath its row, switches safely and collapses without late responses reopening it', async () => {
-  const runs: ScheduleRun[] = ['first', 'second'].map((id) => ({
-    runId: id, scheduleId: 'task', sessionId: 'session', scheduledFor: '2030-01-01T00:00:00Z',
-    source: 'scheduled', state: 'succeeded', reason: null, submissionId: id,
-    createdAt: '2030-01-01T00:00:00Z', snapshot: task,
-  }));
-  vi.spyOn(api.schedules, 'runs').mockImplementation(async () => json({ items: runs, nextToken: null }));
-  let resolveFirst!: (response: Response) => void;
-  const request = vi.spyOn(api.schedules, 'run').mockImplementation(async (_scheduleId, runId) => {
-    if (runId === 'first') return new Promise((resolve) => { resolveFirst = resolve; });
-    return json({ submission: { result: [{ content: 'Second output' }], error: null }, reason: null });
-  });
-  render(<MemoryRouter><ScheduleHistory scheduleId="task" /></MemoryRouter>);
-  const buttons = await screen.findAllByRole('button', { name: 'schedules.result' });
-  const firstRow = buttons[0].parentElement!.parentElement!;
-  const secondRow = buttons[1].parentElement!.parentElement!;
-  fireEvent.click(buttons[0]);
-  expect(within(firstRow).getByRole('status')).toBeTruthy();
-  fireEvent.click(buttons[1]);
-  await within(secondRow).findByText('Second output');
-  await act(async () => resolveFirst(json({ submission: { result: [{ content: 'Old first output' }], error: null } })));
-  expect(screen.queryByText('Old first output')).toBeNull();
-  expect(within(firstRow).queryByText('Second output')).toBeNull();
-  fireEvent.click(within(secondRow).getByRole('button', { name: 'schedules.collapseResult' }));
-  expect(screen.queryByText('Second output')).toBeNull();
-  request.mockRejectedValueOnce(new Error('Result unavailable'));
-  fireEvent.click(within(secondRow).getByRole('button', { name: 'schedules.result' }));
-  await within(secondRow).findByText('Result unavailable');
-  expect(within(firstRow).queryByRole('alert')).toBeNull();
-});
-
 test('edit opens the selected task in a dialog and cancelling preserves the list position', async () => {
   const update = vi.spyOn(api.schedules, 'update');
   render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
@@ -515,7 +482,7 @@ test('session navigation opens the creation dialog with its session preselected'
   expect(within(dialog).getByRole('combobox', { name: 'schedules.session' }).textContent).toContain('Target');
 });
 
-test('the list groups tasks by session, filters by status and text, and shows one-time tasks that fired as completed', async () => {
+test('the list is flat with each card naming its session, filters by status and text, and shows fired one-time tasks as completed', async () => {
   const fired: Schedule = {
     ...task, scheduleId: 'once', name: 'Release notes', sessionId: 'other', sessionTitle: 'Other session',
     cron: null, runAt: '2029-06-01T01:00:00Z', enabled: false, nextRunAt: null, lastState: 'succeeded',
@@ -523,9 +490,13 @@ test('the list groups tasks by session, filters by status and text, and shows on
   vi.mocked(api.schedules.list).mockImplementation(async () => json({ items: [task, fired], nextToken: null }));
   render(<MemoryRouter><SchedulesPage /></MemoryRouter>);
   await screen.findByText('Daily review');
-  expect(screen.getByRole('region', { name: 'Other session' })).toBeTruthy();
-  expect(within(screen.getByRole('region', { name: 'Other session' })).getByText('schedules.completed')).toBeTruthy();
-  expect(within(screen.getByRole('region', { name: 'session' })).getByText('schedules.enabled')).toBeTruthy();
+  // No per-session sections or counts; the enabled task is listed before the completed one.
+  expect(screen.queryByRole('region', { name: 'Other session' })).toBeNull();
+  const cards = screen.getAllByRole('article');
+  expect(within(cards[0]).getByText('Daily review')).toBeTruthy();
+  expect(within(cards[0]).getByText('schedules.enabled')).toBeTruthy();
+  expect(within(cards[1]).getByText('Other session')).toBeTruthy();
+  expect(within(cards[1]).getByText('schedules.completed')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('button', { name: 'schedules.filters.completed' }));
   expect(screen.queryByText('Daily review')).toBeNull();
@@ -566,12 +537,38 @@ test('a one-time task is picked as wall-clock time in the chosen zone and sent a
   expect(create.mock.calls[0][0]).toMatchObject({ cron: null, runAt: '2031-03-05T01:30:00.000Z', timezone: 'Asia/Shanghai', misfirePolicy: 'skip' });
 });
 
-test('a quick rule fills the cron field and a hand-written rule reads as custom', async () => {
+test('the cron helper only writes the cron field, and reads back rules it can show', async () => {
   render(<ScheduleForm task={null} initialSessionId="" onSaved={() => {}} onClose={() => {}} />);
-  const preset = screen.getByLabelText('schedules.preset') as HTMLSelectElement;
-  expect(preset.value).toBe('weekdays');
-  fireEvent.change(preset, { target: { value: 'hourly' } });
-  expect((screen.getByLabelText('Cron') as HTMLInputElement).value).toBe('0 * * * *');
-  fireEvent.change(screen.getByLabelText('Cron'), { target: { value: '15 3 * * 2' } });
-  expect(preset.value).toBe('custom');
+  const cronField = () => (screen.getByLabelText('Cron') as HTMLInputElement).value;
+  const frequency = screen.getByLabelText('schedules.helper.frequency') as HTMLSelectElement;
+  expect(frequency.value).toBe('weekdays');
+  expect(cronField()).toBe('0 9 * * 1-5');
+
+  fireEvent.change(screen.getByLabelText('schedules.helper.time'), { target: { value: '18:30' } });
+  expect(cronField()).toBe('30 18 * * 1-5');
+  fireEvent.change(frequency, { target: { value: 'daily' } });
+  expect(cronField()).toBe('30 18 * * *');
+
+  fireEvent.change(frequency, { target: { value: 'weekly' } });
+  expect(cronField()).toBe('30 18 * * 1');
+  fireEvent.click(screen.getByRole('button', { name: 'schedules.helper.weekdayNames.3' }));
+  expect(cronField()).toBe('30 18 * * 1,3');
+
+  fireEvent.change(frequency, { target: { value: 'monthly' } });
+  fireEvent.change(screen.getByLabelText('schedules.helper.dayOfMonth'), { target: { value: '15' } });
+  expect(cronField()).toBe('30 18 15 * *');
+
+  fireEvent.change(frequency, { target: { value: 'hourly' } });
+  fireEvent.change(screen.getByLabelText('schedules.helper.minute'), { target: { value: '5' } });
+  expect(cronField()).toBe('5 * * * *');
+
+  // A typed rule the helper can show selects it; one it cannot is left as typed.
+  fireEvent.change(screen.getByLabelText('Cron'), { target: { value: '0 7 * * 6,0' } });
+  expect(frequency.value).toBe('weekly');
+  fireEvent.change(screen.getByLabelText('Cron'), { target: { value: '*/15 9-17 * * 1-5' } });
+  expect(frequency.value).toBe('');
+  expect(cronField()).toBe('*/15 9-17 * * 1-5');
+  // Switching back starts from the last rule the helper could show (07:00), not an older one.
+  fireEvent.change(frequency, { target: { value: 'daily' } });
+  expect(cronField()).toBe('0 7 * * *');
 });

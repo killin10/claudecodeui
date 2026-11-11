@@ -4,8 +4,12 @@ import { transitionSubmission } from './submission-transition.js';
 
 const ACTIVE: SessionSubmission['state'][] = ['running', 'waiting-for-input'];
 
-/** Accumulates bounded final responses and translates provider events for the submission dispatcher. */
-export function createSubmissionResult(row: SessionSubmission, isCancelling: () => boolean) {
+/**
+ * Accumulates bounded final responses and translates provider events for the
+ * submission dispatcher. With `recordResult: false` only state and error are
+ * tracked and the stored result stays empty.
+ */
+export function createSubmissionResult(row: SessionSubmission, isCancelling: () => boolean, { recordResult = true }: { recordResult?: boolean } = {}) {
   const messages: NormalizedMessage[] = [];
   let terminal = false;
   let failure: string | null = null;
@@ -36,7 +40,7 @@ export function createSubmissionResult(row: SessionSubmission, isCancelling: () 
     if (!event || typeof event.kind !== 'string' || terminal) {
       return;
     }
-    if (event.kind === 'text' && event.role === 'assistant') {
+    if (recordResult && event.kind === 'text' && event.role === 'assistant') {
       recordText(event);
     }
     if (event.kind === 'error') {

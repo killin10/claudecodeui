@@ -8,12 +8,14 @@ import { loadCapabilities } from '@/shared/hooks/useProviderCapabilities';
 import type { LLMProvider, ProviderModelOption, Schedule, ScheduleTargetSession } from '@/shared/types';
 import { cn, createClientToken } from '@/shared/utils';
 import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger, Input, Pill, PillBar } from '@/shared/ui';
+import { ScheduleCronHelper } from '@/modules/schedules/ScheduleCronHelper';
 import { SchedulePreview } from '@/modules/schedules/SchedulePreview';
 import { ScheduleSessionPicker } from '@/modules/schedules/ScheduleSessionPicker';
 import {
+  buildCron,
   COMMON_TIME_ZONES,
-  CRON_PRESETS,
-  cronPresetOf,
+  DEFAULT_CRON_HELPER,
+  describeCron,
   listTimeZones,
   localTimeZone,
   quickRunAtValues,
@@ -85,7 +87,7 @@ export function ScheduleForm({
   onClose: () => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
-  const { t } = useTranslation('common');
+  const { t, i18n } = useTranslation('common');
   const form = useRef<HTMLFormElement>(null);
   const createToken = useRef<string | null>(null);
   // Timing mode decides which rule is submitted; the inactive rule is explicitly cleared.
@@ -97,7 +99,8 @@ export function ScheduleForm({
   // Time zone edits must recompute the same rule on the server.
   const [timezone, setTimezone] = useState(task?.timezone ?? localTimeZone());
   // Timing drafts drive automatic preview independently of unrelated form fields.
-  const [cron, setCron] = useState(task?.cron ?? CRON_PRESETS[0].cron);
+  // The cron string is the only saved recurring rule; the helper above it just writes this value.
+  const [cron, setCron] = useState(task?.cron ?? buildCron(DEFAULT_CRON_HELPER));
   // The one-time draft is the wall-clock time in the chosen zone, as the picker shows it.
   const [runAtLocal, setRunAtLocal] = useState(task?.runAt ? toZonedInputValue(task.runAt, task.timezone) : '');
   // The target session, so the model and permission pickers can follow its provider.
@@ -108,7 +111,6 @@ export function ScheduleForm({
   const [allowedModes, setAllowedModes] = useState<Set<string> | null>(null);
 
   const timeZones = useMemo(() => listTimeZones(timezone, task?.timezone ?? ''), [task?.timezone, timezone]);
-  const preset = cronPresetOf(cron);
   const runAtIso = mode === 'once' ? zonedInputValueToIso(runAtLocal, timezone) : null;
   const quickTimes = useMemo(() => quickRunAtValues(timezone), [timezone]);
 
@@ -236,23 +238,8 @@ export function ScheduleForm({
           </div>
 
           {mode === 'cron' ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field id="schedule-preset" label={t('schedules.preset')}>
-                <select
-                  id="schedule-preset"
-                  value={preset}
-                  onChange={(event) => {
-                    const chosen = CRON_PRESETS.find((entry) => entry.key === event.target.value);
-                    if (chosen) setCron(chosen.cron);
-                  }}
-                  className={CONTROL_CLASSES}
-                >
-                  {CRON_PRESETS.map((entry) => (
-                    <option key={entry.key} value={entry.key}>{t(`schedules.presets.${entry.key}`)}</option>
-                  ))}
-                  <option value="custom">{t('schedules.presets.custom')}</option>
-                </select>
-              </Field>
+            <div className="space-y-3">
+              <ScheduleCronHelper cron={cron} onChange={setCron} controlClassName={CONTROL_CLASSES} />
               <Field id="schedule-cron" label="Cron" hint={t('schedules.cronHelp')}>
                 <Input
                   id="schedule-cron"
@@ -262,6 +249,7 @@ export function ScheduleForm({
                   onChange={(event) => setCron(event.target.value)}
                   className="bg-background font-mono"
                 />
+                <p className="text-xs text-foreground/80">{describeCron(cron, i18n.language)}</p>
               </Field>
             </div>
           ) : (
